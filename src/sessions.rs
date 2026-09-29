@@ -27,7 +27,7 @@ fn xdotool(args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-fn windows_of_pid(pid: u32) -> Vec<String> {
+pub fn windows_of_pid(pid: u32) -> Vec<String> {
     xdotool(&["search", "--onlyvisible", "--pid", &pid.to_string()]).split_whitespace().map(String::from).collect()
 }
 
@@ -87,7 +87,8 @@ fn scan_emulators(extra_name: &str) -> HashMap<u32, (String, f64)> {
         if !(EMULATOR_NAMES.contains(&base.as_str()) || (!extra_name.is_empty() && base == extra_name)) {
             continue;
         }
-        let mut game = args.iter().position(|a| a == "--game").and_then(|i| args.get(i + 1)).cloned().unwrap_or_default();
+        // Only an emulator that is running a game counts (not e.g. `kyty_emulator --help`).
+        let Some(mut game) = args.iter().position(|a| a == "--game").and_then(|i| args.get(i + 1)).cloned() else { continue };
         if !game.is_empty() && !game.starts_with('/') {
             if let Ok(cwd) = std::fs::read_link(format!("/proc/{pid}/cwd")) {
                 game = cwd.join(&game).to_string_lossy().into_owned();

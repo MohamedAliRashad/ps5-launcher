@@ -93,6 +93,25 @@ impl App {
         yt_art(&g.trailer).or_else(|| req_url(&g.cover, 1280, COVER_CROP))
     }
 
+    /// The small cover shown while a big background downloads (usually already on disk).
+    pub fn cover_req(&self, t: Target) -> Option<ImgReq> {
+        t.game.and_then(|g| self.card_req(g))
+            .or_else(|| t.local.and_then(|l| self.locals[l].l.icon0.clone()).map(|p| req_file(&p, 512)))
+    }
+
+    pub fn row_cover_req(&self, i: usize) -> Option<ImgReq> {
+        match self.row.get(i)? {
+            RowItem::All => None,
+            _ => self.cover_req(self.row_target(i)),
+        }
+    }
+
+    /// Show row item `i`'s background, with its cover standing in until it has downloaded.
+    pub fn show_row_background(&mut self, i: usize, force: bool) {
+        let (bg, cover) = (self.hero_bg_url(i), self.row_cover_req(i));
+        self.want_background_or(bg, force, cover);
+    }
+
     pub fn hero_bg_url(&self, i: usize) -> Option<ImgReq> {
         match self.row.get(i)? {
             RowItem::All => {
@@ -126,7 +145,7 @@ impl App {
             self.push_hub();
         }
         if self.view == 0 && self.overlay == Overlay::None {
-            self.want_background(self.hero_bg_url(self.sel), true);
+            self.show_row_background(self.sel, true);
         }
     }
 
@@ -289,9 +308,10 @@ impl App {
                             h.logo_w = w * self.scale;
                             h.logo_h = hh * self.scale;
                         }
-                        // Logo on its way (usually a few ms from cache): keep the title area empty
-                        // rather than flashing the text title first.
-                        None => h.title = SharedString::default(),
+                        // On disk: it decodes in a few ms, so keep the space empty instead of flashing
+                        // the text name. Still downloading: show the name as text meanwhile.
+                        None if self.images.on_disk(&r.key, &r.src) => h.title = SharedString::default(),
+                        None => {}
                     }
                 }
                 h.chips = model(self.chips_for(t));
@@ -333,7 +353,9 @@ impl App {
 
     // ------------------------------------------------------------------ background
 
-    pub fn want_background(&mut self, req: Option<ImgReq>, force: bool) {
+    /// Crossfade the backdrop to `req`, with a stand-in image (usually already on disk) to show
+    /// while `req` downloads.
+    pub fn want_background_or(&mut self, req: Option<ImgReq>, force: bool, standin: Option<ImgReq>) {
         let Some(r) = req else { return };
         if r.key == self.bg_key && !force {
             return;
@@ -342,12 +364,38 @@ impl App {
             return;
         }
         self.bg_pending = Some(r.key.clone());
+        self.bg_standin = None;
         let keep = r.key.clone();
         // Moving quickly: drop queued backgrounds we already moved past.
         self.images.cancel_unless(move |j| j.prio != prio::HERO || j.key == keep || j.max_w < 1000);
+        let downloading = !self.images.on_disk(&r.key, &r.src);
         if let Some(img) = self.images.want(&r.key, r.src, r.w, r.crop, prio::HERO) {
             self.apply_bg(r.key, img);
+            return;
         }
+        // Not downloaded yet (≈1 s from Sony's servers): show the game's cover meanwhile, so the
+        // previous game's art never lingers behind this game's details.
+        if downloading {
+            if let Some(c) = standin {
+                self.bg_standin = Some(c.key.clone());
+                if let Some(img) = self.images.want(&c.key, c.src, c.w, c.crop, prio::HERO) {
+                    self.apply_bg_standin(img);
+                }
+            }
+        }
+    }
+
+    fn apply_bg_standin(&mut self, img: Image) {
+        self.bg_standin = None;
+        self.bg_key = String::new();
+        self.bg_show_b = !self.bg_show_b;
+        let ui = self.ui();
+        if self.bg_show_b {
+            ui.set_bg_b(img);
+        } else {
+            ui.set_bg_a(img);
+        }
+        ui.set_bg_show_b(self.bg_show_b);
     }
 
     fn apply_bg(&mut self, key: String, img: Image) {
@@ -365,6 +413,11 @@ impl App {
 
     /// An image finished loading: update whatever shows it.
     pub fn refresh_images(&mut self, key: &str) {
+        if self.bg_standin.as_deref() == Some(key) && self.bg_pending.is_some() {
+            if let Some(img) = self.images.get(key) {
+                self.apply_bg_standin(img);
+            }
+        }
         if self.bg_pending.as_deref() == Some(key) {
             if let Some(img) = self.images.get(key) {
                 self.apply_bg(key.to_string(), img);
@@ -589,12 +642,21 @@ impl App {
         self.push_grid_window();
     }
 
+    /// The Library's backdrop follows the selected game, once the selection rests for a moment
+    /// (scrolling past twenty games shouldn't start twenty full-screen downloads).
     pub fn focus_card_changed(&mut self) {
-        if let Some(&gi) = self.filtered.get(self.idx as usize) {
-            let t = Target { game: Some(gi), local: self.games[gi].local };
-            let bg = self.target_bg_url(t);
-            self.want_background(bg, false);
-        }
+        self.bg_timer.start(slint::TimerMode::SingleShot, std::time::Duration::from_millis(160), || {
+            crate::app::with_app(|app| {
+                if app.view != 1 || app.zone != Z_GRID || app.overlay != Overlay::None {
+                    return;
+                }
+                if let Some(&gi) = app.filtered.get(app.idx as usize) {
+                    let t = Target { game: Some(gi), local: app.games[gi].local };
+                    let (bg, cover) = (app.target_bg_url(t), app.cover_req(t));
+                    app.want_background_or(bg, false, cover);
+                }
+            })
+        });
     }
 
     pub fn cycle_sort(&mut self, d: i32) {
@@ -629,12 +691,14 @@ impl App {
                     h.logo_w = w * self.scale;
                     h.logo_h = hh * self.scale;
                 }
-                None => h.title = SharedString::default(),
+                None if self.images.on_disk(&r.key, &r.src) => h.title = SharedString::default(),
+                None => {}
             }
         }
-        let cover = info.as_ref().and_then(|i| req_url(&i.portrait, 760, 0.0))
-            .or_else(|| t.game.and_then(|g| req_url(&self.games[g].g.cover, 760, COVER_CROP)))
-            .or_else(|| info.as_ref().and_then(|i| req_url(&i.master, 760, 0.0)))
+        // Same image as the Library card: it's already on disk, so the Hub opens with it instantly.
+        let cover = t.game.and_then(|g| self.card_req(g))
+            .or_else(|| info.as_ref().and_then(|i| req_url(&i.portrait, 440, 0.0)))
+            .or_else(|| info.as_ref().and_then(|i| req_url(&i.master, 440, 0.0)))
             .or_else(|| t.local.and_then(|l| self.locals[l].l.icon0.clone()).map(|p| req_file(&p, 512)));
         if let Some(r) = &cover {
             keys.insert(r.key.clone());

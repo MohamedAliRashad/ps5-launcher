@@ -110,10 +110,15 @@ progress bar it:
 1. downloads the catalog (about 1 second);
 2. downloads the official artwork (about a minute for all 700+ games);
 3. downloads the **latest KytyPS5 build**;
-4. downloads every Library cover, so browsing never shows an empty card;
+4. downloads every Library cover, and the backgrounds, logos and icons of every game on the Home
+   screen;
 5. preloads the Home screen and the first page of the Library.
 
-On a typical connection this takes about a minute.
+On a typical connection this takes about a minute. After that, the Game Hub art for every
+other game downloads in the background, newest first. It takes about 3–4 minutes, with a small
+progress line at the bottom of the screen. Sony's image server takes about a second per image,
+so after this every Game Hub opens instantly instead of loading. The image cache ends up at
+about 500 MB in `~/.cache/ps5-launcher/`.
 
 Then it asks you to press **✕ / Enter** to start. You can skip the wait; anything left keeps
 downloading in the background.
@@ -249,6 +254,8 @@ user that access; if yours doesn't, add yourself to the `input` group.
 - **The UI is too big or too small:** it scales itself to the window, on any screen size or
   shape. To make everything larger or smaller, set a multiplier, for example
   `PS5_LAUNCHER_SCALE=1.15 ps5-launcher`.
+- **Images feel slow:** run `PS5_LAUNCHER_DEBUG=1 ps5-launcher` from a terminal. Every image
+  load is logged with where it came from (disk or network) and how long each step took.
 - **Reset everything:** `rm -rf ~/.config/ps5-launcher ~/.cache/ps5-launcher`
 
 ## Building by hand

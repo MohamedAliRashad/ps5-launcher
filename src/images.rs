@@ -64,56 +64,78 @@ struct Queue {
 
 type Done = Arc<dyn Fn(String, Option<SharedPixelBuffer<Rgba8Pixel>>) + Send + Sync>;
 
+type Lane = Arc<(Mutex<Queue>, Condvar)>;
+
+/// Two lanes of workers: images already on disk never wait behind slow downloads.
 #[derive(Clone)]
 pub struct Pool {
-    q: Arc<(Mutex<Queue>, Condvar)>,
+    local: Lane,
+    net: Lane,
+}
+
+fn lane(name: &str, threads: usize, done: &Done) -> Lane {
+    let q: Lane = Arc::new((Mutex::new(Queue { heap: BinaryHeap::new(), queued: HashSet::new(), seq: 0 }), Condvar::new()));
+    for i in 0..threads {
+        let q = q.clone();
+        let done = done.clone();
+        std::thread::Builder::new()
+            .name(format!("img-{name}-{i}"))
+            .spawn(move || loop {
+                let job = {
+                    let (lock, cv) = &*q;
+                    let mut st = lock.lock().unwrap();
+                    loop {
+                        if let Some(j) = st.heap.pop() {
+                            break j;
+                        }
+                        st = cv.wait(st).unwrap();
+                    }
+                };
+                let result = std::panic::catch_unwind(|| load(&job)).ok().flatten();
+                q.0.lock().unwrap().queued.remove(&job.key);
+                done(job.key, result);
+            })
+            .ok();
+    }
+    q
+}
+
+/// True if an image can be shown without touching the network.
+pub fn on_disk(key: &str, src: &Src) -> bool {
+    thumb_path(key).exists()
+        || match src {
+            Src::Url(u) => raw_cache_path(u).exists(),
+            Src::File(p) => p.exists(),
+        }
 }
 
 impl Pool {
-    pub fn new(threads: usize, done: Done) -> Pool {
-        let q = Arc::new((Mutex::new(Queue { heap: BinaryHeap::new(), queued: HashSet::new(), seq: 0 }), Condvar::new()));
-        for i in 0..threads {
-            let q = q.clone();
-            let done = done.clone();
-            std::thread::Builder::new()
-                .name(format!("img-{i}"))
-                .spawn(move || loop {
-                    let job = {
-                        let (lock, cv) = &*q;
-                        let mut st = lock.lock().unwrap();
-                        loop {
-                            if let Some(j) = st.heap.pop() {
-                                break j;
-                            }
-                            st = cv.wait(st).unwrap();
-                        }
-                    };
-                    let result = std::panic::catch_unwind(|| load(&job)).ok().flatten();
-                    q.0.lock().unwrap().queued.remove(&job.key);
-                    done(job.key, result);
-                })
-                .ok();
-        }
-        Pool { q }
+    pub fn new(local_threads: usize, net_threads: usize, done: Done) -> Pool {
+        Pool { local: lane("disk", local_threads, &done), net: lane("net", net_threads, &done) }
     }
 
     pub fn request(&self, key: String, src: Src, max_w: u32, crop_top: f32, prio: u8) {
-        let (lock, cv) = &*self.q;
-        let mut st = lock.lock().unwrap();
-        if !st.queued.insert(key.clone()) {
-            // Already queued: bump its priority by re-inserting a newer copy.
-            let old: Vec<Job> = st.heap.drain().collect();
-            st.seq += 1;
-            let seq = st.seq;
-            for mut j in old {
-                if j.key == key {
-                    j.prio = j.prio.max(prio);
-                    j.seq = seq;
+        // Already queued in either lane: bump its priority.
+        for q in [&self.local, &self.net] {
+            let mut st = q.0.lock().unwrap();
+            if st.queued.contains(&key) {
+                let old: Vec<Job> = st.heap.drain().collect();
+                st.seq += 1;
+                let seq = st.seq;
+                for mut j in old {
+                    if j.key == key {
+                        j.prio = j.prio.max(prio);
+                        j.seq = seq;
+                    }
+                    st.heap.push(j);
                 }
-                st.heap.push(j);
+                return;
             }
-            return;
         }
+        let q = if on_disk(&key, &src) { &self.local } else { &self.net };
+        let (lock, cv) = &**q;
+        let mut st = lock.lock().unwrap();
+        st.queued.insert(key.clone());
         st.seq += 1;
         let seq = st.seq;
         st.heap.push(Job { key, src, max_w, crop_top, prio, seq });
@@ -122,15 +144,17 @@ impl Pool {
 
     /// Drop queued (not yet started) jobs that are no longer wanted.
     pub fn retain(&self, keep: impl Fn(&Job) -> bool) -> Vec<String> {
-        let mut st = self.q.0.lock().unwrap();
-        let old: Vec<Job> = st.heap.drain().collect();
         let mut dropped = Vec::new();
-        for j in old {
-            if keep(&j) {
-                st.heap.push(j);
-            } else {
-                st.queued.remove(&j.key);
-                dropped.push(j.key);
+        for q in [&self.local, &self.net] {
+            let mut st = q.0.lock().unwrap();
+            let old: Vec<Job> = st.heap.drain().collect();
+            for j in old {
+                if keep(&j) {
+                    st.heap.push(j);
+                } else {
+                    st.queued.remove(&j.key);
+                    dropped.push(j.key);
+                }
             }
         }
         dropped
@@ -170,10 +194,10 @@ fn fetch(url: &str) -> Option<Vec<u8>> {
     None
 }
 
-/// Download (but don't decode) images into the disk cache, 24 at a time (the image servers
-/// answer in ~1 s per request regardless of load, so throughput scales with parallelism). Already-cached files
+/// Download (but don't decode) images into the disk cache, `threads` at a time. Already
+/// cached files are skipped instantly. Already-cached files
 /// are skipped instantly. `progress(done, total)` is called as files complete.
-pub fn warm(urls: Vec<String>, progress: &(dyn Fn(usize, usize) + Sync)) {
+pub fn warm(urls: Vec<String>, threads: usize, progress: &(dyn Fn(usize, usize) + Sync)) {
     let todo: Vec<String> = urls.into_iter().filter(|u| !raw_cache_path(u).exists()).collect();
     let total = todo.len();
     if total == 0 {
@@ -182,7 +206,7 @@ pub fn warm(urls: Vec<String>, progress: &(dyn Fn(usize, usize) + Sync)) {
     let next = std::sync::atomic::AtomicUsize::new(0);
     let done = std::sync::atomic::AtomicUsize::new(0);
     std::thread::scope(|s| {
-        for _ in 0..24 {
+        for _ in 0..threads {
             s.spawn(|| loop {
                 let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some(u) = todo.get(i) else { break };
@@ -193,24 +217,56 @@ pub fn warm(urls: Vec<String>, progress: &(dyn Fn(usize, usize) + Sync)) {
     });
 }
 
+const BIG_PIXELS: u32 = 1000 * 700;
+
+/// Remove oversized decoded copies left by older versions (they could add up to gigabytes).
+pub fn trim_thumbs() {
+    let Ok(rd) = std::fs::read_dir(cache_dir().join("thumbs")) else { return };
+    let mut freed = 0u64;
+    for e in rd.flatten() {
+        if let Ok(m) = e.metadata() {
+            if m.len() > (BIG_PIXELS as u64) * 4 {
+                freed += m.len();
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    if freed > 0 {
+        crate::log!("removed {} MB of oversized decoded images", freed >> 20);
+    }
+}
+
+pub static START: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
+pub static DEBUG: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("PS5_LAUNCHER_DEBUG").is_some());
+
 fn load(job: &Job) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    let t0 = std::time::Instant::now();
+    let ms = |t: std::time::Instant| t.elapsed().as_secs_f32() * 1000.0;
     let tp = thumb_path(&job.key);
     if let Ok(bytes) = std::fs::read(&tp) {
         if let Ok((h, px)) = qoi::decode_to_vec(&bytes) {
             if px.len() == (h.width * h.height * 4) as usize {
+                if *DEBUG {
+                    crate::log!("t={:>6} img thumb {:>6.1}ms {}x{} p{} {}", START.elapsed().as_millis(), ms(t0), h.width, h.height, job.prio, short(&job.key));
+                }
                 return Some(SharedPixelBuffer::clone_from_slice(&px, h.width, h.height));
             }
         }
     }
+    let was_cached = matches!(&job.src, Src::Url(u) if raw_cache_path(u).exists());
     let bytes = match &job.src {
         Src::Url(u) => fetch(u)?,
         Src::File(p) => std::fs::read(p).ok()?,
     };
+    let t_fetch = ms(t0);
+    let t1 = std::time::Instant::now();
     let mut img = image::load_from_memory(&bytes).ok()?.into_rgba8();
+    let t_decode = ms(t1);
     if job.crop_top > 0.0 {
         let cut = (img.height() as f32 * job.crop_top) as u32;
         img = image::imageops::crop_imm(&img, 0, cut, img.width(), img.height() - cut).to_image();
     }
+    let t2 = std::time::Instant::now();
     let (w, h) = img.dimensions();
     let (px, w, h) = if job.max_w > 0 && w > job.max_w {
         let nh = ((h as u64 * job.max_w as u64) / w as u64).max(1) as u32;
@@ -222,10 +278,25 @@ fn load(job: &Job) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     } else {
         (img.into_raw(), w, h)
     };
-    if let Ok(enc) = qoi::encode_to_vec(&px, w, h) {
-        let _ = crate::util::atomic_write(&tp, &enc);
+    let t_resize = ms(t2);
+    let t3 = std::time::Instant::now();
+    // Keep a decoded copy only for small images (tiles, covers, screenshots). Full-screen art
+    // would be ~4 MB each; it decodes from its download in ~20 ms anyway.
+    if w * h <= BIG_PIXELS {
+        if let Ok(enc) = qoi::encode_to_vec(&px, w, h) {
+            let _ = crate::util::atomic_write(&tp, &enc);
+        }
+    }
+    if *DEBUG {
+        crate::log!("t={:>6} img {} {:>6.1}ms fetch {:>6.1} decode {:>5.1} resize {:>5.1} save {:>5.1} {}KB {}x{} p{} {}",
+            START.elapsed().as_millis(), if was_cached { "disk" } else { "NET " }, ms(t0), t_fetch, t_decode, t_resize, ms(t3), bytes.len() / 1024, w, h, job.prio, short(&job.key));
     }
     Some(SharedPixelBuffer::clone_from_slice(&px, w, h))
+}
+
+fn short(key: &str) -> String {
+    let tail: String = key.chars().rev().take(34).collect::<Vec<_>>().into_iter().rev().collect();
+    tail
 }
 
 /// UI-thread side: decoded images by key with an LRU byte budget.
@@ -263,6 +334,10 @@ impl Store {
             self.pool.request(key.to_string(), src, max_w, crop_top, prio);
         }
         None
+    }
+
+    pub fn on_disk(&self, key: &str, src: &Src) -> bool {
+        on_disk(key, src)
     }
 
     pub fn is_pending(&self, key: &str) -> bool {

@@ -201,6 +201,8 @@ pub struct App {
     pub launch_keys: Vec<String>,
     pub launch_local: Option<usize>,
     pub bg_pending: Option<String>,
+    pub bg_standin: Option<String>,
+    pub bg_timer: slint::Timer,
     pub settings_ids: Vec<crate::settings::SId>,
     pub boot: crate::boot::Boot,
     pub kyty: crate::kyty_ui::KytyUi,
@@ -255,7 +257,8 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, target_monitor: Option<Monitor
     let library = Arc::new(Mutex::new(library::scan(&cfg.lock().unwrap().game_dir_paths())));
     let art = psn::Store::load();
     let sessions = Sessions::start(library.clone(), cfg.clone(), || post(|app| app.on_sessions()));
-    let pool = images::Pool::new(8, Arc::new(|key, buf| post(move |app| app.on_image(key, buf))));
+    std::thread::spawn(images::trim_thumbs);
+    let pool = images::Pool::new(4, 16, Arc::new(|key, buf| post(move |app| app.on_image(key, buf))));
 
     let genre_res = GENRES.iter().map(|(n, re)| (*n, regex::Regex::new(re).unwrap())).collect();
     let catalog = CatalogFile::load();
@@ -322,6 +325,8 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, target_monitor: Option<Monitor
         launch_keys: Vec::new(),
         launch_local: None,
         bg_pending: None,
+        bg_standin: None,
+        bg_timer: slint::Timer::default(),
         settings_ids: Vec::new(),
         boot: Default::default(),
         kyty: Default::default(),
@@ -693,30 +698,68 @@ impl App {
     }
 
     /// Download every Library cover into the disk cache (skips cached ones instantly).
+    /// Download artwork before it's needed, in two stages:
+    /// 1. what the first screens show — the Home row's tiles, backgrounds and logos, and every
+    ///    Library cover (the welcome screen waits for this);
+    /// 2. every other game's Game Hub background and logo, newest first, in the background.
+    /// Sony's image server takes ~1 s per image, so anything fetched on demand is visibly slow.
     pub fn warm_covers(&mut self) {
         if self.warming {
             return;
         }
-        let urls: Vec<String> = (0..self.games.len())
-            .filter_map(|gi| self.card_req(gi))
-            .filter_map(|r| match r.src {
-                images::Src::Url(u) => Some(u),
-                _ => None,
-            })
-            .collect();
+        let url = |r: Option<crate::present::ImgReq>| match r.map(|r| r.src) {
+            Some(images::Src::Url(u)) => Some(u),
+            _ => None,
+        };
+        let mut first: Vec<String> = Vec::new();
+        for i in 0..self.row.len() {
+            first.extend(url(self.tile_req(self.row[i])));
+            first.extend(url(self.hero_bg_url(i)));
+            if self.row[i] != RowItem::All {
+                let info = self.target_info(self.row_target(i));
+                first.extend(url(info.as_ref().and_then(|x| crate::present::req_url(&x.logo, 960, 0.0))));
+            }
+        }
+        first.extend((0..self.games.len()).filter_map(|gi| url(self.card_req(gi))));
+        let mut rest: Vec<String> = Vec::new();
+        let mut order: Vec<usize> = (0..self.games.len()).collect();
+        order.sort_by(|a, b| self.games[*b].g.date.cmp(&self.games[*a].g.date));
+        for gi in order {
+            let t = Target { game: Some(gi), local: self.games[gi].local };
+            rest.extend(url(self.target_bg_url(t)));
+            let info = self.games[gi].info.as_ref();
+            rest.extend(url(info.and_then(|x| crate::present::req_url(&x.logo, 960, 0.0))));
+        }
+        let seen: std::collections::HashSet<String> = first.iter().cloned().collect();
+        rest.retain(|u| !seen.contains(u));
         self.warming = true;
         std::thread::spawn(move || {
-            let last = Mutex::new(std::time::Instant::now() - Duration::from_secs(1));
-            images::warm(urls, &|done, total| {
+            let throttle = |f: &dyn Fn(usize, usize), done: usize, total: usize, last: &Mutex<std::time::Instant>| {
                 let mut l = last.lock().unwrap();
-                if l.elapsed() > Duration::from_millis(100) || done == total {
+                if l.elapsed() > Duration::from_millis(150) || done == total {
                     *l = std::time::Instant::now();
-                    post(move |app| app.boot_covers(done, total));
+                    f(done, total);
                 }
+            };
+            let last = Mutex::new(std::time::Instant::now() - Duration::from_secs(1));
+            images::warm(first, 24, &|done, total| {
+                throttle(&|d, t| post(move |app| app.boot_covers(d, t)), done, total, &last)
+            });
+            post(|app| app.boot_covers_done());
+            // Stage 2: quietly, with fewer connections so on-demand images still get through.
+            let last = Mutex::new(std::time::Instant::now() - Duration::from_secs(1));
+            images::warm(rest, 10, &|done, total| {
+                throttle(&|d, t| post(move |app| {
+                    if !app.boot.active && !app.syncing && !app.enriching && !app.kyty.busy && !app.upd.busy {
+                        app.set_status(&format!("Downloading game art {d}/{t}"), true);
+                    }
+                }), done, total, &last)
             });
             post(|app| {
                 app.warming = false;
-                app.boot_covers_done();
+                if app.status.starts_with("Downloading game art") {
+                    app.set_status("", false);
+                }
             });
         });
     }
@@ -1092,7 +1135,11 @@ impl App {
             return;
         }
         match self.overlay {
-            Overlay::Launch => {}
+            Overlay::Launch => {
+                if a == Act::Back {
+                    self.hide_launch_splash();
+                }
+            }
             Overlay::Viewer => self.act_viewer(a),
             Overlay::Menu => self.act_menu(a),
             Overlay::Settings => self.act_settings(a),
@@ -1386,7 +1433,7 @@ impl App {
                 self.push_hero();
                 self.push_row();
                 if self.view == 0 {
-                    self.want_background(self.hero_bg_url(self.sel), true);
+                    self.show_row_background(self.sel, true);
                 } else {
                     self.focus_card_changed();
                 }
@@ -1441,7 +1488,7 @@ impl App {
                 }
             }
         } else {
-            self.want_background(self.hero_bg_url(self.sel), true);
+            self.show_row_background(self.sel, true);
             if focus {
                 self.set_focus(Z_ROW, 0);
             }
@@ -1461,7 +1508,7 @@ impl App {
         self.ui().set_sel(i as i32);
         self.push_row_text();
         self.push_hero();
-        self.want_background(self.hero_bg_url(i), false);
+        self.show_row_background(i, false);
         self.prefetch_neighbors();
     }
 
@@ -1681,6 +1728,9 @@ impl App {
     }
 
     pub fn open_hub(&mut self, t: Target) {
+        if *crate::images::DEBUG {
+            crate::log!("t={:>6} open hub", crate::images::START.elapsed().as_millis());
+        }
         self.hub = Some(t);
         self.hub_actions = self.actions_for(t, true);
         self.hub_shots = self.target_info(t).map(|i| i.shots.clone()).unwrap_or_default();
@@ -1692,8 +1742,8 @@ impl App {
             self.push_overlay(Overlay::Hub, Z_HUB, 0);
         }
         // The hub uses the game's hub art as its background.
-        let bg = self.target_bg_url(t);
-        self.want_background(bg, true);
+        let (bg, cover) = (self.target_bg_url(t), self.cover_req(t));
+        self.want_background_or(bg, true, cover);
         self.push_hub();
     }
 
@@ -1736,19 +1786,47 @@ impl App {
         self.push_menu(&title);
     }
 
+    /// "Starting…" splash that stays up until the game's window actually appears (or the game
+    /// exits), instead of for a fixed time while KytyPS5 is still booting in the background.
     fn show_launch_splash(&mut self, l: usize) {
         self.push_launch(l);
+        self.ui().set_launch_sub("Starting with KytyPS5…".into());
         self.push_overlay(Overlay::Launch, self.zone, self.idx);
-        slint::Timer::single_shot(Duration::from_millis(2600), || {
-            with_app(|app| {
-                if app.overlay == Overlay::Launch {
-                    let (ov, z, i) = app.stack.pop().unwrap_or((Overlay::None, Z_ROW, 0));
-                    app.overlay = ov;
-                    app.ui().set_overlay(ov as i32);
-                    app.set_focus(z, i);
+        let Some(pid) = self.session_for_local(l).map(|s| s.pid) else {
+            slint::Timer::single_shot(Duration::from_millis(2000), || with_app(|app| app.hide_launch_splash()));
+            return;
+        };
+        std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            let mut noted = false;
+            loop {
+                std::thread::sleep(Duration::from_millis(250));
+                let el = start.elapsed();
+                let gone = !std::path::Path::new(&format!("/proc/{pid}")).exists();
+                let shown = el > Duration::from_millis(1200) && !crate::sessions::windows_of_pid(pid).is_empty();
+                if gone || shown || el > Duration::from_secs(90) {
+                    // A moment more once the window exists, so the game's first frame is ready.
+                    if shown {
+                        std::thread::sleep(Duration::from_millis(400));
+                    }
+                    post(|app| app.hide_launch_splash());
+                    return;
                 }
-            })
+                if !noted && el > Duration::from_secs(8) {
+                    noted = true;
+                    post(|app| app.ui().set_launch_sub("Still starting… a game's first launch can take a while".into()));
+                }
+            }
         });
+    }
+
+    pub fn hide_launch_splash(&mut self) {
+        if self.overlay == Overlay::Launch {
+            let (ov, z, i) = self.stack.pop().unwrap_or((Overlay::None, Z_ROW, 0));
+            self.overlay = ov;
+            self.ui().set_overlay(ov as i32);
+            self.set_focus(z, i);
+        }
     }
 
     // ------------------------------------------------------------------ settings

@@ -110,8 +110,27 @@ pub fn latest_release() -> Result<Release, String> {
 
 /// Version info of any emulator binary, from its `--help` banner ("git = 6799ecb, date = 2026.09.29").
 pub fn binary_version(emulator: &Path) -> Option<(String, String)> {
-    let out = Command::new(emulator).arg("--help").current_dir(emulator.parent()?).output().ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
+    // Never hang on an odd binary: give it 3 s to print its banner.
+    use std::io::Read as _;
+    let mut child = Command::new(emulator)
+        .arg("--help")
+        .current_dir(emulator.parent()?)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let start = std::time::Instant::now();
+    while child.try_wait().ok()?.is_none() {
+        if start.elapsed() > std::time::Duration::from_secs(3) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let mut text = String::new();
+    child.stdout.take()?.read_to_string(&mut text).ok()?;
     let line = text.lines().next()?;
     let field = |k: &str| line.split(&format!("{k} = ")).nth(1).map(|s| s.split(',').next().unwrap_or("").trim().to_string());
     Some((field("git")?, field("date").unwrap_or_default().replace('.', "-")))

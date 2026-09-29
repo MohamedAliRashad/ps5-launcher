@@ -120,6 +120,7 @@ export component AppWindow inherits Window {
     in property <image> launch-bg;
     in property <image> launch-icon;
     in property <string> launch-name;
+    in property <string> launch-sub: "Starting with KytyPS5…";
 
     in property <string> menu-title;
     in property <[MenuItem]> menu-items;
@@ -1039,7 +1040,7 @@ export component AppWindow inherits Window {
                 Rectangle { height: (34px * S.k); }
                 Text { text: root.launch-name; font-size: (44px * S.k); font-weight: 600; color: Theme.text; horizontal-alignment: center; }
                 Rectangle { height: (10px * S.k); }
-                Text { text: "Starting with KytyPS5…"; font-size: (20px * S.k); color: Theme.text2; horizontal-alignment: center; }
+                Text { text: root.launch-sub; font-size: (20px * S.k); color: Theme.text2; horizontal-alignment: center; }
                 Rectangle { height: (36px * S.k); }
                 HorizontalLayout {
                     alignment: center;

@@ -179,7 +179,7 @@ impl App {
     pub fn boot_covers(&mut self, done: usize, total: usize) {
         if self.boot.active && self.boot.waiting_covers {
             self.boot.f_covers = done as f32 / total.max(1) as f32;
-            self.boot.text_main = format!("Downloading covers {done}/{total}");
+            self.boot.text_main = format!("Downloading artwork {done}/{total}");
             self.boot_render();
         }
     }
@@ -320,7 +320,7 @@ impl App {
         let ui = self.ui();
         ui.set_overlay(0);
         self.set_focus(Z_ROW, 0);
-        self.want_background(self.hero_bg_url(self.sel), true);
+        self.show_row_background(self.sel, true);
         self.prefetch_neighbors();
         ui.invoke_focus_root();
         if !self.boot.first {
