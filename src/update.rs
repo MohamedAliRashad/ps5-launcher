@@ -178,17 +178,17 @@ impl App {
                             if auto || manual {
                                 app.app_update_install(rel);
                             } else {
-                                app.toast(&format!("PS5 Launcher {} is available", rel.version), "Install it from Settings.", 0);
+                                app.toast_app("Update available", &format!("PS5 Launcher {} can be installed from Settings.", rel.version), 0);
                             }
                         } else if manual {
-                            app.toast("PS5 Launcher is up to date", &format!("Version {}", current_version()), 1);
+                            app.toast_app("PS5 Launcher is up to date", &format!("You have the latest version, {}.", current_version()), 1);
                         }
                     }
                     Err(e) => {
                         crate::log!("launcher update check failed: {e}");
                         app.upd.error = format!("Update check failed: {e}");
                         if manual {
-                            app.toast("Could not check for updates", &e, 2);
+                            app.toast_app("Couldn't check for updates", &e, 2);
                         }
                     }
                 }
@@ -206,7 +206,7 @@ impl App {
             Err(e) => {
                 crate::log!("launcher update {} available, not installed: {e}", rel.version);
                 self.upd.error = format!("Can't update automatically: {e}");
-                self.toast(&format!("PS5 Launcher {} is available", rel.version), &e, 0);
+                self.toast_app("Update available", &format!("PS5 Launcher {} can't install automatically: {e}.", rel.version), 0);
                 self.kyty_refresh_settings();
                 return;
             }
@@ -236,12 +236,12 @@ impl App {
                 match res {
                     Ok(()) => {
                         app.upd.installed = Some(rel.version.clone());
-                        app.toast(&format!("PS5 Launcher {} is ready", rel.version), "It starts next time, or choose Restart now in Settings.", 1);
+                        app.toast_app("Update ready", &format!("PS5 Launcher {} starts the next time you open it. To switch now, choose Restart now in Settings.", rel.version), 1);
                     }
                     Err(e) => {
                         crate::log!("launcher update failed: {e}");
                         app.upd.error = format!("Update failed: {e}");
-                        app.toast("PS5 Launcher update failed", &e, 2);
+                        app.toast_app("Update failed", &e, 2);
                     }
                 }
                 app.kyty_refresh_settings();
@@ -252,7 +252,7 @@ impl App {
     /// Start the new version in place of this one (keeps the same window position/flags).
     pub fn app_restart(&mut self) {
         if !self.live.is_empty() {
-            self.toast("Finish your game first", "The launcher restarts when no game is running.", 0);
+            self.toast_app("Finish your game first", "The launcher can restart once no game is running.", 0);
             return;
         }
         let Ok(exe) = std::env::current_exe() else { return };
@@ -271,7 +271,7 @@ impl App {
         crate::log!("restarting into the new version");
         use std::os::unix::process::CommandExt;
         let err = Command::new(&exe).args(&args).env_remove("PS5_LAUNCHER_PRETEND_VERSION").exec();
-        self.toast("Could not restart", &err.to_string(), 2);
+        self.toast_app("Couldn't restart", &err.to_string(), 2);
     }
 }
 

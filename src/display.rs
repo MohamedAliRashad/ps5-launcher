@@ -42,14 +42,6 @@ pub fn pick(mons: &[Monitor], pref: &str) -> Option<Monitor> {
         .cloned()
 }
 
-/// UI is designed for 1920×1080 logical pixels; scale it to fill the monitor.
-pub fn scale_for(m: Option<&Monitor>) -> f32 {
-    match m {
-        Some(m) => (m.w as f32 / 1920.0).min(m.h as f32 / 1080.0).max(0.5),
-        None => 1.0,
-    }
-}
-
 /// Put the window on one monitor (never spanning two) and make it borderless fullscreen.
 /// The native window only exists once the event loop runs, so this retries until the window
 /// is there and the window manager has actually made it fullscreen.

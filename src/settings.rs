@@ -212,7 +212,7 @@ impl App {
         }
         let (_, h) = self.logical_size();
         let max = (y + 120.0 - h).max(0.0);
-        self.ui().set_settings_y(-(target - h * 0.4).clamp(0.0, max));
+        self.ui().set_settings_y(-(target - h * 0.4).clamp(0.0, max) * self.scale);
     }
 
     fn save_cfg(&mut self, f: impl FnOnce(&mut crate::config::Config)) {
@@ -300,7 +300,7 @@ impl App {
             SId::RawgRemove => {
                 self.save_cfg(|c| c.rawg_key.clear());
                 self.rawg_status.clear();
-                self.toast("RAWG key removed", "", 1);
+                self.toast("RAWG key removed", "Artwork from RAWG stays until the next refresh.", 1);
                 self.refresh_settings();
                 let first = self.settings_ids.iter().position(|s| *s == SId::Rawg).unwrap_or(0);
                 self.set_focus(Z_SETTINGS, first as i32);
@@ -345,14 +345,14 @@ impl App {
             SId::Refresh => {
                 audio::play(Sound::Select);
                 self.start_sync();
-                self.toast("Refreshing catalog…", "", 0);
+                self.toast("Refreshing the catalog…", "New games appear as soon as it's done.", 0);
                 self.refresh_settings();
             }
             SId::Rescan => {
                 audio::play(Sound::Select);
                 self.rescan_library();
                 let n = self.locals.len();
-                self.toast(&format!("{n} installed game{} found", if n == 1 { "" } else { "s" }), "", 1);
+                self.toast("Installed games rescanned", &format!("{n} game{} found.", if n == 1 { "" } else { "s" }), 1);
                 self.refresh_settings();
             }
             SId::Quit => {
@@ -370,14 +370,14 @@ impl App {
                 self.save_cfg(|c| c.emulator = t);
                 self.kyty_refresh_version();
                 let ok = self.cfg.lock().unwrap().emulator_ok();
-                self.toast(if ok { "Emulator path saved" } else { "Emulator not found at that path" }, "", if ok { 1 } else { 2 });
+                if ok { self.toast("Emulator path saved", "Games will start with this KytyPS5.", 1) } else { self.toast("Emulator not found", "There's no runnable kyty_emulator at that path.", 2) }
             }
             SId::Dirs => {
                 let dirs: Vec<String> = t.split([';', '\n']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
                 self.save_cfg(|c| c.game_dirs = dirs);
                 self.rescan_library();
                 let n = self.locals.len();
-                self.toast(&format!("{n} installed game{} found", if n == 1 { "" } else { "s" }), "", 1);
+                self.toast("Installed games rescanned", &format!("{n} game{} found.", if n == 1 { "" } else { "s" }), 1);
             }
             SId::Extra => self.save_cfg(|c| c.extra_args = t),
             SId::Rawg => {
@@ -393,12 +393,12 @@ impl App {
                             if err.is_empty() {
                                 app.save_cfg(|c| c.rawg_key = t);
                                 app.rawg_status.clear();
-                                app.toast("RAWG key verified and saved", "Fetching missing artwork in the background", 1);
+                                app.toast("RAWG key saved", "Missing artwork is downloading in the background.", 1);
                                 app.start_enrich();
                             } else {
                                 app.rawg_status = err.clone();
                                 app.rawg_status_kind = 2;
-                                app.toast("RAWG key not saved", &err, 2);
+                                app.toast("RAWG key not saved", &format!("{err}."), 2);
                                 audio::play(Sound::Error);
                             }
                             if app.overlay == Overlay::Settings {
@@ -421,7 +421,7 @@ impl App {
             self.toast(&format!("Moves to {label} next time"), "The launcher can't restart while a game is running.", 0);
             return;
         }
-        self.toast(&format!("Moving to {label}…"), "", 0);
+        self.toast(&format!("Moving to {label}…"), "The launcher restarts on that display.", 0);
         slint::Timer::single_shot(std::time::Duration::from_millis(600), || with_app(|app| app.app_restart()));
     }
 }

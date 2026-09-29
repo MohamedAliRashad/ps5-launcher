@@ -100,7 +100,7 @@ impl App {
                         crate::log!("KytyPS5 update check failed: {e}");
                         app.kyty.error = format!("Update check failed: {e}");
                         if manual {
-                            app.toast("Could not check for KytyPS5 updates", &e, 2);
+                            app.toast("Couldn't check for KytyPS5 updates", &e, 2);
                         }
                         if app.kyty.force_install {
                             app.kyty.force_install = false;
@@ -136,7 +136,7 @@ impl App {
                     self.kyty_install(rel);
                 }
             } else if manual {
-                self.toast("KytyPS5 is up to date", &kyty::pretty(&rel.tag), 1);
+                self.toast("KytyPS5 is up to date", &format!("You have the latest build, {}.", kyty::pretty(&rel.tag)), 1);
             }
         } else if !emulator_ok {
             // Fresh machine: fetch the emulator so games can be played right away.
@@ -145,9 +145,9 @@ impl App {
             }
         } else if manual {
             if self.kyty_update_available() {
-                self.toast("A newer official KytyPS5 build is available", "Use “Switch to official KytyPS5 builds” to get automatic updates.", 0);
+                self.toast("Newer KytyPS5 build available", "To get it, and future updates automatically, choose Switch to official KytyPS5 builds.", 0);
             } else {
-                self.toast("Your KytyPS5 build is the latest", &kyty::pretty(&rel.tag), 1);
+                self.toast("Your KytyPS5 is up to date", &format!("The latest official build is {}.", kyty::pretty(&rel.tag)), 1);
             }
         }
     }
@@ -159,7 +159,7 @@ impl App {
         }
         if !self.live.is_empty() {
             self.kyty.pending = true;
-            self.toast("KytyPS5 update ready", "It will install when you finish playing.", 0);
+            self.toast("KytyPS5 update waiting", "It installs when you finish playing.", 0);
             self.boot_kyty_done("KytyPS5 update will install after your game");
             return;
         }
@@ -201,11 +201,11 @@ impl App {
                             c.save();
                         }
                         let sub = if imported > 0 { "Your saves and shader caches were copied over.".to_string() } else { String::new() };
-                        let title = if was_managed { "KytyPS5 updated to" } else { "KytyPS5 installed:" };
+                        let title = if was_managed { "KytyPS5 updated" } else { "KytyPS5 installed" };
                         if app.boot.active {
                             app.boot_kyty_done(&format!("KytyPS5 {} ready", kyty::pretty(&rel.tag)));
                         } else {
-                            app.toast(&format!("{title} {}", kyty::pretty(&rel.tag)), &sub, 1);
+                            app.toast(title, &format!("Now on build {}.{}", kyty::pretty(&rel.tag), if sub.is_empty() { String::new() } else { format!(" {sub}") }), 1);
                         }
                     }
                     Err(e) => {
@@ -233,10 +233,10 @@ impl App {
     pub fn kyty_rollback(&mut self) {
         match kyty::rollback() {
             Ok(tag) => {
-                self.toast("Rolled back KytyPS5", &kyty::pretty(&tag), 1);
+                self.toast("KytyPS5 rolled back", &format!("Now on build {}.", kyty::pretty(&tag)), 1);
                 self.kyty_refresh_version();
             }
-            Err(e) => self.toast("Could not roll back", &e, 2),
+            Err(e) => self.toast("Couldn't roll back", &e, 2),
         }
     }
 
@@ -256,7 +256,7 @@ impl App {
                                 app.kyty.latest = Some(rel.clone());
                                 app.kyty_install(rel);
                             }
-                            Err(e) => app.toast("Could not reach GitHub", &e, 2),
+                            Err(e) => app.toast("Couldn't reach GitHub", &e, 2),
                         }
                     });
                 });

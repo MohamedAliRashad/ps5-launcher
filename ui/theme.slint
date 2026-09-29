@@ -6,6 +6,12 @@ import "../assets/fonts/Inter-Medium.ttf";
 import "../assets/fonts/Inter-SemiBold.ttf";
 import "../assets/fonts/Inter-Bold.ttf";
 
+// UI scale: the layout is designed on a 1920×1080 canvas; k maps it to the real window
+// (set from Rust on every resize, so any screen size or monitor works).
+export global S {
+    in property <float> k: 1.0;
+}
+
 export global Theme {
     out property <color> bg: #05070f;
     out property <color> panel: #121a31;
@@ -49,6 +55,8 @@ export global Icons {
     out property <image> check: @image-url("../assets/icons/check.svg");
     out property <image> folder: @image-url("../assets/icons/folder.svg");
     out property <image> log: @image-url("../assets/icons/log.svg");
+    out property <image> alert: @image-url("../assets/icons/alert.svg");
+    out property <image> app: @image-url("../assets/icons/app-icon.svg");
     out property <image> spinner: @image-url("../assets/icons/spinner.svg");
     out property <image> none;
 
@@ -152,6 +160,7 @@ export struct SettingData {
     danger: bool,
 }
 
-export struct ToastData { id: int, text: string, sub: string, kind: int } // kind 0 info, 1 ok, 2 error
+// kind 0 info, 1 ok, 2 error. image: a picture for the icon tile (app or game icon), if any.
+export struct ToastData { id: int, text: string, sub: string, kind: int, image: image, has-image: bool, app: bool }
 export struct MenuItem { label: string, icon: string }
 export struct RunningData { active: bool, name: string, time: string }

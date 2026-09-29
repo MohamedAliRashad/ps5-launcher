@@ -246,8 +246,9 @@ user that access; if yours doesn't, add yourself to the `input` group.
   the emulator to quit.
 - **A game exits right away:** open **Options → View emulator log**. Most boot problems come
   from Kyty itself; see its [compatibility list](https://kytyps5.github.io/).
-- **The UI is too big or too small:** it scales to the chosen display. To override the scale,
-  set `SLINT_SCALE_FACTOR`, for example `SLINT_SCALE_FACTOR=1.5 ps5-launcher`.
+- **The UI is too big or too small:** it scales itself to the window, on any screen size or
+  shape. To make everything larger or smaller, set a multiplier, for example
+  `PS5_LAUNCHER_SCALE=1.15 ps5-launcher`.
 - **Reset everything:** `rm -rf ~/.config/ps5-launcher ~/.cache/ps5-launcher`
 
 ## Building by hand
@@ -255,6 +256,13 @@ user that access; if yours doesn't, add yourself to the `input` group.
 ```bash
 cargo build --release            # binary: target/release/ps5-launcher
 cargo test --release             # unit tests
+```
+
+To check every screen at 8 screen sizes (720p to 4K, 16:10 and ultrawide) under a real window
+manager (needs Xvfb, xfwm4, xdotool and ImageMagick):
+
+```bash
+scripts/ui_matrix.py                    # writes dist/ui-matrix/sheet-<size>.png
 ```
 
 To regenerate the README demo after UI changes (needs Xvfb, xdotool, ffmpeg and ImageMagick):

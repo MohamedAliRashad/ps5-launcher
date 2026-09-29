@@ -140,6 +140,7 @@ pub struct App {
     pub live: Vec<Session>,
     pub images: images::Store,
     pub monitors: Vec<Monitor>,
+    /// Design-canvas → window scale (see present.rs update_scale).
     pub scale: f32,
 
     pub view: i32,
@@ -246,7 +247,7 @@ fn post(f: impl FnOnce(&mut App) + Send + 'static) {
 
 // ====================================================================== startup
 
-pub fn run(ui: AppWindow, monitors: Vec<Monitor>, scale: f32, target_monitor: Option<Monitor>, windowed: bool) {
+pub fn run(ui: AppWindow, monitors: Vec<Monitor>, target_monitor: Option<Monitor>, windowed: bool) {
     let cfg = Arc::new(Mutex::new(Config::load()));
     audio::init();
     audio::set_enabled(cfg.lock().unwrap().sounds);
@@ -269,7 +270,7 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, scale: f32, target_monitor: Op
         live: Vec::new(),
         images: images::Store::new(pool, 200),
         monitors,
-        scale,
+        scale: 1.0,
         view: 0,
         overlay: Overlay::None,
         zone: Z_ROW,
@@ -384,8 +385,12 @@ fn wire_callbacks(ui: &AppWindow) {
     });
     ui.on_grid_scrolled(|| with_app(|app| app.push_grid_window()));
     ui.on_resized(|| with_app(|app| {
+        app.update_scale();
         app.relayout();
-        app.push_grid();
+        app.push_all();
+        if app.overlay == Overlay::Settings {
+            app.scroll_settings();
+        }
     }));
     ui.on_search_edited(|t| with_app(move |app| app.on_search(t.to_string())));
     ui.on_search_done(|_| with_app(|app| {
@@ -610,7 +615,7 @@ impl App {
                         app.set_catalog(file.games);
                         app.push_all();
                         if !first {
-                            app.toast(&format!("Catalog updated · {} games", app.games.len()), "", 1);
+                            app.toast("Catalog updated", &format!("{} games are in the Library.", app.games.len()), 1);
                         }
                         app.set_status("", false);
                         app.boot_catalog_done();
@@ -618,7 +623,7 @@ impl App {
                     }
                     Err(e) => {
                         app.set_status("", false);
-                        app.toast("Catalog refresh failed", &e, 2);
+                        app.toast("Couldn't refresh the catalog", &e, 2);
                         if app.boot.active {
                             // Offline: don't hold the welcome screen for the catalog or artwork.
                             app.boot.waiting_art = false;
@@ -787,15 +792,13 @@ impl App {
         let after: Vec<u32> = self.live.iter().map(|s| s.pid).collect();
         for e in self.sessions.take_ended() {
             let played = util::fmt_duration(e.played);
-            if e.stopped {
-                self.toast(&format!("{} stopped", e.name), &format!("Played {played}"), 1);
-            } else if let Some(code) = e.exit_code.filter(|c| *c != 0) {
-                let tail: Vec<&str> = e.log_tail.trim().lines().collect();
-                let tail = tail[tail.len().saturating_sub(6)..].join("\n");
-                self.toast(&format!("{} exited with code {code}", e.name), &format!("{tail}\n\nLog: {}", e.log.display()), 2);
+            if let Some(code) = e.exit_code.filter(|c| *c != 0 && !e.stopped) {
+                crate::log!("{} crashed (exit {code}), log: {}", e.name, e.log.display());
+                self.toast_game(&format!("{} stopped unexpectedly", e.name),
+                    &format!("KytyPS5 exited with code {code}. See Options → View emulator log."), 2, &e.game_id);
                 audio::play(Sound::Error);
             } else {
-                self.toast(&format!("{} closed", e.name), &format!("Played {played}"), 1);
+                self.toast_game(&e.name, &format!("Played for {played}"), 1, &e.game_id);
             }
         }
         if before != after {
@@ -1232,7 +1235,7 @@ impl App {
         }
         let cols = self.cols as i64;
         let i = self.idx as i64;
-        let page = (((self.ui().window().size().height as f32 / self.scale) - 262.0) / self.row_h).floor().max(1.0) as i64 * cols;
+        let page = ((self.logical_size().1 - 262.0) / self.row_h).floor().max(1.0) as i64 * cols;
         let j = match a {
             Act::Left => i - 1,
             Act::Right => i + 1,
@@ -1573,13 +1576,13 @@ impl App {
                 if let Some(g) = t.game {
                     let link = self.games[g].g.link.clone();
                     open_url(&link);
-                    self.toast("Opened in your browser", "", 1);
+                    self.toast("Opened in your browser", "The game's web page is in your browser.", 1);
                 }
             }
             "store" => {
                 if let Some(i) = self.target_info(t).filter(|i| !i.store.is_empty()) {
                     open_url(&i.store);
-                    self.toast("Opened the PlayStation Store page", "", 1);
+                    self.toast("Opened in your browser", "The PlayStation Store page is in your browser.", 1);
                 }
             }
             "folder" => {
@@ -1594,14 +1597,14 @@ impl App {
                     if p.is_file() {
                         open_url(&p.to_string_lossy());
                     } else {
-                        self.toast("No log yet", "Play the game once to create a log.", 0);
+                        self.toast("No emulator log yet", "Play the game once to create one.", 0);
                     }
                 }
             }
             "settings" => self.open_settings(),
             "compat" => {
                 open_url(crate::compat::LIST_PAGE);
-                self.toast("Opened the KytyPS5 compatibility list", "", 1);
+                self.toast("Opened in your browser", "The KytyPS5 compatibility list is in your browser.", 1);
             }
             _ => {}
         }
@@ -1610,7 +1613,7 @@ impl App {
     pub fn launch(&mut self, l: usize) {
         if let Some(s) = self.live.first() {
             let name = s.name.clone();
-            self.toast(&format!("{name} is already running"), "Stop it first, or choose Resume.", 2);
+            self.toast(&format!("{name} is already running"), "Stop it first, or choose Resume to go back to it.", 2);
             audio::play(Sound::Error);
             return;
         }
@@ -1629,7 +1632,7 @@ impl App {
             }
             Err(e) => {
                 audio::play(Sound::Error);
-                self.toast("Could not start the game", &e, 2);
+                self.toast("Couldn't start the game", &e, 2);
             }
         }
     }
@@ -1641,14 +1644,14 @@ impl App {
         };
         if let Some(s) = s {
             audio::play(Sound::Back);
-            self.toast(&format!("Stopping {}…", s.name), "", 0);
+            self.toast_game(&format!("Stopping {}…", s.name), "Closing the game and saving KytyPS5's caches.", 0, &s.game_id.clone());
             self.sessions.stop(s.pid);
         }
     }
 
     pub fn resume_game(&mut self) {
         if !self.sessions.resume() {
-            self.toast("Could not switch to the game", "Its window was not found (is xdotool installed?)", 2);
+            self.toast("Couldn't switch to the game", "Its window wasn't found. Resume needs xdotool installed.", 2);
         }
     }
 
@@ -1668,11 +1671,11 @@ impl App {
         match crate::display::play_video(&url, &monitor) {
             Some(child) => {
                 self.trailer = Some(child);
-                self.toast("Playing trailer", if self.pad_hints { "Press ○ to close" } else { "Press Q or Esc in the player to close" }, 0);
+                self.toast("Playing trailer", if self.pad_hints { "Press ○ to close it." } else { "Press Q or Esc in the player to close it." }, 0);
             }
             None => {
                 open_url(&url);
-                self.toast("Opened the trailer in your browser", "Install mpv for in-launcher fullscreen trailers.", 0);
+                self.toast("Opened the trailer in your browser", "Install mpv to play trailers fullscreen in the launcher.", 0);
             }
         }
     }
@@ -1800,14 +1803,41 @@ impl App {
     // ------------------------------------------------------------------ toasts / status
 
     pub fn toast(&mut self, text: &str, sub: &str, kind: i32) {
+        self.toast_full(text, sub, kind, None, false);
+    }
+
+    /// Notification with the launcher's own icon (updates).
+    pub fn toast_app(&mut self, text: &str, sub: &str, kind: i32) {
+        self.toast_full(text, sub, kind, None, true);
+    }
+
+    /// Notification with a game's tile as its icon.
+    pub fn toast_game(&mut self, text: &str, sub: &str, kind: i32, game_id: &str) {
+        let img = self.locals.iter().position(|l| l.l.id == game_id)
+            .and_then(|l| self.tile_req(RowItem::Local(l)))
+            .and_then(|r| self.images.get(&r.key));
+        self.toast_full(text, sub, kind, img, false);
+    }
+
+    pub fn toast_full(&mut self, text: &str, sub: &str, kind: i32, image: Option<slint::Image>, app: bool) {
         self.toast_seq += 1;
         let id = self.toast_seq;
-        self.toasts.push(ToastData { id, text: text.into(), sub: sub.into(), kind });
-        if self.toasts.len() > 4 {
+        self.toasts.push(ToastData {
+            id,
+            text: text.into(),
+            sub: sub.into(),
+            kind,
+            has_image: image.is_some(),
+            image: image.unwrap_or_default(),
+            app,
+        });
+        if self.toasts.len() > 3 {
             self.toasts.remove(0);
         }
         self.push_toasts();
-        let ms = if kind == 2 { 9000 } else { 3500 };
+        // Long enough to read: ~4 s plus reading time for the message; errors stay longer.
+        let chars = (text.chars().count() + sub.chars().count()) as u64;
+        let ms = (3500 + chars * 45).clamp(4000, 10000).max(if kind == 2 { 8000 } else { 0 });
         slint::Timer::single_shot(Duration::from_millis(ms), move || {
             with_app(move |app| {
                 app.toasts.retain(|t| t.id != id);

@@ -1,20 +1,20 @@
-import { Theme, Icons, ChipData, ActionData } from "theme.slint";
+import { S, Theme, Icons, ChipData, ActionData } from "theme.slint";
 
 // White focus ring with a soft blue halo, drawn around its parent.
 export component FocusRing inherits Rectangle {
-    in property <length> radius: 16px;
+    in property <length> radius: (16px * S.k);
     in property <bool> on;
     in property <length> w;
     in property <length> h;
-    x: -4px;
-    y: -4px;
-    width: w + 8px;
-    height: h + 8px;
-    border-radius: self.radius + 4px;
-    border-width: 4px;
+    x: -(4px * S.k);
+    y: -(4px * S.k);
+    width: w + (8px * S.k);
+    height: h + (8px * S.k);
+    border-radius: self.radius + (4px * S.k);
+    border-width: (4px * S.k);
     border-color: Theme.ring;
     opacity: self.on ? 1 : 0;
-    drop-shadow-blur: self.on ? 18px : 0;
+    drop-shadow-blur: self.on ? (18px * S.k) : 0;
     drop-shadow-color: Theme.glow;
     animate opacity { duration: Theme.fast; }
 }
@@ -22,8 +22,8 @@ export component FocusRing inherits Rectangle {
 // Five stars filled to `score` (e.g. 3.74 → three full stars and most of the fourth).
 export component Stars inherits HorizontalLayout {
     in property <float> score;
-    in property <length> size: 17px;
-    spacing: 2px;
+    in property <length> size: (17px * S.k);
+    spacing: (2px * S.k);
     for i in [0, 1, 2, 3, 4]: Rectangle {
         width: root.size;
         height: root.size;
@@ -43,13 +43,13 @@ export component KeyCap inherits Rectangle {
     in property <bool> round;
     in property <color> fg: #ffffff;
     in property <color> bg: #ffffff24;
-    height: 30px;
-    width: round ? 30px : max(30px, t.preferred-width + 16px);
-    border-radius: round ? 15px : 8px;
+    height: (30px * S.k);
+    width: round ? (30px * S.k) : max((30px * S.k), t.preferred-width + (16px * S.k));
+    border-radius: round ? (15px * S.k) : (8px * S.k);
     background: bg;
     border-width: 1px;
     border-color: #ffffff1f;
-    t := Text { text: root.text; font-size: 14px; font-weight: 700; color: root.fg; }
+    t := Text { text: root.text; font-size: (14px * S.k); font-weight: 700; color: root.fg; }
 }
 
 // "‹ Back  [Esc]": a visible way out of overlays, for mouse and keyboard users alike.
@@ -57,20 +57,20 @@ export component BackButton inherits Rectangle {
     in property <bool> pad;
     callback clicked();
     width: row.preferred-width;
-    height: 48px;
-    border-radius: 24px;
+    height: (48px * S.k);
+    border-radius: (24px * S.k);
     background: ta.has-hover ? #ffffff2e : #0b1020c8;
     border-width: 1px;
     border-color: #ffffff26;
     animate background { duration: 120ms; }
     row := HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 10px;
-        spacing: 10px;
+        padding-left: (12px * S.k);
+        padding-right: (10px * S.k);
+        spacing: (10px * S.k);
         alignment: center;
-        Image { source: Icons.chevl; colorize: #ffffff; width: 26px; height: 26px; y: 11px; }
-        Text { text: "Back"; font-size: 19px; font-weight: 600; color: #ffffff; vertical-alignment: center; }
-        KeyCap { text: root.pad ? "○" : "Esc"; round: root.pad; fg: root.pad ? #ff8f9c : #ffffff; y: 9px; }
+        Image { source: Icons.chevl; colorize: #ffffff; width: (26px * S.k); height: (26px * S.k); y: (11px * S.k); }
+        Text { text: "Back"; font-size: (19px * S.k); font-weight: 600; color: #ffffff; vertical-alignment: center; }
+        KeyCap { text: root.pad ? "○" : "Esc"; round: root.pad; fg: root.pad ? #ff8f9c : #ffffff; y: (9px * S.k); }
     }
     ta := TouchArea {
         mouse-cursor: pointer;
@@ -80,37 +80,37 @@ export component BackButton inherits Rectangle {
 
 export component Chip inherits Rectangle {
     in property <ChipData> data;
-    height: 40px;
-    border-radius: 20px;
+    height: (40px * S.k);
+    border-radius: (20px * S.k);
     background: #ffffff17;
     border-width: 1px;
     border-color: #ffffff12;
     HorizontalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
-        spacing: 8px;
+        padding-left: (16px * S.k);
+        padding-right: (16px * S.k);
+        spacing: (8px * S.k);
         if data.stars > 0: Stars {
             score: data.stars;
             y: (parent.height - self.preferred-height) / 2;
         }
         if data.dot > 0: Rectangle {
-            width: 10px;
-            height: 10px;
+            width: (10px * S.k);
+            height: (10px * S.k);
             y: (parent.height - self.height) / 2;
-            border-radius: 5px;
+            border-radius: (5px * S.k);
             background: Theme.compat-color(data.dot);
         }
         if data.icon != "": Image {
             source: Icons.get(data.icon);
             colorize: data.gold ? #ffc940 : Theme.text2;
-            width: 18px;
-            height: 18px;
+            width: (18px * S.k);
+            height: (18px * S.k);
             y: (parent.height - self.height) / 2;
         }
         Text {
             text: data.text;
             color: Theme.text;
-            font-size: 17px;
+            font-size: (17px * S.k);
             vertical-alignment: center;
         }
     }
@@ -119,39 +119,47 @@ export component Chip inherits Rectangle {
 export component Btn inherits Rectangle {
     in property <ActionData> data;
     in property <bool> focused;
-    in property <length> h: 68px;
+    // Another button in the same row is selected: the primary button steps back so only one
+    // button ever looks selected.
+    in property <bool> dim;
+    in property <length> h: (68px * S.k);
+    property <bool> solid: focused || (data.primary && !dim);
     callback clicked();
+    // Icon-only buttons show their label when selected or hovered.
+    property <bool> open: !data.round || focused || ta.has-hover;
     height: h;
-    width: data.round ? h : max(data.primary ? 240px : 0px, row.preferred-width);
+    width: !open ? h : max(data.primary ? (240px * S.k) : (0px * S.k), row.preferred-width);
+    clip: true;
+    animate width { duration: Theme.move; easing: cubic-bezier(0.2, 0.8, 0.2, 1); }
     border-radius: h / 2;
     background: focused ? (data.danger ? Theme.danger : #ffffff)
-        : data.primary ? #ffffffeb : data.danger ? #ff5a6a2e : #ffffff24;
+        : data.primary && !dim ? #ffffffeb : data.danger ? #ff5a6a2e : data.primary ? #ffffff38 : #ffffff24;
     border-width: 1px;
     border-color: data.danger && !focused ? #ff5a6a5a : #ffffff1a;
-    drop-shadow-blur: focused ? 28px : 0;
+    drop-shadow-blur: focused ? (28px * S.k) : 0;
     drop-shadow-color: focused ? #8cb9ffaa : transparent;
     animate background, drop-shadow-blur { duration: Theme.fast; }
     row := HorizontalLayout {
         alignment: center;
-        padding-left: data.round ? 0 : 36px;
-        padding-right: data.round ? 0 : 36px;
-        spacing: 12px;
+        padding-left: !open ? 0 : data.round ? (22px * S.k) : (36px * S.k);
+        padding-right: !open ? 0 : data.round ? (26px * S.k) : (36px * S.k);
+        spacing: (12px * S.k);
         Image {
             source: Icons.get(data.icon);
-            colorize: (focused && !data.danger) || (data.primary && !focused) ? #0a0d18 : #ffffff;
-            width: 26px;
-            height: 26px;
+            colorize: solid && !(focused && data.danger) ? #0a0d18 : #ffffff;
+            width: (26px * S.k);
+            height: (26px * S.k);
             y: (parent.height - self.height) / 2;
         }
-        if !data.round: Text {
+        if open: Text {
             text: data.label;
-            font-size: 22px;
+            font-size: (22px * S.k);
             font-weight: 600;
-            color: (focused && !data.danger) || (data.primary && !focused) ? #0a0d18 : #ffffff;
+            color: solid && !(focused && data.danger) ? #0a0d18 : #ffffff;
             vertical-alignment: center;
         }
     }
-    TouchArea {
+    ta := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
@@ -162,28 +170,28 @@ export component Kicker inherits HorizontalLayout {
     in property <string> text;
     in property <string> accent;
     in property <bool> live;
-    spacing: 12px;
+    spacing: (12px * S.k);
     alignment: start;
     Rectangle {
         background: #ffffff24;
-        border-radius: 6px;
-        width: ps.preferred-width + 18px;
-        height: 30px;
-        ps := Text { text: "PS5"; font-size: 17px; font-weight: 700; color: #ffffff; }
+        border-radius: (6px * S.k);
+        width: ps.preferred-width + (18px * S.k);
+        height: (30px * S.k);
+        ps := Text { text: "PS5"; font-size: (17px * S.k); font-weight: 700; color: #ffffff; }
     }
     if accent != "": Text {
         text: accent;
-        font-size: 18px;
+        font-size: (18px * S.k);
         font-weight: 600;
-        letter-spacing: 2px;
+        letter-spacing: (2px * S.k);
         color: Theme.ok;
         vertical-alignment: center;
     }
     Text {
         text: root.text;
-        font-size: 18px;
+        font-size: (18px * S.k);
         font-weight: 600;
-        letter-spacing: 2px;
+        letter-spacing: (2px * S.k);
         color: live ? Theme.text : Theme.text2;
         vertical-alignment: center;
     }
@@ -191,34 +199,34 @@ export component Kicker inherits HorizontalLayout {
 
 export component Badge inherits Rectangle {
     in property <string> text;
-    in property <length> size: 13px;
+    in property <length> size: (13px * S.k);
     visible: text != "";
-    width: label.preferred-width + 16px;
-    height: label.preferred-height + 6px;
-    border-radius: 6px;
+    width: label.preferred-width + (16px * S.k);
+    height: label.preferred-height + (6px * S.k);
+    border-radius: (6px * S.k);
     background: text == "Installed" ? Theme.ok : text == "Playing" ? Theme.ok : text == "New" ? Theme.accent : #000000b8;
     label := Text {
         text: root.text == "Playing" ? "● PLAYING" : root.text == "Installed" ? "INSTALLED" : root.text == "New" ? "NEW" : root.text;
         font-size: size;
         font-weight: 700;
-        letter-spacing: 1px;
+        letter-spacing: (1px * S.k);
         color: root.text == "Installed" || root.text == "Playing" ? #03140c : #ffffff;
     }
 }
 
 export component Switch inherits Rectangle {
     in property <bool> on;
-    width: 58px;
-    height: 32px;
-    border-radius: 16px;
+    width: (58px * S.k);
+    height: (32px * S.k);
+    border-radius: (16px * S.k);
     background: on ? Theme.accent : #ffffff33;
     animate background { duration: Theme.fast; }
     Rectangle {
-        x: on ? 30px : 4px;
-        y: 4px;
-        width: 24px;
-        height: 24px;
-        border-radius: 12px;
+        x: on ? (30px * S.k) : (4px * S.k);
+        y: (4px * S.k);
+        width: (24px * S.k);
+        height: (24px * S.k);
+        border-radius: (12px * S.k);
         background: #ffffff;
         animate x { duration: Theme.move; easing: cubic-bezier(0.2, 0.8, 0.2, 1); }
     }

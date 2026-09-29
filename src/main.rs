@@ -67,10 +67,10 @@ fn main() {
     let cfg = config::Config::load();
     let mons = display::monitors();
     let target = display::pick(&mons, monitor.as_deref().unwrap_or(&cfg.monitor));
-    // Lay the UI out on a 1920×1080 canvas scaled to the chosen display.
-    let scale = display::scale_for(target.as_ref()) * if windowed { 0.8 } else { 1.0 };
+    // The UI scales itself to the window (see App::update_scale); keep the toolkit at 1:1 so
+    // window sizes are never changed behind our back.
     if std::env::var_os("SLINT_SCALE_FACTOR").is_none() {
-        std::env::set_var("SLINT_SCALE_FACTOR", format!("{scale:.4}"));
+        std::env::set_var("SLINT_SCALE_FACTOR", "1");
     }
     // Only the winit backend is compiled in; make sure Slint picks the OpenGL renderer.
     if std::env::var_os("SLINT_BACKEND").is_none() {
@@ -78,5 +78,5 @@ fn main() {
     }
 
     let ui = AppWindow::new().expect("could not create the window (is a graphical session running?)");
-    app::run(ui, mons, scale, target, windowed);
+    app::run(ui, mons, target, windowed);
 }

@@ -1,41 +1,58 @@
-import { Theme, Icons, Zone, ChipData, ActionData, TileData, HeroData, CardData, CardRow, GenreChip, Fact, FactRow, Shot, HubData, SettingData, ToastData, MenuItem, RunningData } from "theme.slint";
+import { S, Theme, Icons, Zone, ChipData, ActionData, TileData, HeroData, CardData, CardRow, GenreChip, Fact, FactRow, Shot, HubData, SettingData, ToastData, MenuItem, RunningData } from "theme.slint";
 import { FocusRing, Chip, Btn, Kicker, Badge, Switch, KeyCap, BackButton } from "widgets.slint";
 
-export { Theme, Zone }
+export { S, Theme, Zone }
 
+// Notification card (PS5-style): icon tile, title, message. Slides in from the right.
 component Toast inherits Rectangle {
     in property <ToastData> data;
     property <bool> shown: false;
+    property <color> tint: data.kind == 1 ? Theme.ok : data.kind == 2 ? Theme.danger : #3d8bff;
     init => { shown = true; }
-    width: min(620px, body.preferred-width + 60px);
-    height: body.preferred-height + 36px;
-    border-radius: 16px;
-    background: #161e38f5;
+    width: (440px * S.k);
+    height: max((84px * S.k), body.preferred-height + (36px * S.k));
+    border-radius: (18px * S.k);
+    background: #141c33fa;
     border-width: 1px;
-    border-color: Theme.line;
-    drop-shadow-blur: 30px;
-    drop-shadow-color: #00000080;
+    border-color: #ffffff1f;
+    drop-shadow-blur: (36px * S.k);
+    drop-shadow-offset-y: (10px * S.k);
+    drop-shadow-color: #00000099;
     opacity: shown ? 1 : 0;
-    animate opacity { duration: 220ms; }
+    animate opacity { duration: 220ms; easing: ease-out; }
+    // Icon tile: a real picture when we have one, otherwise a tinted symbol.
     Rectangle {
-        x: 22px;
-        y: 26px;
-        width: 12px;
-        height: 12px;
-        border-radius: 6px;
-        background: data.kind == 1 ? Theme.ok : data.kind == 2 ? Theme.danger : #3d8bff;
+        x: (18px * S.k);
+        y: (18px * S.k);
+        width: (48px * S.k);
+        height: (48px * S.k);
+        border-radius: (13px * S.k);
+        clip: true;
+        background: data.has-image || data.app ? #00000000 : root.tint.with-alpha(0.18);
+        if data.app: Image { source: Icons.app; width: parent.width; height: parent.height; }
+        if data.has-image && !data.app: Image { source: data.image; width: parent.width; height: parent.height; image-fit: cover; }
+        if !data.has-image && !data.app: Image {
+            source: data.kind == 1 ? Icons.check : data.kind == 2 ? Icons.alert : Icons.info;
+            colorize: root.tint;
+            width: (26px * S.k);
+            height: (26px * S.k);
+        }
     }
     body := VerticalLayout {
-        x: 48px;
-        y: 18px;
-        width: parent.width - 70px;
-        spacing: 4px;
-        Text { text: data.text; font-size: 19px; color: Theme.text; wrap: word-wrap; }
+        x: (82px * S.k);
+        y: (18px * S.k);
+        width: parent.width - (82px * S.k) - (22px * S.k);
+        height: parent.height - (36px * S.k);
+        alignment: center;
+        spacing: (3px * S.k);
+        Text { text: data.text; font-size: (18px * S.k); font-weight: 600; color: Theme.text; wrap: word-wrap; }
         if data.sub != "": Text {
             text: data.sub;
-            font-size: 15px;
-            color: Theme.text3;
+            font-size: (15px * S.k);
+            color: Theme.text2;
             wrap: word-wrap;
+            max-height: (120px * S.k);
+            overflow: elide;
         }
     }
 }
@@ -45,7 +62,7 @@ export component AppWindow inherits Window {
     icon: @image-url("../assets/icons/app-icon.svg");
     background: Theme.bg;
     default-font-family: "Inter";
-    default-font-size: 22px;
+    default-font-size: (22px * S.k);
     // No preferred size: the window's size comes from the window manager / place_window, and the
     // UI scale follows it (see App::fit_scale). A preferred size would fight every rescale.
     min-width: 640px;
@@ -171,15 +188,15 @@ export component AppWindow inherits Window {
             animate opacity { duration: 220ms; }
 
             // Tile row: the selected tile is larger with its name beside it (PS5 home).
-            property <length> big: 172px;
-            property <length> small: 112px;
-            property <length> gap: 22px;
-            property <length> x0: 96px;
-            property <length> label-w: min(560px, max(row-name-t.preferred-width, row-sub-t.preferred-width)) + gap * 2.6;
+            property <length> big: (172px * S.k);
+            property <length> small: (112px * S.k);
+            property <length> gap: (22px * S.k);
+            property <length> x0: (96px * S.k);
+            property <length> label-w: min((560px * S.k), max(row-name-t.preferred-width, row-sub-t.preferred-width)) + gap * 2.6;
 
             Rectangle {
-                y: 128px;
-                height: 210px;
+                y: (128px * S.k);
+                height: (210px * S.k);
                 for t[i] in root.tiles: Rectangle {
                     x: i < root.sel ? home.x0 - (root.sel - i) * (home.small + home.gap) - home.gap
                         : i == root.sel ? home.x0 : home.x0 + home.big + home.label-w + (i - root.sel - 1) * (home.small + home.gap);
@@ -187,11 +204,11 @@ export component AppWindow inherits Window {
                     width: i == root.sel ? home.big : home.small;
                     height: self.width;
                     opacity: i < root.sel ? 0 : 1;
-                    visible: self.x < root.width + 40px && i >= root.sel - 2;
+                    visible: self.x < root.width + (40px * S.k) && i >= root.sel - 2;
                     animate x, width, opacity { duration: Theme.move; easing: cubic-bezier(0.2, 0.8, 0.2, 1); }
-                    FocusRing { w: parent.width; h: parent.height; on: i == root.sel && root.zone == Zone.row && root.overlay == 0; radius: 18px; }
+                    FocusRing { w: parent.width; h: parent.height; on: i == root.sel && root.zone == Zone.row && root.overlay == 0; radius: (18px * S.k); }
                     Rectangle {
-                        border-radius: 18px;
+                        border-radius: (18px * S.k);
                         clip: true;
                         background: t.special ? #ffffff1f : Theme.panel;
                         border-width: t.special ? 1px : 0;
@@ -213,14 +230,14 @@ export component AppWindow inherits Window {
                         }
                     }
                     if t.badge != "": Badge {
-                        x: 10px;
-                        y: parent.height - self.height - 10px;
+                        x: (10px * S.k);
+                        y: parent.height - self.height - (10px * S.k);
                         text: t.badge;
-                        size: i == root.sel ? 13px : 10px;
+                        size: i == root.sel ? (13px * S.k) : (10px * S.k);
                     }
                     Rectangle {
-                        border-radius: 18px;
-                        border-width: t.badge == "Playing" ? 3px : 0;
+                        border-radius: (18px * S.k);
+                        border-width: t.badge == "Playing" ? (3px * S.k) : 0;
                         border-color: Theme.ok;
                     }
                     TouchArea {
@@ -232,12 +249,12 @@ export component AppWindow inherits Window {
                     x: home.x0 + home.big + home.gap * 1.2;
                     y: 0;
                     height: home.big;
-                    width: min(560px, max(row-name-t.preferred-width, row-sub-t.preferred-width));
+                    width: min((560px * S.k), max(row-name-t.preferred-width, row-sub-t.preferred-width));
                     VerticalLayout {
                         alignment: center;
-                        spacing: 6px;
-                        row-name-t := Text { text: root.row-name; font-size: 30px; font-weight: 500; color: Theme.text; overflow: elide; }
-                        row-sub-t := Text { text: root.row-sub; font-size: 18px; color: Theme.text2; overflow: elide; }
+                        spacing: (6px * S.k);
+                        row-name-t := Text { text: root.row-name; font-size: (30px * S.k); font-weight: 500; color: Theme.text; overflow: elide; }
+                        row-sub-t := Text { text: root.row-sub; font-size: (18px * S.k); color: Theme.text2; overflow: elide; }
                     }
                 }
                 TouchArea {
@@ -250,14 +267,14 @@ export component AppWindow inherits Window {
 
             // Hero: kicker, logo/title, chips, description, actions (anchored to the bottom).
             VerticalLayout {
-                x: 96px;
-                width: 900px;
-                y: 360px;
-                height: root.height - 360px - 112px;
+                x: (96px * S.k);
+                width: (900px * S.k);
+                y: (360px * S.k);
+                height: root.height - (360px * S.k) - (112px * S.k);
                 alignment: end;
                 spacing: 0;
                 Kicker { text: root.hero.kicker; accent: root.hero.kicker-accent; live: root.hero.kicker-live; }
-                Rectangle { height: 14px; }
+                Rectangle { height: (14px * S.k); }
                 if root.hero.has-logo: Image {
                     source: root.hero.logo;
                     width: root.hero.logo-w;
@@ -266,36 +283,37 @@ export component AppWindow inherits Window {
                 }
                 if !root.hero.has-logo: Text {
                     text: root.hero.title;
-                    font-size: 84px;
+                    font-size: (84px * S.k);
                     font-weight: 700;
                     color: Theme.text;
                     wrap: word-wrap;
                     overflow: elide;
-                    max-height: 180px;
+                    max-height: (180px * S.k);
                 }
-                Rectangle { height: 22px; }
+                Rectangle { height: (22px * S.k); }
                 HorizontalLayout {
-                    spacing: 10px;
+                    spacing: (10px * S.k);
                     alignment: start;
                     for c in root.hero.chips: Chip { data: c; }
                 }
-                Rectangle { height: 20px; }
+                Rectangle { height: (20px * S.k); }
                 Text {
                     text: root.hero.desc;
-                    font-size: 21px;
+                    font-size: (21px * S.k);
                     color: Theme.text2;
                     wrap: word-wrap;
                     overflow: elide;
-                    max-width: 780px;
-                    max-height: 96px;
+                    max-width: (780px * S.k);
+                    max-height: (96px * S.k);
                 }
-                Rectangle { height: 34px; }
+                Rectangle { height: (34px * S.k); }
                 HorizontalLayout {
-                    spacing: 16px;
+                    spacing: (16px * S.k);
                     alignment: start;
                     for a[i] in root.hero.actions: Btn {
                         data: a;
                         focused: root.zone == Zone.actions && root.idx == i && root.overlay == 0;
+                        dim: root.zone == Zone.actions && root.idx != i && root.overlay == 0;
                         clicked => { root.click(Zone.actions, i); }
                     }
                 }
@@ -310,26 +328,26 @@ export component AppWindow inherits Window {
 
             // Grid (virtualized: only rows near the viewport exist).
             grid := Flickable {
-                y: 262px;
-                height: root.height - 262px;
+                y: (262px * S.k);
+                height: root.height - (262px * S.k);
                 width: root.width;
                 content-height: root.grid-h;
                 content-y <=> root.grid-y;
                 interactive: true;
                 changed content-y => { root.grid-scrolled(); }
                 for r in root.grid-rows: Rectangle {
-                    y: r.index * root.row-h + 16px;
+                    y: r.index * root.row-h + (16px * S.k);
                     height: root.row-h;
                     for c[j] in r.cards: Rectangle {
-                        x: 96px + j * (root.card-w + root.grid-gap);
+                        x: (96px * S.k) + j * (root.card-w + root.grid-gap);
                         width: root.card-w;
                         property <bool> f: root.zone == Zone.grid && root.idx == c.index && root.overlay == 0;
                         Rectangle {
                             y: 0;
                             height: root.card-w * 1.5;   // official covers are 2:3
-                            FocusRing { w: parent.width; h: parent.height; on: f; radius: 14px; }
+                            FocusRing { w: parent.width; h: parent.height; on: f; radius: (14px * S.k); }
                             Rectangle {
-                                border-radius: 14px;
+                                border-radius: (14px * S.k);
                                 clip: true;
                                 background: Theme.panel;
                                 Image {
@@ -340,54 +358,53 @@ export component AppWindow inherits Window {
                                     opacity: c.loaded ? 1 : 0;
                                     animate opacity { duration: 250ms; }
                                 }
-                                Badge { x: 10px; y: 10px; text: c.badge; size: 12px; }
+                                Badge { x: (10px * S.k); y: (10px * S.k); text: c.badge; size: (12px * S.k); }
                                 if c.compat != "": Rectangle {
-                                    x: 10px;
-                                    y: parent.height - self.height - 10px;
-                                    width: cp.preferred-width + 30px;
-                                    height: 26px;
-                                    border-radius: 6px;
+                                    x: (10px * S.k);
+                                    y: parent.height - self.height - (10px * S.k);
+                                    width: cp.preferred-width + (30px * S.k);
+                                    height: (26px * S.k);
+                                    border-radius: (6px * S.k);
                                     background: #000000c4;
                                     Rectangle {
-                                        x: 9px;
-                                        width: 8px;
-                                        height: 8px;
-                                        border-radius: 4px;
+                                        x: (9px * S.k);
+                                        width: (8px * S.k);
+                                        height: (8px * S.k);
+                                        border-radius: (4px * S.k);
                                         background: Theme.compat-color(c.compat-level);
                                     }
                                     cp := Text {
-                                        x: 23px;
+                                        x: (23px * S.k);
                                         text: c.compat;
-                                        font-size: 13px;
+                                        font-size: (13px * S.k);
                                         font-weight: 700;
                                         color: #ffffff;
                                     }
                                 }
                                 if c.rating != "": Rectangle {
-                                    x: parent.width - self.width - 10px;
-                                    y: parent.height - self.height - 10px;
-                                    width: rt.preferred-width + 16px;
-                                    height: 26px;
-                                    border-radius: 6px;
+                                    x: parent.width - self.width - (10px * S.k);
+                                    y: parent.height - self.height - (10px * S.k);
+                                    width: rt.preferred-width + (16px * S.k);
+                                    height: (26px * S.k);
+                                    border-radius: (6px * S.k);
                                     background: #000000b8;
-                                    rt := Text { text: "★ " + c.rating; font-size: 14px; font-weight: 700; color: #ffd666; }
+                                    rt := Text { text: "★ " + c.rating; font-size: (14px * S.k); font-weight: 700; color: #ffd666; }
                                 }
                             }
                         }
                         VerticalLayout {
-                            y: root.card-w * 1.5 + 14px;
-                            spacing: 4px;
+                            y: root.card-w * 1.5 + (14px * S.k);
+                            spacing: (4px * S.k);
                             Text {
                                 text: c.title;
-                                font-size: 19px;
+                                font-size: (19px * S.k);
                                 font-weight: f ? 600 : 500;
                                 color: f ? #ffffff : Theme.text;
                                 wrap: word-wrap;
                                 overflow: elide;
-                                height: 48px;
-                                vertical-alignment: top;
+                                max-height: (48px * S.k);
                             }
-                            Text { text: c.meta; font-size: 16px; color: f ? Theme.text2 : Theme.text3; overflow: elide; }
+                            Text { text: c.meta; font-size: (16px * S.k); color: f ? Theme.text2 : Theme.text3; overflow: elide; }
                         }
                         TouchArea {
                             mouse-cursor: pointer;
@@ -397,40 +414,40 @@ export component AppWindow inherits Window {
                 }
             }
             if root.grid-empty != "": Text {
-                y: 420px;
+                y: (420px * S.k);
                 width: root.width;
                 horizontal-alignment: center;
                 text: root.grid-empty;
-                font-size: 24px;
+                font-size: (24px * S.k);
                 color: Theme.text3;
             }
 
             // Header: search, sort, count, genre chips.
             Rectangle {
                 y: 0;
-                height: 262px;
+                height: (262px * S.k);
                 background: @linear-gradient(180deg, #070a14 0%, #070a14 88%, #070a1400 100%);
                 HorizontalLayout {
-                    x: 96px;
-                    y: 112px;
-                    width: root.width - 192px;
-                    height: 62px;
-                    spacing: 18px;
+                    x: (96px * S.k);
+                    y: (112px * S.k);
+                    width: root.width - (192px * S.k);
+                    height: (62px * S.k);
+                    spacing: (18px * S.k);
                     Rectangle {
-                        width: 640px;
-                        border-radius: 31px;
+                        width: (640px * S.k);
+                        border-radius: (31px * S.k);
                         background: root.zone == Zone.search ? #232c47 : #ffffff14;
-                        border-width: root.zone == Zone.search ? 3px : 1px;
+                        border-width: root.zone == Zone.search ? (3px * S.k) : (1px * S.k);
                         border-color: root.zone == Zone.search ? #ffffff : Theme.line;
-                        drop-shadow-blur: root.zone == Zone.search ? 18px : 0;
+                        drop-shadow-blur: root.zone == Zone.search ? (18px * S.k) : 0;
                         drop-shadow-color: #3d8bff66;
-                        Image { x: 24px; source: Icons.search; colorize: Theme.text2; width: 24px; height: 24px; }
+                        Image { x: (24px * S.k); source: Icons.search; colorize: Theme.text2; width: (24px * S.k); height: (24px * S.k); }
                         search-input := TextInput {
-                            x: 62px;
-                            width: parent.width - 86px;
+                            x: (62px * S.k);
+                            width: parent.width - (86px * S.k);
                             height: parent.height;
                             vertical-alignment: center;
-                            font-size: 22px;
+                            font-size: (22px * S.k);
                             color: Theme.text;
                             text <=> root.query;
                             single-line: true;
@@ -438,9 +455,9 @@ export component AppWindow inherits Window {
                             accepted => { root.search-done(true); }
                         }
                         if root.query == "": Text {
-                            x: 62px;
+                            x: (62px * S.k);
                             text: "Search games";
-                            font-size: 22px;
+                            font-size: (22px * S.k);
                             color: Theme.text3;
                             vertical-alignment: center;
                         }
@@ -450,62 +467,62 @@ export component AppWindow inherits Window {
                         }
                     }
                     Rectangle {
-                        width: sort-row.preferred-width + 40px;
-                        border-radius: 31px;
+                        width: sort-row.preferred-width + (40px * S.k);
+                        border-radius: (31px * S.k);
                         background: root.zone == Zone.sort ? #ffffff26 : #ffffff14;
-                        border-width: root.zone == Zone.sort ? 3px : 1px;
+                        border-width: root.zone == Zone.sort ? (3px * S.k) : (1px * S.k);
                         border-color: root.zone == Zone.sort ? #ffffff : Theme.line;
                         sort-row := HorizontalLayout {
-                            spacing: 10px;
+                            spacing: (10px * S.k);
                             alignment: center;
-                            Image { source: Icons.chevl; colorize: Theme.text3; width: 22px; height: 22px; y: (parent.height - 22px) / 2; }
-                            Text { text: root.sort-label; font-size: 20px; color: Theme.text; vertical-alignment: center; }
-                            Image { source: Icons.chevr; colorize: Theme.text3; width: 22px; height: 22px; y: (parent.height - 22px) / 2; }
+                            Image { source: Icons.chevl; colorize: Theme.text3; width: (22px * S.k); height: (22px * S.k); y: (parent.height - (22px * S.k)) / 2; }
+                            Text { text: root.sort-label; font-size: (20px * S.k); color: Theme.text; vertical-alignment: center; }
+                            Image { source: Icons.chevr; colorize: Theme.text3; width: (22px * S.k); height: (22px * S.k); y: (parent.height - (22px * S.k)) / 2; }
                         }
                         TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.sort, 0); } }
                     }
                     Rectangle { horizontal-stretch: 1; }
-                    Text { text: root.count-label; font-size: 19px; color: Theme.text3; vertical-alignment: center; }
+                    Text { text: root.count-label; font-size: (19px * S.k); color: Theme.text3; vertical-alignment: center; }
                 }
                 Flickable {
-                    x: 92px;
-                    y: 192px;
-                    width: root.width - 92px;
-                    height: 52px;
+                    x: (92px * S.k);
+                    y: (192px * S.k);
+                    width: root.width - (92px * S.k);
+                    height: (52px * S.k);
                     content-x: root.genres-x;
                     interactive: false;
                     for g[i] in root.genres: Rectangle {
-                        x: g.x + 4px;
-                        y: 4px;
+                        x: g.x + (4px * S.k);
+                        y: (4px * S.k);
                         width: g.w;
-                        height: 44px;
-                        border-radius: 22px;
+                        height: (44px * S.k);
+                        border-radius: (22px * S.k);
                         property <bool> f: root.zone == Zone.chips && root.idx == i && root.overlay == 0;
                         background: g.on ? #ffffff : #ffffff0f;
-                        border-width: f ? 3px : 1px;
+                        border-width: f ? (3px * S.k) : 1px;
                         border-color: f ? (g.on ? Theme.accent : #ffffff) : Theme.line;
                         HorizontalLayout {
                             alignment: center;
-                            spacing: 6px;
-                            Text { text: g.label; font-size: 18px; color: g.on ? #0a0d18 : (f ? Theme.text : Theme.text2); vertical-alignment: center; }
-                            Text { text: g.count; font-size: 15px; color: g.on ? #56607a : Theme.text3; vertical-alignment: center; }
+                            spacing: (6px * S.k);
+                            Text { text: g.label; font-size: (18px * S.k); color: g.on ? #0a0d18 : (f ? Theme.text : Theme.text2); vertical-alignment: center; }
+                            Text { text: g.count; font-size: (15px * S.k); color: g.on ? #56607a : Theme.text3; vertical-alignment: center; }
                         }
                         TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.chips, i); } }
                     }
                 }
                 // Fades hint that the chip row scrolls.
                 if root.genres-more-right: Rectangle {
-                    x: root.width - 160px;
-                    y: 192px;
-                    width: 160px;
-                    height: 52px;
+                    x: root.width - (160px * S.k);
+                    y: (192px * S.k);
+                    width: (160px * S.k);
+                    height: (52px * S.k);
                     background: @linear-gradient(90deg, #070a1400 0%, #070a14 85%);
                 }
                 if root.genres-x < 0: Rectangle {
                     x: 0;
-                    y: 192px;
-                    width: 150px;
-                    height: 52px;
+                    y: (192px * S.k);
+                    width: (150px * S.k);
+                    height: (52px * S.k);
                     background: @linear-gradient(90deg, #070a14 55%, #070a1400 100%);
                 }
             }
@@ -514,104 +531,104 @@ export component AppWindow inherits Window {
         // ------------------------------------------------------------ TOP BAR
         Rectangle {
             y: 0;
-            height: 104px;
+            height: (104px * S.k);
             HorizontalLayout {
-                x: 96px;
+                x: (96px * S.k);
                 y: 0;
-                height: 104px;
-                spacing: 44px;
+                height: (104px * S.k);
+                spacing: (44px * S.k);
                 alignment: start;
                 for tab[i] in ["Games", "Library"]: Rectangle {
-                    width: tt.preferred-width + 8px;
+                    width: tt.preferred-width + (8px * S.k);
                     property <bool> active: root.view == i;
                     property <bool> f: root.zone == Zone.tabs && root.idx == i && root.overlay == 0;
                     tt := Text {
                         text: tab;
-                        font-size: 30px;
+                        font-size: (30px * S.k);
                         font-weight: 500;
                         color: active || f ? Theme.text : Theme.text3;
                         animate color { duration: Theme.fast; }
                     }
                     Rectangle {
-                        y: parent.height / 2 + 28px;
-                        width: active ? 28px : 0;
-                        height: 3px;
-                        border-radius: 2px;
+                        y: parent.height / 2 + (28px * S.k);
+                        width: active ? (28px * S.k) : 0;
+                        height: (3px * S.k);
+                        border-radius: (2px * S.k);
                         background: #ffffff;
                         animate width { duration: Theme.move; easing: cubic-bezier(0.2, 0.8, 0.2, 1); }
                     }
                     Rectangle {
                         visible: f;
-                        x: -14px;
-                        width: parent.width + 28px;
-                        y: parent.height / 2 - 26px;
-                        height: 52px;
-                        border-radius: 26px;
-                        border-width: 3px;
+                        x: -(14px * S.k);
+                        width: parent.width + (28px * S.k);
+                        y: parent.height / 2 - (26px * S.k);
+                        height: (52px * S.k);
+                        border-radius: (26px * S.k);
+                        border-width: (3px * S.k);
                         border-color: #ffffff;
                     }
                     TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.tabs, i); } }
                 }
             }
             HorizontalLayout {
-                x: root.width - self.width - 96px;
+                x: root.width - self.width - (96px * S.k);
                 y: 0;
                 width: self.preferred-width;
-                height: 104px;
-                spacing: 22px;
+                height: (104px * S.k);
+                spacing: (22px * S.k);
                 if root.running.active: Rectangle {
-                    height: 52px;
-                    y: 26px;
+                    height: (52px * S.k);
+                    y: (26px * S.k);
                     width: pill.preferred-width;
-                    border-radius: 26px;
+                    border-radius: (26px * S.k);
                     background: #3ddc9724;
                     border-width: 1px;
                     border-color: #3ddc975a;
                     pill := HorizontalLayout {
-                        padding-left: 18px;
-                        padding-right: 8px;
-                        spacing: 12px;
-                        Rectangle { width: 10px; height: 10px; y: 21px; border-radius: 5px; background: Theme.ok; }
-                        Text { text: root.running.name; font-size: 18px; font-weight: 600; color: Theme.text; vertical-alignment: center; }
-                        Text { text: root.running.time; font-size: 18px; color: Theme.text2; vertical-alignment: center; }
+                        padding-left: (18px * S.k);
+                        padding-right: (8px * S.k);
+                        spacing: (12px * S.k);
+                        Rectangle { width: (10px * S.k); height: (10px * S.k); y: (21px * S.k); border-radius: (5px * S.k); background: Theme.ok; }
+                        Text { text: root.running.name; font-size: (18px * S.k); font-weight: 600; color: Theme.text; vertical-alignment: center; }
+                        Text { text: root.running.time; font-size: (18px * S.k); color: Theme.text2; vertical-alignment: center; }
                         for b[i] in ["Resume", "Stop"]: Rectangle {
-                            y: 7px;
-                            height: 38px;
-                            width: bt.preferred-width + 28px;
-                            border-radius: 19px;
+                            y: (7px * S.k);
+                            height: (38px * S.k);
+                            width: bt.preferred-width + (28px * S.k);
+                            border-radius: (19px * S.k);
                             property <bool> f: root.zone == Zone.top && root.idx == i && root.overlay == 0;
                             background: f ? (i == 1 ? Theme.danger : #ffffff) : #ffffff1f;
-                            bt := Text { text: b; font-size: 16px; font-weight: 600; color: f && i == 0 ? #0a0d18 : #ffffff; }
+                            bt := Text { text: b; font-size: (16px * S.k); font-weight: 600; color: f && i == 0 ? #0a0d18 : #ffffff; }
                             TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.top, i); } }
                         }
                     }
                 }
                 for ic[i] in [Icons.search, Icons.gear]: Rectangle {
-                    width: 52px;
-                    height: 52px;
-                    y: 26px;
-                    border-radius: 26px;
+                    width: (52px * S.k);
+                    height: (52px * S.k);
+                    y: (26px * S.k);
+                    border-radius: (26px * S.k);
                     property <bool> f: root.zone == Zone.top && root.idx == i + 2 && root.overlay == 0;
                     background: f ? #ffffff : ta.has-hover ? #ffffff14 : transparent;
-                    Image { source: ic; colorize: f ? #0a0d18 : Theme.text2; width: 26px; height: 26px; }
+                    Image { source: ic; colorize: f ? #0a0d18 : Theme.text2; width: (26px * S.k); height: (26px * S.k); }
                     ta := TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.top, i + 2); } }
                 }
                 Rectangle {
-                    width: 46px;
-                    height: 46px;
-                    y: 29px;
-                    border-radius: 23px;
+                    width: (46px * S.k);
+                    height: (46px * S.k);
+                    y: (29px * S.k);
+                    border-radius: (23px * S.k);
                     background: @linear-gradient(135deg, #0a6cff 0%, #8b5cf6 50%, #ec4899 100%);
-                    border-width: 2px;
+                    border-width: (2px * S.k);
                     border-color: #ffffff59;
-                    Image { source: Icons.user; colorize: #ffffff; width: 25px; height: 25px; }
+                    Image { source: Icons.user; colorize: #ffffff; width: (25px * S.k); height: (25px * S.k); }
                 }
                 Text {
                     text: root.clock;
-                    font-size: 26px;
+                    font-size: (26px * S.k);
                     color: Theme.text;
                     vertical-alignment: center;
-                    min-width: 80px;
+                    min-width: (80px * S.k);
                     horizontal-alignment: right;
                 }
             }
@@ -619,42 +636,42 @@ export component AppWindow inherits Window {
 
         // ------------------------------------------------------------ status + hints
         if root.status != "": HorizontalLayout {
-            x: 96px;
-            y: root.height - 64px;
-            height: 30px;
-            spacing: 10px;
+            x: (96px * S.k);
+            y: root.height - (64px * S.k);
+            height: (30px * S.k);
+            spacing: (10px * S.k);
             if root.status-busy: Image {
                 source: Icons.spinner;
-                width: 18px;
-                height: 18px;
-                y: 6px;
+                width: (18px * S.k);
+                height: (18px * S.k);
+                y: (6px * S.k);
                 transform-rotation: animation-tick() / 1ms * 0.4deg;
             }
-            Text { text: root.status; font-size: 17px; color: Theme.text3; vertical-alignment: center; }
+            Text { text: root.status; font-size: (17px * S.k); color: Theme.text3; vertical-alignment: center; }
         }
         Rectangle {
-            x: root.width - self.width - 76px;
-            y: root.height - self.height - 30px;
+            x: root.width - self.width - (76px * S.k);
+            y: root.height - self.height - (30px * S.k);
             width: hints.preferred-width;
-            height: 50px;
-            border-radius: 25px;
+            height: (50px * S.k);
+            border-radius: (25px * S.k);
             background: #070a14e6;
             border-width: 1px;
             border-color: Theme.line;
             // Hidden over the library grid so it never covers game titles.
             visible: root.overlay != 4 && root.overlay != 3 && root.overlay != 6 && (root.view == 0 || root.overlay != 0);
             hints := HorizontalLayout {
-                padding-left: 20px;
-                padding-right: 22px;
-                spacing: 24px;
+                padding-left: (20px * S.k);
+                padding-right: (22px * S.k);
+                spacing: (24px * S.k);
                 alignment: center;
                 for h in root.pad-hints
                     ? [{k: "✕", l: "Select", c: #8fb6ff, r: true}, {k: "○", l: "Back", c: #ff8f9c, r: true}, {k: "□", l: "Trailer", c: #f5a3e6, r: true}, {k: "△", l: "Search", c: #6ee7c8, r: true}, {k: "☰", l: "Options", c: #ffffff, r: false}]
                     : [{k: "Enter", l: "Select", c: #ffffff, r: false}, {k: "Esc", l: "Back", c: #ffffff, r: false}, {k: "T", l: "Trailer", c: #ffffff, r: false}, {k: "/", l: "Search", c: #ffffff, r: false}, {k: "O", l: "Options", c: #ffffff, r: false}]
                     : HorizontalLayout {
-                        spacing: 10px;
-                        KeyCap { text: h.k; round: h.r; fg: h.c; y: 10px; }
-                        Text { text: h.l; font-size: 17px; color: Theme.text2; vertical-alignment: center; }
+                        spacing: (10px * S.k);
+                        KeyCap { text: h.k; round: h.r; fg: h.c; y: (10px * S.k); }
+                        Text { text: h.l; font-size: (17px * S.k); color: Theme.text2; vertical-alignment: center; }
                     }
             }
         }
@@ -672,11 +689,11 @@ export component AppWindow inherits Window {
             Rectangle { background: @linear-gradient(0deg, #04060ee6 0%, #04060e00 50%); }
 
             Rectangle {
-                x: 96px;
-                y: 130px;
-                width: 380px;
-                height: 570px;   // 2:3, like the official covers
-                border-radius: 20px;
+                x: (96px * S.k);
+                y: (130px * S.k);
+                width: (380px * S.k);
+                height: (570px * S.k);   // 2:3, like the official covers
+                border-radius: (20px * S.k);
                 clip: true;
                 background: Theme.panel;
                 drop-shadow-blur: 0;
@@ -690,20 +707,20 @@ export component AppWindow inherits Window {
                 }
             }
             Flickable {
-                x: 540px;
-                width: root.width - 540px - 60px;
+                x: (540px * S.k);
+                width: root.width - (540px * S.k) - (60px * S.k);
                 height: root.height;
                 content-y <=> root.hub-y;
-                content-height: hub-col.preferred-height + 200px;
+                content-height: hub-col.preferred-height + (200px * S.k);
                 hub-col := VerticalLayout {
                     x: 0;
                     y: 0;
-                    width: min(1060px, root.width - 540px - 96px);
+                    width: min((1060px * S.k), root.width - (540px * S.k) - (96px * S.k));
                     height: self.preferred-height;
-                    padding-top: 130px;
+                    padding-top: (130px * S.k);
                     spacing: 0;
                     Kicker { text: root.hub.kicker; accent: root.hub.kicker-accent; live: root.hub.kicker-live; }
-                    Rectangle { height: 16px; }
+                    Rectangle { height: (16px * S.k); }
                     if root.hub.has-logo: Image {
                         source: root.hub.logo;
                         width: root.hub.logo-w;
@@ -712,65 +729,66 @@ export component AppWindow inherits Window {
                     }
                     if !root.hub.has-logo: Text {
                         text: root.hub.title;
-                        font-size: 72px;
+                        font-size: (72px * S.k);
                         font-weight: 700;
                         color: Theme.text;
                         wrap: word-wrap;
                     }
-                    Rectangle { height: 22px; }
+                    Rectangle { height: (22px * S.k); }
                     HorizontalLayout {
-                        spacing: 10px;
+                        spacing: (10px * S.k);
                         alignment: start;
                         for c in root.hub.chips: Chip { data: c; }
                     }
-                    Rectangle { height: 30px; }
+                    Rectangle { height: (30px * S.k); }
                     HorizontalLayout {
-                        spacing: 16px;
+                        spacing: (16px * S.k);
                         alignment: start;
                         for a[i] in root.hub.actions: Btn {
                             data: a;
                             focused: root.zone == Zone.hub && root.idx == i && root.overlay == 1;
+                            dim: root.zone == Zone.hub && root.idx != i && root.overlay == 1;
                             clicked => { root.click(Zone.hub, i); }
                         }
                     }
-                    Rectangle { height: 40px; }
+                    Rectangle { height: (40px * S.k); }
                     for fr in root.hub.facts: HorizontalLayout {
-                        spacing: 14px;
-                        padding-bottom: 14px;
+                        spacing: (14px * S.k);
+                        padding-bottom: (14px * S.k);
                         for f in fr.items: Rectangle {
-                            width: (min(1060px, root.width - 540px - 96px) - 28px) / 3;
-                            height: 92px;
-                            border-radius: 16px;
+                            width: (min((1060px * S.k), root.width - (540px * S.k) - (96px * S.k)) - (28px * S.k)) / 3;
+                            height: (92px * S.k);
+                            border-radius: (16px * S.k);
                             background: #0b1020b8;
                             border-width: 1px;
                             border-color: Theme.line;
                             VerticalLayout {
-                                padding-left: 22px;
-                                padding-right: 16px;
+                                padding-left: (22px * S.k);
+                                padding-right: (16px * S.k);
                                 alignment: center;
-                                spacing: 6px;
-                                Text { text: f.key; font-size: 15px; font-weight: 600; letter-spacing: 1.5px; color: Theme.text3; }
-                                Text { text: f.value; font-size: 21px; font-weight: 500; color: Theme.text; overflow: elide; }
+                                spacing: (6px * S.k);
+                                Text { text: f.key; font-size: (15px * S.k); font-weight: 600; letter-spacing: (1.5px * S.k); color: Theme.text3; }
+                                Text { text: f.value; font-size: (21px * S.k); font-weight: 500; color: Theme.text; overflow: elide; }
                             }
                         }
                     }
                     if root.hub.shots.length > 0: VerticalLayout {
-                        padding-top: 22px;
-                        spacing: 14px;
-                        Text { text: "SCREENSHOTS"; font-size: 18px; font-weight: 600; letter-spacing: 2px; color: Theme.text3; }
+                        padding-top: (22px * S.k);
+                        spacing: (14px * S.k);
+                        Text { text: "SCREENSHOTS"; font-size: (18px * S.k); font-weight: 600; letter-spacing: (2px * S.k); color: Theme.text3; }
                         Flickable {
-                            height: 180px;
+                            height: (180px * S.k);
                             interactive: false;
                             content-x: root.shots-x;
-                            content-width: root.hub.shots.length * 314px + 12px;
+                            content-width: root.hub.shots.length * (314px * S.k) + (12px * S.k);
                             for s[i] in root.hub.shots: Rectangle {
-                                x: 6px + i * 314px;
-                                y: 6px;
-                                width: 300px;
-                                height: 169px;
-                                FocusRing { w: parent.width; h: parent.height; on: root.zone == Zone.shots && root.idx == i && root.overlay == 1; radius: 12px; }
+                                x: (6px * S.k) + i * (314px * S.k);
+                                y: (6px * S.k);
+                                width: (300px * S.k);
+                                height: (169px * S.k);
+                                FocusRing { w: parent.width; h: parent.height; on: root.zone == Zone.shots && root.idx == i && root.overlay == 1; radius: (12px * S.k); }
                                 Rectangle {
-                                    border-radius: 12px;
+                                    border-radius: (12px * S.k);
                                     clip: true;
                                     background: Theme.panel;
                                     Image {
@@ -787,12 +805,12 @@ export component AppWindow inherits Window {
                         }
                     }
                     if root.hub.about.length > 0: VerticalLayout {
-                        padding-top: 30px;
-                        spacing: 16px;
-                        Text { text: "ABOUT"; font-size: 18px; font-weight: 600; letter-spacing: 2px; color: root.zone == Zone.desc ? Theme.text : Theme.text3; }
+                        padding-top: (30px * S.k);
+                        spacing: (16px * S.k);
+                        Text { text: "ABOUT"; font-size: (18px * S.k); font-weight: 600; letter-spacing: (2px * S.k); color: root.zone == Zone.desc ? Theme.text : Theme.text3; }
                         for p in root.hub.about: Text {
                             text: p;
-                            font-size: 21px;
+                            font-size: (21px * S.k);
                             color: Theme.text2;
                             wrap: word-wrap;
                         }
@@ -802,8 +820,8 @@ export component AppWindow inherits Window {
         }
 
         if root.overlay == 1: BackButton {
-            x: 96px;
-            y: 44px;
+            x: (96px * S.k);
+            y: (44px * S.k);
             pad: root.pad-hints;
             clicked => { root.click(Zone.hub, -1); }
         }
@@ -813,8 +831,8 @@ export component AppWindow inherits Window {
             background: #03050ccc;
             TouchArea { clicked => { root.click(Zone.settings, -1); } }
             Rectangle {
-                x: root.width - 760px;
-                width: 760px;
+                x: root.width - (760px * S.k);
+                width: (760px * S.k);
                 background: @linear-gradient(180deg, #111a33 0%, #0a1024 100%);
                 border-width: 1px;
                 border-color: Theme.line;
@@ -825,51 +843,51 @@ export component AppWindow inherits Window {
                     sheet := VerticalLayout {
                         x: 0;
                         y: 0;
-                        width: 760px;
+                        width: (760px * S.k);
                         height: self.preferred-height;
-                        padding-left: 56px;
-                        padding-right: 56px;
-                        padding-top: 64px;
-                        padding-bottom: 120px;
+                        padding-left: (56px * S.k);
+                        padding-right: (56px * S.k);
+                        padding-top: (64px * S.k);
+                        padding-bottom: (120px * S.k);
                         spacing: 0;
                         HorizontalLayout {
                             alignment: start;
-                            padding-bottom: 20px;
+                            padding-bottom: (20px * S.k);
                             BackButton { pad: root.pad-hints; clicked => { root.click(Zone.settings, -1); } }
                         }
-                        Text { text: "Settings"; font-size: 44px; font-weight: 600; color: Theme.text; }
-                        Text { text: "Changes are saved automatically"; font-size: 18px; color: Theme.text3; }
+                        Text { text: "Settings"; font-size: (44px * S.k); font-weight: 600; color: Theme.text; }
+                        Text { text: "Changes are saved automatically"; font-size: (18px * S.k); color: Theme.text3; }
                         for s[i] in root.settings: VerticalLayout {
                             property <bool> f: root.zone == Zone.settings && root.idx == i;
-                            padding-top: s.kind == 0 ? 36px : 8px;
-                            padding-bottom: s.kind == 0 ? 10px : 4px;
-                            spacing: 6px;
-                            if s.kind == 0: Text { text: s.label; font-size: 16px; font-weight: 600; letter-spacing: 2px; color: Theme.text3; }
-                            if s.kind == 1: Text { text: s.label; font-size: 19px; color: Theme.text2; }
+                            padding-top: s.kind == 0 ? (36px * S.k) : (8px * S.k);
+                            padding-bottom: s.kind == 0 ? (10px * S.k) : (4px * S.k);
+                            spacing: (6px * S.k);
+                            if s.kind == 0: Text { text: s.label; font-size: (16px * S.k); font-weight: 600; letter-spacing: (2px * S.k); color: Theme.text3; }
+                            if s.kind == 1: Text { text: s.label; font-size: (19px * S.k); color: Theme.text2; }
                             if s.kind == 1: Rectangle {
-                                height: 54px;
-                                border-radius: 12px;
+                                height: (54px * S.k);
+                                border-radius: (12px * S.k);
                                 background: f ? #ffffff1f : #ffffff12;
-                                border-width: f ? 3px : 1px;
+                                border-width: f ? (3px * S.k) : 1px;
                                 border-color: f ? #ffffff : (s.hint-kind == 2 ? Theme.danger : Theme.line);
                                 if root.edit-index != i: Text {
-                                    x: 18px;
-                                    width: parent.width - 36px;
+                                    x: (18px * S.k);
+                                    width: parent.width - (36px * S.k);
                                     text: s.value != "" ? s.value : (s.secret ? "Not set" : "—");
-                                    font-size: 19px;
+                                    font-size: (19px * S.k);
                                     color: s.value != "" ? Theme.text : Theme.text3;
                                     vertical-alignment: center;
                                     overflow: elide;
                                     font-family: "DejaVu Sans Mono";
                                 }
                                 if root.edit-index == i: TextInput {
-                                    x: 18px;
-                                    width: parent.width - 36px;
+                                    x: (18px * S.k);
+                                    width: parent.width - (36px * S.k);
                                     height: parent.height;
                                     text <=> root.edit-text;
                                     single-line: true;
                                     input-type: s.secret ? InputType.password : InputType.text;
-                                    font-size: 19px;
+                                    font-size: (19px * S.k);
                                     color: Theme.text;
                                     vertical-alignment: center;
                                     font-family: "DejaVu Sans Mono";
@@ -879,37 +897,37 @@ export component AppWindow inherits Window {
                                 TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.settings, i); } }
                             }
                             if (s.kind == 2 || s.kind == 3 || s.kind == 4): Rectangle {
-                                height: 64px;
-                                border-radius: 12px;
+                                height: (64px * S.k);
+                                border-radius: (12px * S.k);
                                 background: f ? (s.danger ? #ff5a6a40 : #ffffff1f) : #ffffff0d;
-                                border-width: f ? 3px : 1px;
+                                border-width: f ? (3px * S.k) : 1px;
                                 border-color: f ? (s.danger ? Theme.danger : #ffffff) : Theme.line;
                                 HorizontalLayout {
-                                    padding-left: 18px;
-                                    padding-right: 18px;
-                                    spacing: 12px;
+                                    padding-left: (18px * S.k);
+                                    padding-right: (18px * S.k);
+                                    spacing: (12px * S.k);
                                     Text {
                                         text: s.label;
-                                        font-size: 19px;
+                                        font-size: (19px * S.k);
                                         color: s.danger ? #ffb3bb : Theme.text;
                                         vertical-alignment: center;
                                         horizontal-stretch: 1;
                                         font-weight: s.kind == 4 ? 600 : 400;
                                     }
-                                    if s.kind == 2: Switch { on: s.on; y: 16px; }
+                                    if s.kind == 2: Switch { on: s.on; y: (16px * S.k); }
                                     if s.kind == 3: HorizontalLayout {
-                                        spacing: 8px;
-                                        Image { source: Icons.chevl; colorize: f ? Theme.text : Theme.text3; width: 22px; height: 22px; y: 21px; }
-                                        Text { text: s.value; font-size: 19px; color: Theme.text; vertical-alignment: center; }
-                                        Image { source: Icons.chevr; colorize: f ? Theme.text : Theme.text3; width: 22px; height: 22px; y: 21px; }
+                                        spacing: (8px * S.k);
+                                        Image { source: Icons.chevl; colorize: f ? Theme.text : Theme.text3; width: (22px * S.k); height: (22px * S.k); y: (21px * S.k); }
+                                        Text { text: s.value; font-size: (19px * S.k); color: Theme.text; vertical-alignment: center; }
+                                        Image { source: Icons.chevr; colorize: f ? Theme.text : Theme.text3; width: (22px * S.k); height: (22px * S.k); y: (21px * S.k); }
                                     }
-                                    if s.kind == 4 && s.value != "": Text { text: s.value; font-size: 16px; color: Theme.text3; vertical-alignment: center; }
+                                    if s.kind == 4 && s.value != "": Text { text: s.value; font-size: (16px * S.k); color: Theme.text3; vertical-alignment: center; }
                                 }
                                 TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.settings, i); } }
                             }
                             if s.hint != "": Text {
                                 text: s.hint;
-                                font-size: 16px;
+                                font-size: (16px * S.k);
                                 wrap: word-wrap;
                                 color: s.hint-kind == 1 ? Theme.ok : s.hint-kind == 2 ? Theme.danger : Theme.text3;
                             }
@@ -923,26 +941,26 @@ export component AppWindow inherits Window {
         if root.overlay == 3: Rectangle {
             background: #000000f2;
             Image {
-                x: 48px;
-                y: 104px;
-                width: root.width - 96px;
-                height: root.height - 160px;
+                x: (48px * S.k);
+                y: (104px * S.k);
+                width: root.width - (96px * S.k);
+                height: root.height - (160px * S.k);
                 source: root.viewer-image;
                 image-fit: contain;
             }
             Rectangle {
-                x: root.width - self.width - 48px;
-                y: root.height - self.height - 36px;
-                width: vc.preferred-width + 28px;
-                height: 36px;
-                border-radius: 18px;
+                x: root.width - self.width - (48px * S.k);
+                y: root.height - self.height - (36px * S.k);
+                width: vc.preferred-width + (28px * S.k);
+                height: (36px * S.k);
+                border-radius: (18px * S.k);
                 background: #000000b3;
-                vc := Text { text: root.viewer-count + "   ◂ ▸ to browse · Esc to close"; font-size: 16px; color: Theme.text2; }
+                vc := Text { text: root.viewer-count + "   ◂ ▸ to browse · Esc to close"; font-size: (16px * S.k); color: Theme.text2; }
             }
             TouchArea { clicked => { root.click(Zone.shots, -1); } }
             BackButton {
-                x: 48px;
-                y: 36px;
+                x: (48px * S.k);
+                y: (36px * S.k);
                 pad: root.pad-hints;
                 clicked => { root.click(Zone.shots, -1); }
             }
@@ -955,37 +973,37 @@ export component AppWindow inherits Window {
             Rectangle {
                 x: (root.width - self.width) / 2;
                 y: (root.height - self.height) / 2;
-                width: 520px;
+                width: (520px * S.k);
                 height: menu-col.preferred-height;
-                border-radius: 22px;
+                border-radius: (22px * S.k);
                 background: #121a31fa;
                 border-width: 1px;
                 border-color: Theme.line;
-                drop-shadow-blur: 40px;
+                drop-shadow-blur: (40px * S.k);
                 drop-shadow-color: #00000099;
                 TouchArea {}
                 menu-col := VerticalLayout {
-                    padding: 18px;
-                    spacing: 6px;
+                    padding: (18px * S.k);
+                    spacing: (6px * S.k);
                     Text {
                         text: root.menu-title;
-                        font-size: 20px;
+                        font-size: (20px * S.k);
                         font-weight: 600;
                         color: Theme.text2;
                         overflow: elide;
                         horizontal-alignment: left;
                     }
-                    Rectangle { height: 6px; }
+                    Rectangle { height: (6px * S.k); }
                     for m[i] in root.menu-items: Rectangle {
-                        height: 58px;
-                        border-radius: 12px;
+                        height: (58px * S.k);
+                        border-radius: (12px * S.k);
                         property <bool> f: root.zone == Zone.menu && root.idx == i;
                         background: f ? #ffffff : transparent;
                         HorizontalLayout {
-                            padding-left: 18px;
-                            spacing: 16px;
-                            Image { source: Icons.get(m.icon); colorize: f ? #0a0d18 : Theme.text2; width: 24px; height: 24px; y: 17px; }
-                            Text { text: m.label; font-size: 20px; color: f ? #0a0d18 : Theme.text; vertical-alignment: center; }
+                            padding-left: (18px * S.k);
+                            spacing: (16px * S.k);
+                            Image { source: Icons.get(m.icon); colorize: f ? #0a0d18 : Theme.text2; width: (24px * S.k); height: (24px * S.k); y: (17px * S.k); }
+                            Text { text: m.label; font-size: (20px * S.k); color: f ? #0a0d18 : Theme.text; vertical-alignment: center; }
                         }
                         TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.menu, i); } }
                     }
@@ -1010,25 +1028,25 @@ export component AppWindow inherits Window {
                 HorizontalLayout {
                     alignment: center;
                     Rectangle {
-                        width: 220px;
-                        height: 220px;
-                        border-radius: 28px;
+                        width: (220px * S.k);
+                        height: (220px * S.k);
+                        border-radius: (28px * S.k);
                         clip: true;
                         background: Theme.panel;
                         Image { source: root.launch-icon; width: parent.width; height: parent.height; image-fit: cover; }
                     }
                 }
-                Rectangle { height: 34px; }
-                Text { text: root.launch-name; font-size: 44px; font-weight: 600; color: Theme.text; horizontal-alignment: center; }
-                Rectangle { height: 10px; }
-                Text { text: "Starting with KytyPS5…"; font-size: 20px; color: Theme.text2; horizontal-alignment: center; }
-                Rectangle { height: 36px; }
+                Rectangle { height: (34px * S.k); }
+                Text { text: root.launch-name; font-size: (44px * S.k); font-weight: 600; color: Theme.text; horizontal-alignment: center; }
+                Rectangle { height: (10px * S.k); }
+                Text { text: "Starting with KytyPS5…"; font-size: (20px * S.k); color: Theme.text2; horizontal-alignment: center; }
+                Rectangle { height: (36px * S.k); }
                 HorizontalLayout {
                     alignment: center;
                     Image {
                         source: Icons.spinner;
-                        width: 44px;
-                        height: 44px;
+                        width: (44px * S.k);
+                        height: (44px * S.k);
                         transform-rotation: animation-tick() / 1ms * 0.4deg;
                     }
                 }
@@ -1050,75 +1068,75 @@ export component AppWindow inherits Window {
                     alignment: center;
                     Image {
                         source: @image-url("../assets/icons/app-icon.svg");
-                        width: 150px;
-                        height: 150px;
+                        width: (150px * S.k);
+                        height: (150px * S.k);
                     }
                 }
-                Rectangle { height: 40px; }
+                Rectangle { height: (40px * S.k); }
                 Text {
                     text: root.boot-first ? "Welcome" : "";
                     visible: root.boot-first;
-                    font-size: 64px;
+                    font-size: (64px * S.k);
                     font-weight: 700;
                     color: Theme.text;
                     horizontal-alignment: center;
                 }
-                Rectangle { height: root.boot-first ? 8px : 0; }
+                Rectangle { height: root.boot-first ? (8px * S.k) : 0; }
                 if root.boot-first: Text {
                     text: "Your PS5-style game launcher is getting ready";
-                    font-size: 24px;
+                    font-size: (24px * S.k);
                     color: Theme.text2;
                     horizontal-alignment: center;
                 }
-                Rectangle { height: root.boot-first ? 56px : 8px; }
+                Rectangle { height: root.boot-first ? (56px * S.k) : (8px * S.k); }
                 HorizontalLayout {
                     alignment: center;
                     Rectangle {
-                        width: 520px;
-                        height: 6px;
-                        border-radius: 3px;
+                        width: (520px * S.k);
+                        height: (6px * S.k);
+                        border-radius: (3px * S.k);
                         background: #ffffff1f;
                         Rectangle {
                             x: 0;
                             width: parent.width * root.boot-progress;
-                            border-radius: 3px;
+                            border-radius: (3px * S.k);
                             background: @linear-gradient(90deg, #3d8bff 0%, #8fb6ff 100%);
                             animate width { duration: 300ms; easing: ease-out; }
                         }
                     }
                 }
-                Rectangle { height: 22px; }
+                Rectangle { height: (22px * S.k); }
                 Text {
                     text: root.boot-status;
-                    font-size: 19px;
+                    font-size: (19px * S.k);
                     color: Theme.text2;
                     horizontal-alignment: center;
                 }
-                Rectangle { height: 8px; }
+                Rectangle { height: (8px * S.k); }
                 if root.boot-first: Text {
                     text: root.boot-detail;
-                    font-size: 16px;
+                    font-size: (16px * S.k);
                     color: Theme.text3;
                     horizontal-alignment: center;
                 }
-                Rectangle { height: 48px; }
+                Rectangle { height: (48px * S.k); }
                 if root.boot-first: HorizontalLayout {
                     alignment: center;
                     Rectangle {
-                        height: 64px;
-                        width: prompt.preferred-width + 60px;
-                        border-radius: 32px;
+                        height: (64px * S.k);
+                        width: prompt.preferred-width + (60px * S.k);
+                        border-radius: (32px * S.k);
                         background: root.boot-ready ? #ffffff : #ffffff1a;
                         border-width: 1px;
                         border-color: #ffffff33;
                         animate background { duration: 300ms; }
                         prompt := HorizontalLayout {
                             alignment: center;
-                            spacing: 12px;
-                            KeyCap { text: root.pad-hints ? "✕" : "Enter"; round: root.pad-hints; fg: root.boot-ready ? #ffffff : #8fb6ff; bg: root.boot-ready ? #0a0d18 : #ffffff24; y: 17px; }
+                            spacing: (12px * S.k);
+                            KeyCap { text: root.pad-hints ? "✕" : "Enter"; round: root.pad-hints; fg: root.boot-ready ? #ffffff : #8fb6ff; bg: root.boot-ready ? #0a0d18 : #ffffff24; y: (17px * S.k); }
                             Text {
                                 text: root.boot-ready ? "Start" : "Skip and continue";
-                                font-size: 21px;
+                                font-size: (21px * S.k);
                                 font-weight: 600;
                                 color: root.boot-ready ? #0a0d18 : Theme.text;
                                 vertical-alignment: center;
@@ -1131,15 +1149,12 @@ export component AppWindow inherits Window {
 
         // ------------------------------------------------------------ TOASTS
         VerticalLayout {
-            x: root.width - 56px - 620px;
-            y: 110px;
-            width: 620px;
-            spacing: 12px;
+            x: root.width - (48px * S.k) - (440px * S.k);
+            y: (104px * S.k);
+            width: (440px * S.k);
+            spacing: (12px * S.k);
             alignment: start;
-            for t in root.toasts: HorizontalLayout {
-                alignment: end;
-                Toast { data: t; }
-            }
+            for t in root.toasts: Toast { data: t; }
         }
     }
 }

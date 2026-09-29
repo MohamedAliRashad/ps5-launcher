@@ -286,8 +286,8 @@ impl App {
                             let (w, hh) = logo_size(&img, 620.0, 200.0);
                             h.logo = img;
                             h.has_logo = true;
-                            h.logo_w = w;
-                            h.logo_h = hh;
+                            h.logo_w = w * self.scale;
+                            h.logo_h = hh * self.scale;
                         }
                         // Logo on its way (usually a few ms from cache): keep the title area empty
                         // rather than flashing the text title first.
@@ -407,12 +407,13 @@ impl App {
         self.cols = (((inner + gap) / (min_w + gap)).floor() as usize).max(2);
         self.card_w = (inner - (self.cols as f32 - 1.0) * gap) / self.cols as f32;
         self.row_h = self.card_w * 1.5 + 14.0 + 50.0 + 24.0 + 30.0;
-        let ui = self.ui();
-        ui.set_card_w(self.card_w);
-        ui.set_row_h(self.row_h);
-        ui.set_grid_gap(gap);
+        let (ui, k) = (self.ui(), self.scale);
+        ui.set_card_w(self.card_w * k);
+        ui.set_row_h(self.row_h * k);
+        ui.set_grid_gap(gap * k);
     }
 
+    /// Window size in design units (the 1920×1080 canvas the UI is laid out on).
     pub fn logical_size(&self) -> (f32, f32) {
         let ui = self.ui();
         let s = ui.window().size();
@@ -420,7 +421,26 @@ impl App {
         if s.width == 0 {
             return (1920.0, 1080.0);
         }
-        (s.width as f32 / sf, s.height as f32 / sf)
+        (s.width as f32 / sf / self.scale, s.height as f32 / sf / self.scale)
+    }
+
+    /// Map the design canvas onto the real window. Returns true if the scale changed.
+    pub fn update_scale(&mut self) -> bool {
+        let ui = self.ui();
+        let s = ui.window().size();
+        let sf = ui.window().scale_factor().max(0.1);
+        if s.width < 100 || s.height < 100 {
+            return false;
+        }
+        let (w, h) = (s.width as f32 / sf, s.height as f32 / sf);
+        let user = std::env::var("PS5_LAUNCHER_SCALE").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
+        let k = ((w / 1920.0).min(h / 1080.0) * user).clamp(0.3, 4.0);
+        if (k - self.scale).abs() < 0.001 {
+            return false;
+        }
+        self.scale = k;
+        ui.global::<crate::S>().set_k(k);
+        true
     }
 
     pub fn push_library(&mut self) {
@@ -440,7 +460,7 @@ impl App {
             if (self.zone == Z_CHIPS && i as i32 == self.idx) || (self.zone != Z_CHIPS && *label == self.genre) {
                 focus_x = x;
             }
-            chips.push(GenreChip { label: label.clone().into(), count: c.into(), on: *label == self.genre, x, w });
+            chips.push(GenreChip { label: label.clone().into(), count: c.into(), on: *label == self.genre, x: x * self.scale, w: w * self.scale });
             x += w + 10.0;
         }
         let (win_w, _) = self.logical_size();
@@ -450,14 +470,14 @@ impl App {
         let scroll = (focus_x - view_w * 0.35).clamp(0.0, max_scroll);
         let ui = self.ui();
         ui.set_genres(model(chips));
-        ui.set_genres_x(-scroll);
+        ui.set_genres_x(-scroll * self.scale);
         ui.set_genres_more_right(x - scroll > view_w + 60.0);
     }
 
     pub fn push_grid(&mut self) {
         let rows = self.filtered.len().div_ceil(self.cols.max(1));
         let ui = self.ui();
-        ui.set_grid_h(rows as f32 * self.row_h + 60.0);
+        ui.set_grid_h((rows as f32 * self.row_h + 60.0) * self.scale);
         ui.set_count_label(format!("{} of {} games", self.filtered.len(), self.games.len()).into());
         ui.set_grid_empty(if !self.filtered.is_empty() {
             "".into()
@@ -478,7 +498,7 @@ impl App {
     pub fn push_grid_window(&mut self) {
         let (_, h) = self.logical_size();
         let view_h = h - 262.0;
-        let y = -self.ui().get_grid_y();
+        let y = -self.ui().get_grid_y() / self.scale;
         let rows = self.filtered.len().div_ceil(self.cols.max(1));
         let first = ((y / self.row_h).floor() as i64 - 1).max(0) as usize;
         let last = (((y + view_h) / self.row_h).ceil() as usize + 1).min(rows);
@@ -515,7 +535,10 @@ impl App {
                 let g = &self.games[gi];
                 let ce = self.game_compat(g);
                 let (compat, compat_level) = ce.map(|e| (e.status.label(), e.status.level())).unwrap_or(("", 0));
-                let genre = g.info.as_ref().and_then(|i| i.genres.first().cloned()).or_else(|| g.g.genres.first().cloned()).unwrap_or_default();
+                // Short genre names ("RPG", not "Role Playing Games") keep the line from being cut off.
+                let genre = g.buckets.first().filter(|b| **b != "Other").map(|b| b.to_string())
+                    .or_else(|| g.info.as_ref().and_then(|i| i.genres.first().cloned()))
+                    .or_else(|| g.g.genres.first().cloned()).unwrap_or_default();
                 let region = g.g.version.split(['–', '-']).nth(1).map(|s| s.trim().to_string()).filter(|s| s.len() <= 5).unwrap_or_default();
                 let meta = [genre, g.g.size.clone(), region].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
                 cards.push(CardData {
@@ -540,7 +563,7 @@ impl App {
     }
 
     pub fn first_visible_card(&self) -> usize {
-        let y = -self.ui().get_grid_y();
+        let y = -self.ui().get_grid_y() / self.scale;
         // First row whose top is on screen (a row scrolled away by a few pixels still counts).
         let row = ((y - 20.0) / self.row_h).ceil().max(0.0) as usize;
         (row * self.cols).min(self.filtered.len().saturating_sub(1))
@@ -551,15 +574,18 @@ impl App {
         let view_h = h - 262.0;
         let row = self.idx.max(0) as usize / self.cols.max(1);
         let top = row as f32 * self.row_h;
-        let y = -self.ui().get_grid_y();
+        let y = -self.ui().get_grid_y() / self.scale;
         let new_y = if top < y + 10.0 {
             (top - 10.0).max(0.0)
         } else if top + self.row_h > y + view_h {
-            top + self.row_h - view_h + 20.0
+            // Snap to a row boundary so no half-row peeks out under the header.
+            let min_y = top + self.row_h - view_h + 20.0;
+            let snapped = (min_y / self.row_h).ceil() * self.row_h - 10.0;
+            if snapped <= top - 10.0 { snapped } else { min_y }
         } else {
             return;
         };
-        self.ui().set_grid_y(-new_y);
+        self.ui().set_grid_y(-new_y * self.scale);
         self.push_grid_window();
     }
 
@@ -600,8 +626,8 @@ impl App {
                     let (w, hh) = logo_size(&img, 700.0, 220.0);
                     h.logo = img;
                     h.has_logo = true;
-                    h.logo_w = w;
-                    h.logo_h = hh;
+                    h.logo_w = w * self.scale;
+                    h.logo_h = hh * self.scale;
                 }
                 None => h.title = SharedString::default(),
             }
@@ -704,7 +730,7 @@ impl App {
             Z_DESC => shots_top + if self.hub_shots.is_empty() { 0.0 } else { 230.0 } - 200.0 + self.idx as f32 * 360.0,
             _ => 0.0,
         };
-        self.ui().set_hub_y(-y.max(0.0));
+        self.ui().set_hub_y(-y.max(0.0) * self.scale);
     }
 
     pub fn scroll_shots(&mut self) {
@@ -712,7 +738,7 @@ impl App {
         let view = (w - 540.0 - 96.0).min(1060.0);
         let x = self.idx as f32 * 314.0;
         let total = self.hub_shots.len() as f32 * 314.0 + 12.0;
-        self.ui().set_shots_x(-(x - view * 0.4).clamp(0.0, (total - view).max(0.0)));
+        self.ui().set_shots_x(-(x - view * 0.4).clamp(0.0, (total - view).max(0.0)) * self.scale);
     }
 
     pub fn push_viewer(&mut self) {

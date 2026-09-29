@@ -137,12 +137,12 @@ pub struct Session {
 
 #[derive(Clone, Debug)]
 pub struct Ended {
+    pub game_id: String,
     pub name: String,
     pub exit_code: Option<i32>,
     pub stopped: bool,
     pub played: f64,
     pub log: PathBuf,
-    pub log_tail: String,
 }
 
 struct Inner {
@@ -364,9 +364,8 @@ impl Sessions {
                     e.count += 1;
                     e.last = now.floor();
                 }
-                let log_tail = if !matches!(code, Some(0) | None) && !s.stopping { tail(&s.log, 1500) } else { String::new() };
                 crate::log!("game ended: {} exit {:?}", s.name, code);
-                inner.ended.push(Ended { name: s.name.clone(), exit_code: *code, stopped: s.stopping, played, log: s.log.clone(), log_tail });
+                inner.ended.push(Ended { game_id: s.game_id.clone(), name: s.name.clone(), exit_code: *code, stopped: s.stopping, played, log: s.log.clone() });
             }
             if !finished.is_empty() {
                 if let Ok(json) = serde_json::to_vec_pretty(&inner.playtime) {
@@ -392,16 +391,6 @@ fn wait_gone(pid: u32, secs: f64) -> bool {
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-}
-
-fn tail(path: &Path, n: u64) -> String {
-    use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut f) = std::fs::File::open(path) else { return String::new() };
-    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-    let _ = f.seek(SeekFrom::Start(len.saturating_sub(n)));
-    let mut buf = Vec::new();
-    let _ = f.read_to_end(&mut buf);
-    String::from_utf8_lossy(&buf).into_owned()
 }
 
 /// Minimal shell-like splitting with quotes (for "extra emulator arguments").
