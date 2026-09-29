@@ -178,22 +178,30 @@ pub fn rawg_cache_key(name: &str) -> String {
 
 fn fetch_rawg(name: &str, key: &str) -> Option<Info> {
     let k = query_escape(key);
-    let res = http_json(&format!(
-        "https://api.rawg.io/api/games?key={k}&search={}&platforms=187&page_size=6&search_precise=true",
-        query_escape(name)
-    ))
-    .ok()?;
-    let results = res["results"].as_array()?;
     let want = rawg_norm(name);
-    let best = results
-        .iter()
-        .find(|r| rawg_norm(r["name"].as_str().unwrap_or("")) == want)
-        .or_else(|| {
+    // PS5 listings first; many ports are only tagged for PC/Switch on RAWG, so then any platform.
+    let mut best: Option<Value> = None;
+    for platform in ["&platforms=187", ""] {
+        let Ok(res) = http_json(&format!(
+            "https://api.rawg.io/api/games?key={k}&search={}{platform}&page_size=6&search_precise=true",
+            query_escape(name)
+        )) else { continue };
+        let results = res["results"].as_array().cloned().unwrap_or_default();
+        let hit = results.iter().find(|r| rawg_norm(r["name"].as_str().unwrap_or("")) == want).or_else(|| {
             results.iter().find(|r| {
                 let n = rawg_norm(r["name"].as_str().unwrap_or(""));
-                !want.is_empty() && (n.contains(&want) || want.contains(&n))
+                // Partial matches only when the names are nearly the same ("Let's Build" is a
+                // different game from "Let's Build a Zoo").
+                let (short, long) = if n.len() < want.len() { (&n, &want) } else { (&want, &n) };
+                !short.is_empty() && long.contains(short.as_str()) && short.len() * 10 >= long.len() * 8
             })
-        })?;
+        });
+        if let Some(h) = hit {
+            best = Some(h.clone());
+            break;
+        }
+    }
+    let best = &best?;
     let full = http_json(&format!("https://api.rawg.io/api/games/{}?key={k}", best["id"])).unwrap_or_else(|_| best.clone());
     let rating = match (full["rating"].as_f64(), full["ratings_count"].as_i64()) {
         (Some(s), Some(t)) if s > 0.0 && t > 0 => Some(Rating { score: (s * 100.0).round() / 100.0, total: t }),
@@ -214,6 +222,17 @@ fn fetch_rawg(name: &str, key: &str) -> Option<Info> {
         shots: best["short_screenshots"].as_array().into_iter().flatten().skip(1).take(12).filter_map(|s| s["image"].as_str().map(String::from)).collect(),
         ..Default::default()
     })
+}
+
+/// Look one game up on RAWG now (uses the cache if it already has a result).
+pub fn rawg_lookup(store: &Shared, name: &str, key: &str) -> Option<Info> {
+    let k = rawg_cache_key(name);
+    if let Some(i) = store.lock().unwrap().get(&k) {
+        return Some(i.clone());
+    }
+    let info = fetch_rawg(name, key);
+    store.lock().unwrap().put(k, info.clone());
+    info
 }
 
 /// Returns "" if RAWG accepts the key, otherwise a message.

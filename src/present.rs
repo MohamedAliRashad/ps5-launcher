@@ -180,7 +180,7 @@ impl App {
     pub fn push_row_text(&mut self) {
         let (name, sub) = match self.row.get(self.sel).copied() {
             None => (String::new(), String::new()),
-            Some(RowItem::All) => ("Game Library".into(), format!("{} games", self.games.len())),
+            Some(RowItem::All) => ("Game Library".into(), format!("All {} games in the catalog", self.games.len())),
             Some(RowItem::Local(l)) => {
                 let lv = &self.locals[l];
                 let sub = if let Some(s) = self.session_for_local(l) {
@@ -294,11 +294,20 @@ impl App {
                 self.hero_actions = Vec::new();
             }
             Some(RowItem::All) => {
-                h.kicker = "COLLECTION".into();
-                h.title = "Game Library".into();
-                h.chips = model(vec![chip("grid", format!("{} games", self.games.len()), false)]);
-                h.desc = "Browse every PS5 game in the catalog. Search, filter by genre and sort by date, name, rating or size.".into();
-                self.hero_actions = vec![ActionDef { id: "library", label: "Open Library".into(), icon: "grid", primary: true, danger: false, round: false }];
+                let mk = |id, label: &str, icon, primary| ActionDef { id, label: label.into(), icon, primary, danger: false, round: false };
+                if self.locals.is_empty() {
+                    h.kicker = "GET STARTED".into();
+                    h.title = "No installed games yet".into();
+                    h.chips = model(vec![chip("grid", format!("{} games in the Library", self.games.len()), false)]);
+                    h.desc = "Point the launcher at the folder with your games in Settings, and they'll appear here ready to play. Meanwhile, browse the whole catalog in the Library.".into();
+                    self.hero_actions = vec![mk("settings", "Add game folder", "folder", true), mk("library", "Browse Library", "grid", false)];
+                } else {
+                    h.kicker = "COLLECTION".into();
+                    h.title = "Game Library".into();
+                    h.chips = model(vec![chip("grid", format!("{} games", self.games.len()), false)]);
+                    h.desc = "Browse every PS5 game in the catalog. Search, filter by genre and sort by date, name, rating or size.".into();
+                    self.hero_actions = vec![mk("library", "Open Library", "grid", true)];
+                }
             }
             Some(_) => {
                 let t = self.row_target(self.sel);
@@ -482,9 +491,7 @@ impl App {
         if key == self.hero_logo_key {
             self.push_hero();
         }
-        if self.grid_keys.contains(key) {
-            self.push_grid_rows();
-        }
+        self.grid_image_loaded(key);
         if self.hub_keys.contains(key) {
             self.push_hub();
         }
@@ -598,75 +605,157 @@ impl App {
     }
 
     /// Only rows around the viewport exist as UI elements; this keeps the grid instant with any catalog size.
-    pub fn push_grid_window(&mut self) {
+    /// Scroll the Library to `pos` (design px from the top), gliding over `glide_ms`.
+    pub fn set_grid_scroll(&mut self, pos: f32, glide_ms: i64) {
         let (_, h) = self.logical_size();
-        let view_h = h - 262.0;
-        let y = -self.ui().get_grid_y() / self.scale;
         let rows = self.filtered.len().div_ceil(self.cols.max(1));
-        let first = ((y / self.row_h).floor() as i64 - 1).max(0) as usize;
-        let last = (((y + view_h) / self.row_h).ceil() as usize + 1).min(rows);
-        if (first, last) == self.grid_window {
+        let max = (rows as f32 * self.row_h + 60.0 - (h - 262.0)).max(0.0);
+        let pos = pos.clamp(0.0, max);
+        let from = self.grid_scroll;
+        self.grid_scroll = pos;
+        let ui = self.ui();
+        ui.set_grid_glide(glide_ms.max(0));
+        ui.set_grid_y(-pos * self.scale);
+        // Cover the whole glide path so no row is missing mid-animation, then trim.
+        self.push_grid_window_span(from.min(pos), from.max(pos));
+        if (from - pos).abs() > 1.0 {
+            self.grid_trim.start(slint::TimerMode::SingleShot, std::time::Duration::from_millis(glide_ms.max(0) as u64 + 60), || {
+                crate::app::with_app(|app| app.push_grid_window())
+            });
+        }
+    }
+
+    /// Mouse wheel / touchpad over the Library. A wheel notch (60 px) moves about half a row.
+    pub fn grid_wheel(&mut self, dy: f32) {
+        if dy == 0.0 {
             return;
         }
-        self.grid_window = (first, last);
-        self.push_grid_rows();
-        // Look one screen ahead so scrolling finds covers ready.
-        let ahead_from = last * self.cols;
+        let notches = dy / 60.0;
+        let is_wheel = dy.abs() >= 59.0 && (notches - notches.round()).abs() < 0.01;
+        let step = if is_wheel { notches * self.row_h * 0.5 } else { dy / self.scale };
+        let target = self.grid_scroll - step;
+        self.set_grid_scroll(target, if is_wheel { 180 } else { 0 });
+    }
+
+    pub fn push_grid_window(&mut self) {
+        let y = self.grid_scroll;
+        self.push_grid_window_span(y, y);
+    }
+
+    /// Keep rows for scroll positions `lo..=hi` (plus 2 spare rows each side) in the model,
+    /// adding and dropping rows at the edges instead of rebuilding the whole grid.
+    fn push_grid_window_span(&mut self, lo: f32, hi: f32) {
+        let (_, h) = self.logical_size();
+        let view_h = h - 262.0;
+        let rows = self.filtered.len().div_ceil(self.cols.max(1));
+        let first = ((lo / self.row_h).floor() as i64 - 2).max(0) as usize;
+        let last = (((hi + view_h) / self.row_h).ceil() as usize + 2).min(rows);
+        let (f0, l0) = self.grid_window;
+        if (first, last) == (f0, l0) {
+            return;
+        }
+        let m = self.grid_model.clone();
+        let overlap = f0 < l0 && m.row_count() == l0 - f0 && first < l0 && last > f0;
+        if !overlap {
+            self.grid_window = (first, last);
+            self.push_grid_rows();
+        } else {
+            for _ in f0..first.min(l0) {
+                if first > f0 { m.remove(0); }
+            }
+            if last < l0 {
+                for _ in last..l0 { m.remove(m.row_count() - 1); }
+            }
+            if first < f0 {
+                for r in (first..f0).rev() {
+                    let row = self.build_card_row(r);
+                    m.insert(0, row);
+                }
+            }
+            if last > l0 {
+                for r in l0..last {
+                    let row = self.build_card_row(r);
+                    m.push(row);
+                }
+            }
+            self.grid_window = (first, last);
+            let (lo_k, hi_k) = (first * self.cols, last * self.cols);
+            self.grid_keys.retain(|_, k| *k >= lo_k && *k < hi_k);
+            let keep: HashSet<String> = self.grid_keys.keys().cloned().collect();
+            self.images.cancel_unless(move |j| j.prio != prio::CARD || keep.contains(&j.key));
+        }
+        // Look ahead so covers are ready before they scroll in.
         let ahead_to = ((last + 3) * self.cols).min(self.filtered.len());
-        for k in ahead_from..ahead_to {
-            let r = self.card_req(self.filtered[k]);
-            if let Some(r) = r {
+        for k in (last * self.cols).min(ahead_to)..ahead_to {
+            if let Some(r) = self.card_req(self.filtered[k]) {
                 self.images.want(&r.key, r.src, r.w, r.crop, prio::PREFETCH);
             }
         }
     }
 
+    fn build_card_row(&mut self, r: usize) -> CardRow {
+        let mut cards = Vec::new();
+        for c in 0..self.cols {
+            let k = r * self.cols + c;
+            let Some(&gi) = self.filtered.get(k) else { break };
+            let req = self.card_req(gi);
+            let img = self.get_img(&req, prio::CARD);
+            if let Some(r) = &req {
+                self.grid_keys.insert(r.key.clone(), k);
+            }
+            let g = &self.games[gi];
+            let ce = self.game_compat(g);
+            let (compat, compat_level) = ce.map(|e| (e.status.label(), e.status.level())).unwrap_or(("", 0));
+            // Short genre names ("RPG", not "Role Playing Games") keep the line from being cut off.
+            let genre = g.buckets.first().filter(|b| **b != "Other").map(|b| b.to_string())
+                .or_else(|| g.info.as_ref().and_then(|i| i.genres.first().cloned()))
+                .or_else(|| g.g.genres.first().cloned()).unwrap_or_default();
+            let region = g.g.version.split(['–', '-']).nth(1).map(|s| s.trim().to_string()).filter(|s| s.len() <= 5).unwrap_or_default();
+            let meta = [genre, g.g.size.clone(), region].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
+            cards.push(CardData {
+                index: k as i32,
+                title: g.name.clone().into(),
+                meta: meta.into(),
+                rating: g.info.as_ref().and_then(|i| i.rating.as_ref()).map(|r| format!("{:.1}", r.score)).unwrap_or_default().into(),
+                badge: if g.local.is_some() { "Installed".into() } else if g.is_new { "New".into() } else { "".into() },
+                compat: compat.into(),
+                compat_level,
+                loaded: img.is_some(),
+                image: img.unwrap_or_default(),
+            });
+        }
+        CardRow { index: r as i32, cards: model(cards) }
+    }
+
     pub fn push_grid_rows(&mut self) {
         let (first, last) = self.grid_window;
-        let mut rows = Vec::new();
-        let mut keys = HashSet::new();
-        for r in first..last.max(first) {
-            let mut cards = Vec::new();
-            for c in 0..self.cols {
-                let k = r * self.cols + c;
-                let Some(&gi) = self.filtered.get(k) else { break };
-                let req = self.card_req(gi);
-                let img = self.get_img(&req, prio::CARD);
-                if let Some(r) = &req {
-                    keys.insert(r.key.clone());
-                }
-                let g = &self.games[gi];
-                let ce = self.game_compat(g);
-                let (compat, compat_level) = ce.map(|e| (e.status.label(), e.status.level())).unwrap_or(("", 0));
-                // Short genre names ("RPG", not "Role Playing Games") keep the line from being cut off.
-                let genre = g.buckets.first().filter(|b| **b != "Other").map(|b| b.to_string())
-                    .or_else(|| g.info.as_ref().and_then(|i| i.genres.first().cloned()))
-                    .or_else(|| g.g.genres.first().cloned()).unwrap_or_default();
-                let region = g.g.version.split(['–', '-']).nth(1).map(|s| s.trim().to_string()).filter(|s| s.len() <= 5).unwrap_or_default();
-                let meta = [genre, g.g.size.clone(), region].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
-                cards.push(CardData {
-                    index: k as i32,
-                    title: g.name.clone().into(),
-                    meta: meta.into(),
-                    rating: g.info.as_ref().and_then(|i| i.rating.as_ref()).map(|r| format!("{:.1}", r.score)).unwrap_or_default().into(),
-                    badge: if g.local.is_some() { "Installed".into() } else if g.is_new { "New".into() } else { "".into() },
-                    compat: compat.into(),
-                    compat_level,
-                    loaded: img.is_some(),
-                    image: img.unwrap_or_default(),
-                });
-            }
-            rows.push(CardRow { index: r as i32, cards: model(cards) });
-        }
-        // Cancel queued covers for rows that scrolled away.
-        let keep = keys.clone();
+        self.grid_keys.clear();
+        let rows: Vec<CardRow> = (first..last.max(first)).map(|r| self.build_card_row(r)).collect();
+        let keep: HashSet<String> = self.grid_keys.keys().cloned().collect();
         self.images.cancel_unless(move |j| j.prio != prio::CARD || keep.contains(&j.key));
-        self.grid_keys = keys;
         self.grid_model.set_vec(rows);
     }
 
+    /// A cover finished loading: update just that card, not the whole grid.
+    fn grid_image_loaded(&mut self, key: &str) {
+        let Some(&k) = self.grid_keys.get(key) else { return };
+        let Some(img) = self.images.get(key) else { return };
+        let (first, _) = self.grid_window;
+        let (r, c) = (k / self.cols.max(1), k % self.cols.max(1));
+        if r < first {
+            return;
+        }
+        if let Some(row) = self.grid_model.row_data(r - first) {
+            if let Some(mut card) = row.cards.row_data(c) {
+                card.image = img;
+                card.loaded = true;
+                row.cards.set_row_data(c, card);
+            }
+        }
+    }
+
     pub fn first_visible_card(&self) -> usize {
-        let y = -self.ui().get_grid_y() / self.scale;
+        let y = self.grid_scroll;
         // First row whose top is on screen (a row scrolled away by a few pixels still counts).
         let row = ((y - 20.0) / self.row_h).ceil().max(0.0) as usize;
         (row * self.cols).min(self.filtered.len().saturating_sub(1))
@@ -677,7 +766,7 @@ impl App {
         let view_h = h - 262.0;
         let row = self.idx.max(0) as usize / self.cols.max(1);
         let top = row as f32 * self.row_h;
-        let y = -self.ui().get_grid_y() / self.scale;
+        let y = self.grid_scroll;
         let new_y = if top < y + 10.0 {
             (top - 10.0).max(0.0)
         } else if top + self.row_h > y + view_h {
@@ -688,8 +777,7 @@ impl App {
         } else {
             return;
         };
-        self.ui().set_grid_y(-new_y * self.scale);
-        self.push_grid_window();
+        self.set_grid_scroll(new_y, 260);
     }
 
     /// The Library's backdrop follows the selected game, once the selection rests for a moment
@@ -714,7 +802,7 @@ impl App {
         self.sort = (self.sort as i32 + d).rem_euclid(SORTS.len() as i32) as usize;
         audio_move();
         self.apply_filter();
-        self.ui().set_grid_y(0.0);
+        self.set_grid_scroll(0.0, 0);
         self.push_library();
     }
 
@@ -840,12 +928,19 @@ impl App {
         // Rough layout estimate (see app.slint hub column).
         let facts_rows = self.ui().get_hub().facts.row_count() as f32;
         let shots_top = 130.0 + 30.0 + 16.0 + 210.0 + 22.0 + 40.0 + 30.0 + 68.0 + 40.0 + facts_rows * 106.0;
+        let ui = self.ui();
+        // Never scroll past the real end of the page (measured by the UI, not estimated).
+        let max = ((ui.get_hub_content_h() - ui.get_hub_view_h()) / self.scale).max(0.0);
         let y = match self.zone {
             Z_SHOTS => (shots_top - 320.0).max(0.0),
             Z_DESC => shots_top + if self.hub_shots.is_empty() { 0.0 } else { 230.0 } - 200.0 + self.idx as f32 * 360.0,
             _ => 0.0,
         };
-        self.ui().set_hub_y(-y.max(0.0) * self.scale);
+        if self.zone == Z_DESC && y > max && self.idx > 0 {
+            // At the bottom already: don't let further presses build up.
+            self.idx = ((max - (shots_top + if self.hub_shots.is_empty() { 0.0 } else { 230.0 } - 200.0)) / 360.0).ceil().max(0.0) as i32;
+        }
+        ui.set_hub_y(-y.clamp(0.0, max) * self.scale);
     }
 
     /// The viewer's full-size copies of the selected screenshot and the next one.
@@ -862,9 +957,9 @@ impl App {
     pub fn scroll_shots(&mut self) {
         self.prefetch_viewer();
         let (w, _) = self.logical_size();
-        let view = (w - 540.0 - 96.0).min(1060.0);
+        let view = (w - 540.0 - 96.0).min(1060.0) + 60.0;
         let x = self.idx as f32 * 314.0;
-        let total = self.hub_shots.len() as f32 * 314.0 + 12.0;
+        let total = self.hub_shots.len() as f32 * 314.0 + 72.0;
         self.ui().set_shots_x(-(x - view * 0.4).clamp(0.0, (total - view).max(0.0)) * self.scale);
     }
 

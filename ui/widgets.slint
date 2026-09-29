@@ -246,3 +246,29 @@ export component Shimmer inherits Rectangle {
         background: @linear-gradient(90deg, #ffffff00 0%, #ffffff12 50%, #ffffff00 100%);
     }
 }
+
+// Cover art that never crops a logo: art with the frame's shape fills it; any other shape
+// (square icons, landscape art) is shown whole, centred over a dimmed, stretched copy.
+export component Cover inherits Rectangle {
+    in property <image> source;
+    in property <bool> loaded;
+    property <float> aspect: source.height > 0 ? source.width / source.height : 0;
+    property <float> frame: root.height > 0 ? root.width / root.height : 1;
+    property <bool> fits: aspect > 0 && abs(aspect - frame) / frame < 0.08;
+    if loaded && !fits: Image {
+        source: root.source;
+        width: parent.width;
+        height: parent.height;
+        image-fit: cover;
+        opacity: 0.45;
+    }
+    if loaded && !fits: Rectangle { background: #05070f8c; }
+    Image {
+        source: root.source;
+        width: parent.width;
+        height: parent.height;
+        image-fit: root.fits ? cover : contain;
+        opacity: root.loaded ? 1 : 0;
+        animate opacity { duration: 250ms; }
+    }
+}

@@ -24,6 +24,8 @@ pub struct Config {
     pub kyty_auto_update: bool,
     /// Install new PS5 Launcher releases automatically (applied on the next start).
     pub app_auto_update: bool,
+    /// Catalog game ids whose artwork comes from RAWG (chosen per game in the Options menu).
+    pub rawg_art: Vec<i64>,
 }
 
 impl Default for Config {
@@ -43,6 +45,7 @@ impl Default for Config {
             monitor: String::new(),
             kyty_auto_update: true,
             app_auto_update: true,
+            rawg_art: Vec::new(),
         }
     }
 }

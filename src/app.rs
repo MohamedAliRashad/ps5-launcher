@@ -108,6 +108,7 @@ pub struct LocalV {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RowItem {
     Local(usize),
+    #[allow(dead_code)] // catalog games no longer appear on the Games tab
     Cat(usize),
     All,
 }
@@ -194,7 +195,10 @@ pub struct App {
 
     // Keys of images currently on screen, so a finished load updates only what shows it.
     pub tile_keys: Vec<String>,
-    pub grid_keys: std::collections::HashSet<String>,
+    /// Cover key → card index, for the rows currently in the grid model.
+    pub grid_keys: std::collections::HashMap<String, usize>,
+    pub grid_scroll: f32,
+    pub grid_trim: slint::Timer,
     pub hero_logo_key: String,
     pub hub_keys: std::collections::HashSet<String>,
     pub viewer_key: String,
@@ -322,6 +326,8 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, target_monitor: Option<Monitor
         genre_res,
         tile_keys: Vec::new(),
         grid_keys: Default::default(),
+        grid_scroll: 0.0,
+        grid_trim: slint::Timer::default(),
         hero_logo_key: String::new(),
         hub_keys: Default::default(),
         viewer_key: String::new(),
@@ -395,6 +401,7 @@ fn wire_callbacks(ui: &AppWindow) {
         })
     });
     ui.on_grid_scrolled(|| with_app(|app| app.push_grid_window()));
+    ui.on_grid_wheel(|dy| with_app(move |app| app.grid_wheel(dy)));
     ui.on_resized(|| with_app(|app| {
         app.update_scale();
         app.relayout();
@@ -425,6 +432,28 @@ impl App {
     pub fn art_for_game(&self, g: &Game) -> Option<Info> {
         let store = self.art.lock().unwrap();
         let sony = if g.title_id.is_empty() { None } else { store.get(&g.title_id) };
+        // Chosen per game: RAWG's background, screenshots and description, the website's box art
+        // as the cover, and Sony's logo and ratings.
+        if self.cfg.lock().unwrap().rawg_art.contains(&g.id) {
+            if let Some(r) = store.get(&psn::rawg_cache_key(&g.name)) {
+                let mut m = r.clone();
+                m.source = Some("rawg-chosen".into());
+                m.portrait.clear();
+                m.master.clear();
+                if let Some(s) = sony {
+                    m.logo = s.logo.clone();
+                    m.rating = s.rating.clone().or(m.rating);
+                    m.age = s.age.clone().or(m.age);
+                    m.store = s.store.clone();
+                    m.video = s.video.clone();
+                    if m.long.is_empty() { m.long = s.long.clone(); }
+                    if m.shots.is_empty() { m.shots = s.shots.clone(); }
+                    if m.genres.is_empty() { m.genres = s.genres.clone(); }
+                    if m.publisher.is_empty() { m.publisher = s.publisher.clone(); }
+                }
+                return Some(m);
+            }
+        }
         if sony.is_some_and(|i| !i.master.is_empty()) {
             return sony.cloned();
         }
@@ -543,10 +572,8 @@ impl App {
             pb.partial_cmp(&pa).unwrap_or(std::cmp::Ordering::Equal).then_with(|| self.locals[*a].name.cmp(&self.locals[*b].name))
         });
         let mut row: Vec<RowItem> = locals.into_iter().map(RowItem::Local).collect();
-        row.extend((0..self.games.len()).filter(|i| self.games[*i].local.is_none()).take(30).map(RowItem::Cat));
-        if !self.games.is_empty() {
-            row.push(RowItem::All);
-        }
+        // Games tab = your installed, ready-to-play games; the whole catalog lives in the Library.
+        row.push(RowItem::All);
         self.row = row;
         self.sel = prev.and_then(|p| self.row.iter().position(|r| *r == p)).unwrap_or(self.sel.min(self.row.len().saturating_sub(1)));
     }
@@ -830,6 +857,69 @@ impl App {
         });
     }
 
+    /// Switch one game's artwork between PlayStation and RAWG (fetching from RAWG if needed).
+    pub fn toggle_rawg_art(&mut self, gi: usize) {
+        let id = self.games[gi].g.id;
+        let name = self.games[gi].g.name.clone();
+        let on = self.cfg.lock().unwrap().rawg_art.contains(&id);
+        if on {
+            {
+                let mut c = self.cfg.lock().unwrap();
+                c.rawg_art.retain(|x| *x != id);
+                c.save();
+            }
+            self.refresh_art_for(gi);
+            self.toast("Using PlayStation artwork", &name, 1);
+            return;
+        }
+        let key = self.cfg.lock().unwrap().rawg_key.trim().to_string();
+        if key.is_empty() {
+            self.toast("RAWG key needed", "Add your free RAWG API key in Settings, then try again.", 0);
+            return;
+        }
+        self.toast("Getting artwork from RAWG…", &name, 0);
+        let store = self.art.clone();
+        std::thread::spawn(move || {
+            let found = psn::rawg_lookup(&store, &name, &key).is_some();
+            store.lock().unwrap().save();
+            post(move |app| {
+                if !found {
+                    app.toast("Not found on RAWG", &format!("RAWG has no artwork for {name}."), 2);
+                    return;
+                }
+                {
+                    let mut c = app.cfg.lock().unwrap();
+                    if !c.rawg_art.contains(&id) {
+                        c.rawg_art.push(id);
+                    }
+                    c.save();
+                }
+                if let Some(gi) = app.games.iter().position(|g| g.g.id == id) {
+                    app.refresh_art_for(gi);
+                }
+                app.toast("Using RAWG artwork", &name, 1);
+            });
+        });
+    }
+
+    /// Re-read one game's artwork and redraw whatever shows it.
+    fn refresh_art_for(&mut self, gi: usize) {
+        let info = self.art_for_game(&self.games[gi].g);
+        self.games[gi].info = info;
+        if let Some(l) = self.games[gi].local {
+            self.locals[l].info = self.games[gi].info.clone();
+        }
+        self.push_all();
+        if let Some(t) = self.hub {
+            if t.game == Some(gi) {
+                self.hub_shots = self.target_info(t).map(|i| i.shots.clone()).unwrap_or_default();
+                let (bg, cover) = (self.target_bg_url(t), self.cover_req(t));
+                self.want_background_or(bg, true, cover);
+                self.push_hub();
+            }
+        }
+    }
+
     pub fn rescan_library(&mut self) {
         let dirs = self.cfg.lock().unwrap().game_dir_paths();
         *self.library.lock().unwrap() = library::scan(&dirs);
@@ -1105,7 +1195,7 @@ impl App {
         }
         self.query = q;
         self.apply_filter();
-        self.ui().set_grid_y(0.0);
+        self.set_grid_scroll(0.0, 0);
         self.push_grid();
     }
 
@@ -1269,7 +1359,7 @@ impl App {
                     if let Some((g, _)) = self.genre_list.get(self.idx as usize).cloned() {
                         self.genre = g;
                         self.apply_filter();
-                        self.ui().set_grid_y(0.0);
+                        self.set_grid_scroll(0.0, 0);
                         self.push_library();
                         audio::play(Sound::Select);
                     }
@@ -1667,6 +1757,12 @@ impl App {
                 }
             }
             "settings" => self.open_settings(),
+            "library" => self.switch_view(1, true),
+            "rawg_art" => {
+                if let Some(g) = t.game {
+                    self.toggle_rawg_art(g);
+                }
+            }
             "compat" => {
                 open_url(crate::compat::LIST_PAGE);
                 self.toast("Opened in your browser", "The KytyPS5 compatibility list is in your browser.", 1);
@@ -1747,6 +1843,16 @@ impl App {
 
     pub fn open_hub(&mut self, t: Target) {
         if *crate::images::DEBUG {
+            let ui = self.ui();
+            slint::Timer::single_shot(Duration::from_millis(1500), move || {
+                with_app(|app| {
+                    let ui = app.ui();
+                    crate::log!("hub content-h {} col-h {} view-h {}", ui.get_hub_content_h(), ui.get_hub_col_h(), ui.get_hub_view_h());
+                })
+            });
+            let _ = ui;
+        }
+        if *crate::images::DEBUG {
             crate::log!("t={:>6} open hub", crate::images::START.elapsed().as_millis());
         }
         self.hub = Some(t);
@@ -1793,6 +1899,10 @@ impl App {
         if t.local.is_some() {
             items.push(mk("folder", "Open game folder", "folder"));
             items.push(mk("log", "View emulator log", "log"));
+        }
+        if let Some(g) = t.game {
+            let on = self.cfg.lock().unwrap().rawg_art.contains(&self.games[g].g.id);
+            items.push(mk("rawg_art", if on { "Use PlayStation artwork" } else { "Use RAWG artwork" }, "star"));
         }
         items.push(mk("compat", "KytyPS5 compatibility list", "web"));
         items.push(mk("settings", "Settings", "gear"));

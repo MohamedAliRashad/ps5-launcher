@@ -1,5 +1,5 @@
 import { S, Theme, Icons, Zone, BootStep, ChipData, ActionData, TileData, HeroData, CardData, CardRow, GenreChip, Fact, FactRow, Shot, HubData, SettingData, ToastData, MenuItem, RunningData } from "theme.slint";
-import { FocusRing, Chip, Btn, Kicker, Badge, Switch, KeyCap, BackButton, Shimmer } from "widgets.slint";
+import { FocusRing, Chip, Btn, Kicker, Badge, Switch, KeyCap, BackButton, Shimmer, Cover } from "widgets.slint";
 
 export { S, Theme, Zone }
 
@@ -168,6 +168,7 @@ export component AppWindow inherits Window {
     in property <bool> genres-more-right;
     in property <[CardRow]> grid-rows;
     in-out property <length> grid-y;
+    in property <duration> grid-glide;
     in property <length> grid-h;
     in property <length> card-w;
     in property <length> row-h;
@@ -176,6 +177,10 @@ export component AppWindow inherits Window {
 
     in property <HubData> hub;
     in property <bool> hub-open;
+    in-out property <length> hub-content-h;
+    out property <length> hub-text-w: min((1060px * S.k), root.width - (540px * S.k) - (96px * S.k));
+    in-out property <length> hub-col-h;
+    out property <length> hub-view-h: root.height;
     in-out property <length> hub-y;
     in property <length> shots-x;
 
@@ -208,6 +213,7 @@ export component AppWindow inherits Window {
     callback click(int, int);                         // zone, index
     callback row-wheel(float);
     callback grid-scrolled();
+    callback grid-wheel(float);
     callback resized();
     callback search-edited(string);
     callback search-done(bool);                       // accepted (Enter)
@@ -376,17 +382,25 @@ export component AppWindow inherits Window {
             animate x { duration: 420ms; easing: ease-out-expo; }
 
             // Grid (virtualized: only rows near the viewport exist).
-            grid := Flickable {
+            // Scrolling is driven from Rust (wheel, touchpad, keyboard, controller) so each input
+            // gets the right step and a short glide; only rows near the viewport exist.
+            grid := Rectangle {
                 y: (262px * S.k);
                 height: root.height - (262px * S.k);
                 width: root.width;
-                content-height: root.grid-h;
-                content-y <=> root.grid-y;
-                animate content-y { duration: 260ms; easing: ease-out-quart; }
-                interactive: true;
-                changed content-y => { root.grid-scrolled(); }
+                clip: true;
+                TouchArea {
+                    scroll-event(e) => {
+                        root.grid-wheel(e.delta-y / 1px);
+                        return EventResult.accept;
+                    }
+                }
+                Rectangle {
+                y: root.grid-y;
+                height: root.grid-h;
+                animate y { duration: root.grid-glide; easing: ease-out-quart; }
                 for r in root.grid-rows: Rectangle {
-                    y: r.index * root.row-h + (16px * S.k);
+                    y: r.index * root.row-h + (26px * S.k);
                     height: root.row-h;
                     for c[j] in r.cards: Rectangle {
                         x: (96px * S.k) + j * (root.card-w + root.grid-gap);
@@ -403,14 +417,7 @@ export component AppWindow inherits Window {
                                 clip: true;
                                 background: Theme.panel;
                                 Shimmer { active: !c.loaded; }
-                                Image {
-                                    source: c.image;
-                                    width: parent.width;
-                                    height: parent.height;
-                                    image-fit: cover;
-                                    opacity: c.loaded ? 1 : 0;
-                                    animate opacity { duration: 250ms; }
-                                }
+                                Cover { source: c.image; loaded: c.loaded; }
                                 Badge { x: (10px * S.k); y: (10px * S.k); text: c.badge; size: (12px * S.k); }
                                 if c.compat != "": Rectangle {
                                     x: (10px * S.k);
@@ -464,6 +471,7 @@ export component AppWindow inherits Window {
                             clicked => { root.click(Zone.grid, c.index); }
                         }
                     }
+                }
                 }
             }
             if root.grid-empty != "": Text {
@@ -753,7 +761,8 @@ export component AppWindow inherits Window {
                 height: root.height;
                 image-fit: cover;
             }
-            Rectangle { background: @linear-gradient(90deg, #04060ef7 0%, #04060edb 45%, #04060e59 80%, #04060e33 100%); }
+            // Dark enough behind the text column for long descriptions over busy art.
+            Rectangle { background: @linear-gradient(90deg, #04060ef7 0%, #04060ee8 50%, #04060ea6 72%, #04060e40 100%); }
             Rectangle { background: @linear-gradient(0deg, #04060ee6 0%, #04060e00 50%); }
 
             Rectangle {
@@ -765,23 +774,23 @@ export component AppWindow inherits Window {
                 clip: true;
                 background: Theme.panel;
                 drop-shadow-blur: 0;
-                Image {
-                    source: root.hub.cover;
-                    width: parent.width;
-                    height: parent.height;
-                    image-fit: cover;
-                    opacity: root.hub.cover-loaded ? 1 : 0;
-                    animate opacity { duration: 250ms; }
-                }
+                Cover { source: root.hub.cover; loaded: root.hub.cover-loaded; }
             }
-            Flickable {
-                x: (540px * S.k);
-                width: root.width - (540px * S.k) - (60px * S.k);
+            // Scroll areas crop their content, so they start `gutter` before the content: a selected
+            // button's grow + glow must never be cut off at the edge.
+            hub-flick := Flickable {
+                property <length> col-h: hub-col.height;
+                init => { root.hub-content-h = self.content-height; root.hub-col-h = self.col-h; }
+                changed content-height => { root.hub-content-h = self.content-height; }
+                changed col-h => { root.hub-col-h = self.col-h; }
+                property <length> gutter: (40px * S.k);
+                x: (540px * S.k) - self.gutter;
+                width: root.width - (540px * S.k) - (60px * S.k) + self.gutter;
                 height: root.height;
                 content-y <=> root.hub-y;
                 content-height: hub-col.preferred-height + (200px * S.k);
                 hub-col := VerticalLayout {
-                    x: 0;
+                    x: parent.gutter;
                     y: 0;
                     width: min((1060px * S.k), root.width - (540px * S.k) - (96px * S.k));
                     height: self.preferred-height;
@@ -800,6 +809,7 @@ export component AppWindow inherits Window {
                         font-size: (72px * S.k);
                         font-weight: 700;
                         color: Theme.text;
+                        width: root.hub-text-w;
                         wrap: word-wrap;
                     }
                     Rectangle { height: (22px * S.k); }
@@ -844,14 +854,19 @@ export component AppWindow inherits Window {
                         padding-top: (22px * S.k);
                         spacing: (14px * S.k);
                         Text { text: "SCREENSHOTS"; font-size: (18px * S.k); font-weight: 600; letter-spacing: (2px * S.k); color: Theme.text3; }
+                        Rectangle {
+                        height: (192px * S.k);
                         Flickable {
-                            height: (180px * S.k);
+                            // Overhangs the column by a gutter on each side so rings/glows aren't cut.
+                            x: -(30px * S.k);
+                            width: parent.width + (60px * S.k);
+                            height: parent.height;
                             interactive: false;
                             content-x: root.shots-x;
-                            content-width: root.hub.shots.length * (314px * S.k) + (12px * S.k);
+                            content-width: root.hub.shots.length * (314px * S.k) + (72px * S.k);
                             for s[i] in root.hub.shots: Rectangle {
-                                x: (6px * S.k) + i * (314px * S.k);
-                                y: (6px * S.k);
+                                x: (30px * S.k) + i * (314px * S.k);
+                                y: (12px * S.k);
                                 width: (300px * S.k);
                                 height: (169px * S.k);
                                 FocusRing { w: parent.width; h: parent.height; on: root.zone == Zone.shots && root.idx == i && root.overlay == 1; radius: (12px * S.k); }
@@ -872,12 +887,16 @@ export component AppWindow inherits Window {
                                 TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.shots, i); } }
                             }
                         }
+                        }
                     }
                     if root.hub.about.length > 0: VerticalLayout {
                         padding-top: (30px * S.k);
                         spacing: (16px * S.k);
                         Text { text: "ABOUT"; font-size: (18px * S.k); font-weight: 600; letter-spacing: (2px * S.k); color: root.zone == Zone.desc ? Theme.text : Theme.text3; }
                         for p in root.hub.about: Text {
+                            // Explicit width: wrapped text inside a nested block is otherwise measured
+                            // unwrapped (one line), which made the page too short to scroll to the end.
+                            width: root.hub-text-w;
                             text: p;
                             font-size: (21px * S.k);
                             color: Theme.text2;
@@ -1002,6 +1021,7 @@ export component AppWindow inherits Window {
                             }
                             if s.hint != "": Text {
                                 text: s.hint;
+                                width: (648px * S.k);
                                 font-size: (16px * S.k);
                                 wrap: word-wrap;
                                 color: s.hint-kind == 1 ? Theme.ok : s.hint-kind == 2 ? Theme.danger : Theme.text3;

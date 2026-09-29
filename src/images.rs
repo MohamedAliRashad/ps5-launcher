@@ -115,6 +115,10 @@ impl Pool {
     }
 
     pub fn request(&self, key: String, src: Src, max_w: u32, crop_top: f32, prio: u8) {
+        // UI audits run without artwork, so only interface elements are on screen.
+        if *NO_ART {
+            return;
+        }
         // Already queued in either lane: bump its priority.
         for q in [&self.local, &self.net] {
             let mut st = q.0.lock().unwrap();
@@ -198,6 +202,9 @@ fn fetch(url: &str) -> Option<Vec<u8>> {
 /// cached files are skipped instantly. Already-cached files
 /// are skipped instantly. `progress(done, total)` is called as files complete.
 pub fn warm(urls: Vec<String>, threads: usize, progress: &(dyn Fn(usize, usize) + Sync)) {
+    if *NO_ART {
+        return;
+    }
     let todo: Vec<String> = urls.into_iter().filter(|u| !raw_cache_path(u).exists()).collect();
     let total = todo.len();
     if total == 0 {
@@ -235,6 +242,8 @@ pub fn trim_thumbs() {
         crate::log!("removed {} MB of oversized decoded images", freed >> 20);
     }
 }
+
+pub static NO_ART: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("PS5_LAUNCHER_NO_ART").is_some());
 
 pub static START: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
 pub static DEBUG: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("PS5_LAUNCHER_DEBUG").is_some());
@@ -336,8 +345,9 @@ impl Store {
         None
     }
 
+    /// True if the image will show within a few ms (downloaded, and decodes fine).
     pub fn on_disk(&self, key: &str, src: &Src) -> bool {
-        on_disk(key, src)
+        !*NO_ART && !self.failed.contains(key) && on_disk(key, src)
     }
 
     pub fn is_pending(&self, key: &str) -> bool {

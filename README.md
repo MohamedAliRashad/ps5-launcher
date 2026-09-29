@@ -174,13 +174,16 @@ user that access; if yours doesn't, add yourself to the `input` group.
 
 ## Features
 
-- **PS5 Home screen:** a tile row where the selected tile grows and shows its name, the game's
-  hub art as a full-screen background, and its official title logo.
+- **PS5 Home screen:** your installed, ready-to-play games, with the whole catalog one tile away
+  in the Library. The selected tile grows and shows its name, the game's hub art fills the
+  screen, and its official title logo is shown.
 - **Official artwork and details:** for about 96% of games, looked up by title ID in Sony's
   public PlayStation catalog. That includes tile icons, clean covers, backgrounds, logos,
   screenshots, trailers, star ratings, age ratings and publishers.
 - **RAWG (optional):** add a RAWG API key in Settings to fill in the rest by name. The key is
-  checked before it's saved and is never displayed again.
+  checked before it's saved and is never displayed again. If you don't like a game's artwork,
+  **Options → Use RAWG artwork** switches that game to RAWG's background, screenshots and
+  description (and back again).
 - **Library:** the whole catalog with instant search, genre filters, and sorting by date, name,
   release, rating or size.
 - **Game Hub:** a details page for each game, with a fact grid, a screenshot viewer and an
@@ -273,6 +276,15 @@ manager (needs Xvfb, xfwm4, xdotool and ImageMagick):
 
 ```bash
 scripts/ui_matrix.py                    # writes dist/ui-matrix/sheet-<size>.png
+```
+
+To find cut-off or clipped elements automatically, run the UI audit. It walks the selection
+through every screen at 5 screen sizes, with artwork turned off so only interface elements are
+on screen. Any selected button, chip or menu row whose edge is flat where the design has a
+rounded end is reported, with a cropped image:
+
+```bash
+scripts/ui_audit.py                     # writes dist/ui-audit/report.txt; exit code 1 on problems
 ```
 
 To regenerate the README demo after UI changes (needs Xvfb, xdotool, ffmpeg and ImageMagick):
