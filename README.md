@@ -10,7 +10,7 @@ CPU when idle.
 
 ![PS5 Launcher: moving through the Home screen, a Game Hub and the Library](docs/demo/demo-loop.webp)
 
-### Walkthrough (2 minutes)
+### Walkthrough (2 minutes, MP4 · 4.5 MB)
 
 [![Watch the walkthrough: first launch, Home, Game Hub, Library, Options, playing a game and Settings](docs/demo/walkthrough-poster.jpg)](https://raw.githubusercontent.com/MohamedAliRashad/ps5-launcher/main/docs/demo/walkthrough.mp4)
 
