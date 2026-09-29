@@ -21,6 +21,8 @@ pub enum SId {
     Amd,
     Extra,
     ReturnOnExit,
+    AppUpdate,
+    AppAuto,
     Display,
     Sounds,
     Rawg,
@@ -114,6 +116,35 @@ impl App {
         rows.push((SId::ReturnOnExit, r));
 
         rows.push((SId::Header, row(0, "LAUNCHER")));
+
+        // PS5 Launcher updates
+        let cur = crate::update::current_version();
+        let latest = self.upd.latest.as_ref().map(|r| r.version.clone());
+        let (label, value) = if let Some(v) = &self.upd.installed {
+            ("Restart now to finish updating".to_string(), format!("{cur} → {v}"))
+        } else if self.upd.busy {
+            ("Updating PS5 Launcher…".to_string(), self.upd.progress.replace("Downloading PS5 Launcher ", ""))
+        } else if self.upd.checking {
+            ("Checking for launcher updates…".to_string(), String::new())
+        } else if self.app_update_available() {
+            ("Update PS5 Launcher".to_string(), latest.as_ref().map(|l| format!("{cur} → {l}")).unwrap_or_default())
+        } else {
+            ("Check for launcher updates".to_string(), if latest.is_some() { "up to date".into() } else { String::new() })
+        };
+        let mut r = row(4, &label);
+        r.value = value.into();
+        if !self.upd.error.is_empty() {
+            r.hint = self.upd.error.clone().into();
+            r.hint_kind = 2;
+        } else {
+            r.hint = format!("Version {cur}").into();
+            r.hint_kind = if self.upd.installed.is_some() || (latest.is_some() && !self.app_update_available()) { 1 } else { 0 };
+        }
+        rows.push((SId::AppUpdate, r));
+        let mut r = row(2, "Keep PS5 Launcher updated automatically");
+        r.on = cfg.app_auto_update;
+        rows.push((SId::AppAuto, r));
+
         let mut r = row(3, "Display");
         r.value = match self.monitors.iter().find(|m| m.name == cfg.monitor) {
             Some(m) => format!("{} · {}×{}", m.name, m.w, m.h),
@@ -222,13 +253,14 @@ impl App {
                 self.save_cfg(|c| c.monitor = next.clone());
                 self.move_to_monitor(&next);
             }
-            SId::Fullscreen | SId::Amd | SId::ReturnOnExit | SId::Sounds | SId::KytyAuto => {
+            SId::Fullscreen | SId::Amd | SId::ReturnOnExit | SId::Sounds | SId::KytyAuto | SId::AppAuto => {
                 let on = dir > 0;
                 self.save_cfg(|c| match id {
                     SId::Fullscreen => c.fullscreen = on,
                     SId::Amd => c.amd_cpu = on,
                     SId::ReturnOnExit => c.return_on_exit = on,
                     SId::KytyAuto => c.kyty_auto_update = on,
+                    SId::AppAuto => c.app_auto_update = on,
                     _ => c.sounds = on,
                 });
                 if id == SId::KytyAuto && on {
@@ -261,7 +293,7 @@ impl App {
                 ui.set_edit_text(text.into());
                 ui.set_edit_index(i as i32);
             }
-            SId::Fullscreen | SId::Amd | SId::ReturnOnExit | SId::Sounds | SId::KytyAuto => {
+            SId::Fullscreen | SId::Amd | SId::ReturnOnExit | SId::Sounds | SId::KytyAuto | SId::AppAuto => {
                 let on = self.settings_rows[i].on;
                 self.settings_change(i, if on { -1 } else { 1 });
             }
@@ -288,6 +320,21 @@ impl App {
                     }
                 } else {
                     self.kyty_check(true);
+                }
+                self.refresh_settings();
+            }
+            SId::AppUpdate => {
+                audio::play(Sound::Select);
+                if self.upd.installed.is_some() {
+                    self.app_restart();
+                } else if self.upd.busy || self.upd.checking {
+                    return;
+                } else if self.app_update_available() {
+                    if let Some(rel) = self.upd.latest.clone() {
+                        self.app_update_install(rel);
+                    }
+                } else {
+                    self.app_update_check(true);
                 }
                 self.refresh_settings();
             }

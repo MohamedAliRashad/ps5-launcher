@@ -127,8 +127,13 @@ static DOWNLOADER: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::new(|
 });
 
 fn download(rel: &Release, dest: &Path, progress: &dyn Fn(u64, u64)) -> Result<(), String> {
-    let resp = DOWNLOADER.get(&rel.url).call().map_err(|e| format!("download failed: {e}"))?;
-    let total = resp.header("Content-Length").and_then(|s| s.parse().ok()).unwrap_or(rel.size);
+    download_file(&rel.url, rel.size, &rel.sha256, dest, progress)
+}
+
+/// Stream `url` to `dest`, verifying its SHA-256 when one is given.
+pub fn download_file(url: &str, size: u64, sha256: &str, dest: &Path, progress: &dyn Fn(u64, u64)) -> Result<(), String> {
+    let resp = DOWNLOADER.get(url).call().map_err(|e| format!("download failed: {e}"))?;
+    let total = resp.header("Content-Length").and_then(|s| s.parse().ok()).unwrap_or(size);
     let mut reader = resp.into_reader();
     let mut file = std::fs::File::create(dest).map_err(|e| e.to_string())?;
     let mut hasher = Sha256::new();
@@ -145,9 +150,9 @@ fn download(rel: &Release, dest: &Path, progress: &dyn Fn(u64, u64)) -> Result<(
         progress(done, total);
     }
     file.flush().map_err(|e| e.to_string())?;
-    if !rel.sha256.is_empty() {
+    if !sha256.is_empty() {
         let got = format!("{:x}", hasher.finalize());
-        if !got.eq_ignore_ascii_case(&rel.sha256) {
+        if !got.eq_ignore_ascii_case(sha256) {
             return Err("download is corrupted (checksum mismatch)".into());
         }
     }

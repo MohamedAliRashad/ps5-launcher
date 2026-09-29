@@ -204,6 +204,7 @@ pub struct App {
     pub boot: crate::boot::Boot,
     pub kyty: crate::kyty_ui::KytyUi,
     pub warming: bool,
+    pub upd: crate::update::AppUpdate,
 }
 
 thread_local! {
@@ -322,6 +323,7 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, scale: f32, target_monitor: Op
         boot: Default::default(),
         kyty: Default::default(),
         warming: false,
+        upd: Default::default(),
     };
     ui.set_grid_rows(ModelRc::from(app.grid_model.clone()));
     ui.set_tiles(ModelRc::from(app.tile_model.clone()));
@@ -336,6 +338,7 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, scale: f32, target_monitor: Op
     APP.with(|a| *a.borrow_mut() = Some(app));
     with_app(move |app| app.boot_start(first_run));
     with_app(|app| app.kyty_start());
+    with_app(|app| app.app_update_start());
 
     wire_callbacks(&ui);
     crate::gamepad::spawn(|p| post(move |app| app.on_pad(p)));

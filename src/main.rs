@@ -10,6 +10,7 @@ mod gamepad;
 mod images;
 mod kyty;
 mod kyty_ui;
+mod update;
 mod library;
 mod present;
 mod psn;

@@ -32,6 +32,15 @@ download the archive yourself from the
 To remove it, run `./install.sh --uninstall`. To start it when you log in, install with
 `./install.sh --autostart`.
 
+**Updates are automatic.** The launcher checks GitHub for a new release when it starts and
+every 6 hours. It downloads it in the background, checks it against GitHub's SHA-256
+checksum, makes sure it runs, and swaps it in. The new version starts the next time you open
+the launcher, or right away with **Settings → Restart now** (never while a game is running).
+The previous binary is kept as `ps5-launcher.previous` next to it. To turn this off, disable
+**Settings → Keep PS5 Launcher updated automatically**.
+
+> Installed v1.2.0 or older? Run the install command above once more to get the auto-updater.
+
 ### Build from source
 
 ```bash
@@ -45,6 +54,10 @@ When run in a source checkout, the script:
 1. checks for Rust and offers to install it with [rustup](https://rustup.rs) (no `sudo`) if it's missing;
 2. builds an optimized release binary;
 3. installs it to `~/.local/bin/ps5-launcher` and adds **PS5 Launcher** to your app menu.
+
+A source build installed this way updates itself like a release build. A binary run straight
+from `target/release/` only tells you about new releases; update it with `git pull` and
+`./install.sh`.
 
 | Command | What it does |
 |---|---|
@@ -179,6 +192,8 @@ user that access; if yours doesn't, add yourself to the `input` group.
   Settings.
 - **KytyPS5 auto-updates:** installs the official build on first launch, then keeps it current,
   with rollback.
+- **Launcher auto-updates:** new PS5 Launcher releases install themselves in the background and
+  start on the next launch (or with **Restart now**).
 
 | Game Hub | Settings |
 |---|---|
