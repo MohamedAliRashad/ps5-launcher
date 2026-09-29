@@ -4,6 +4,7 @@ mod app;
 mod audio;
 mod boot;
 mod catalog;
+mod compat;
 mod config;
 mod display;
 mod gamepad;

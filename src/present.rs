@@ -31,7 +31,15 @@ fn yt_art(id: &str) -> Option<ImgReq> {
 }
 
 fn chip(icon: &str, text: impl Into<SharedString>, gold: bool) -> ChipData {
-    ChipData { icon: icon.into(), text: text.into(), gold }
+    ChipData { icon: icon.into(), text: text.into(), gold, dot: 0, stars: 0.0 }
+}
+
+/// "● In-game on KytyPS5" / "● Untested on KytyPS5".
+fn compat_chip(e: Option<&crate::compat::Entry>) -> ChipData {
+    match e {
+        Some(e) => ChipData { icon: "".into(), text: format!("{} on KytyPS5", e.status.label()).into(), gold: false, dot: e.status.level(), stars: 0.0 },
+        None => ChipData { icon: "".into(), text: "Untested on KytyPS5".into(), gold: false, dot: 5, stars: 0.0 },
+    }
 }
 
 fn action_data(a: &ActionDef) -> ActionData {
@@ -160,14 +168,22 @@ impl App {
                     format!("Playing · {}", util::fmt_clock(util::now_secs() - s.since))
                 } else {
                     let pt = self.playtime(&lv.l);
-                    if pt.last > 0.0 { format!("Last played {}", util::fmt_last_played(pt.last).to_lowercase()) } else { "Installed · Ready to play".into() }
+                    let status = self.target_compat(Target { game: lv.cat, local: Some(l) }).map(|e| e.status.label().to_lowercase());
+                    if pt.last > 0.0 {
+                        format!("Last played {}", util::fmt_last_played(pt.last).to_lowercase())
+                    } else if let Some(s) = status {
+                        format!("Installed · {s} on KytyPS5")
+                    } else {
+                        "Installed · Ready to play".into()
+                    }
                 };
                 (lv.name.clone(), sub)
             }
             Some(RowItem::Cat(g)) => {
                 let gv = &self.games[g];
                 let genre = gv.info.as_ref().and_then(|i| i.genres.first().cloned()).or_else(|| gv.g.genres.first().cloned()).unwrap_or_default();
-                (gv.name.clone(), [genre, gv.g.size.clone()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · "))
+                let status = self.game_compat(gv).map(|e| format!("{} on KytyPS5", e.status.label())).unwrap_or_default();
+                (gv.name.clone(), [genre, gv.g.size.clone(), status].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · "))
             }
         };
         let ui = self.ui();
@@ -200,9 +216,9 @@ impl App {
     fn chips_for(&self, t: Target) -> Vec<ChipData> {
         let info = self.target_info(t);
         let g = t.game.map(|g| &self.games[g]);
-        let mut c = Vec::new();
+        let mut c: Vec<ChipData> = self.target_compat(t).map(|e| compat_chip(Some(e))).into_iter().collect();
         if let Some(r) = info.as_ref().and_then(|i| i.rating.as_ref()) {
-            c.push(chip("star", format!("{:.1} · {} ratings", r.score, thousands(r.total)), true));
+            c.push(ChipData { stars: r.score as f32, ..chip("", format!("{:.1} · {} ratings", r.score, thousands(r.total)), false) });
         }
         let genres: Vec<String> = info.as_ref().filter(|i| !i.genres.is_empty()).map(|i| i.genres.clone()).or_else(|| g.map(|g| g.g.genres.clone())).unwrap_or_default();
         if !genres.is_empty() {
@@ -387,10 +403,10 @@ impl App {
     pub fn relayout(&mut self) {
         let (w, _) = self.logical_size();
         let inner = (w - 192.0).max(400.0);
-        let (min_w, gap) = (214.0, 26.0);
+        let (min_w, gap) = (190.0, 24.0);
         self.cols = (((inner + gap) / (min_w + gap)).floor() as usize).max(2);
         self.card_w = (inner - (self.cols as f32 - 1.0) * gap) / self.cols as f32;
-        self.row_h = self.card_w * 1.25 + 14.0 + 50.0 + 24.0 + 34.0;
+        self.row_h = self.card_w * 1.5 + 14.0 + 50.0 + 24.0 + 30.0;
         let ui = self.ui();
         ui.set_card_w(self.card_w);
         ui.set_row_h(self.row_h);
@@ -428,11 +444,14 @@ impl App {
             x += w + 10.0;
         }
         let (win_w, _) = self.logical_size();
-        let view_w = win_w - 184.0;
+        // Keep the last chip clear of the right-edge fade.
+        let view_w = win_w - 92.0 - 110.0;
         let max_scroll = (x - view_w).max(0.0);
+        let scroll = (focus_x - view_w * 0.35).clamp(0.0, max_scroll);
         let ui = self.ui();
         ui.set_genres(model(chips));
-        ui.set_genres_x(-(focus_x - view_w * 0.35).clamp(0.0, max_scroll));
+        ui.set_genres_x(-scroll);
+        ui.set_genres_more_right(x - scroll > view_w + 60.0);
     }
 
     pub fn push_grid(&mut self) {
@@ -494,6 +513,8 @@ impl App {
                     keys.insert(r.key.clone());
                 }
                 let g = &self.games[gi];
+                let ce = self.game_compat(g);
+                let (compat, compat_level) = ce.map(|e| (e.status.label(), e.status.level())).unwrap_or(("", 0));
                 let genre = g.info.as_ref().and_then(|i| i.genres.first().cloned()).or_else(|| g.g.genres.first().cloned()).unwrap_or_default();
                 let region = g.g.version.split(['–', '-']).nth(1).map(|s| s.trim().to_string()).filter(|s| s.len() <= 5).unwrap_or_default();
                 let meta = [genre, g.g.size.clone(), region].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
@@ -503,6 +524,8 @@ impl App {
                     meta: meta.into(),
                     rating: g.info.as_ref().and_then(|i| i.rating.as_ref()).map(|r| format!("{:.1}", r.score)).unwrap_or_default().into(),
                     badge: if g.local.is_some() { "Installed".into() } else if g.is_new { "New".into() } else { "".into() },
+                    compat: compat.into(),
+                    compat_level,
                     loaded: img.is_some(),
                     image: img.unwrap_or_default(),
                 });
@@ -595,9 +618,9 @@ impl App {
             h.cover_loaded = true;
         }
 
-        let mut chips = Vec::new();
+        let mut chips = vec![compat_chip(self.target_compat(t))];
         if let Some(r) = info.as_ref().and_then(|i| i.rating.as_ref()) {
-            chips.push(chip("star", format!("{}  {:.2} · {} ratings", stars(r.score), r.score, thousands(r.total)), true));
+            chips.push(ChipData { stars: r.score as f32, ..chip("", format!("{:.2} · {} ratings", r.score, thousands(r.total)), false) });
         }
         if let Some(a) = info.as_ref().and_then(|i| i.age.as_ref()).filter(|a| !a.name.is_empty()) {
             chips.push(chip("", a.name.clone(), false));
@@ -615,7 +638,18 @@ impl App {
         let g_owned = t.game.map(|i| self.games[i].g.clone());
         let g = g_owned.as_ref();
         let region = g.and_then(|g| g.version.split(['–', '-']).nth(1).map(|s| s.trim().to_string())).unwrap_or_default();
+        let ce = self.target_compat(t).cloned();
         let mut facts: Vec<(&str, String)> = vec![
+            ("KYTYPS5", match &ce {
+                Some(e) => format!("{} · {}", e.status.meaning(), if e.reports == 1 { "1 report".into() } else { format!("{} reports", e.reports) }),
+                None => "No reports yet".into(),
+            }),
+            ("LAST TESTED", ce.as_ref().map(|e| {
+                let d = util::fmt_date(util::parse_iso_date(&e.tested_date()));
+                let p = e.platforms.join(", ");
+                [if d.is_empty() { e.tested_date() } else { d }, p].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ")
+            }).unwrap_or_default()),
+            ("ON LINUX", ce.as_ref().and_then(|e| e.linux).filter(|l| Some(*l) != ce.as_ref().map(|e| e.status)).map(|l| l.label().to_string()).unwrap_or_default()),
             ("PUBLISHER", info.as_ref().map(|i| i.publisher.clone()).unwrap_or_default()),
             ("RELEASE", g.map(|g| g.release.clone()).filter(|s| !s.is_empty()).or_else(|| info.as_ref().map(|i| util::fmt_date(util::parse_iso_date(&i.release)))).unwrap_or_default()),
             ("SIZE", g.map(|g| g.size.clone()).unwrap_or_default()),
@@ -741,15 +775,6 @@ pub fn thousands(n: i64) -> String {
         out.push(c);
     }
     out
-}
-
-pub fn stars(score: f64) -> String {
-    let half = (score * 2.0).round() / 2.0;
-    let mut s = "★".repeat(half.floor() as usize);
-    if half.fract() > 0.0 {
-        s.push('½');
-    }
-    s
 }
 
 pub fn truncate(s: &str, max: usize) -> String {

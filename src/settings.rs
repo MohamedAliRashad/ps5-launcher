@@ -5,7 +5,6 @@ use crate::audio::{self, Sound};
 use crate::config::{PRESENT_MODES, RESOLUTIONS};
 use crate::util;
 use crate::SettingData;
-use slint::ComponentHandle;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SId {
@@ -414,17 +413,15 @@ impl App {
         }
     }
 
-    /// Move the fullscreen window to another display and rescale for it.
+    /// Switch to another display. The UI scale is fixed per window at startup, so the
+    /// launcher restarts itself on the new display (about a second).
     pub fn move_to_monitor(&mut self, name: &str) {
-        let target = crate::display::pick(&self.monitors, name);
-        let ui = self.ui();
-        crate::display::place_window(&ui, target.as_ref(), false);
-        let scale = crate::display::scale_for(target.as_ref());
-        if (scale - self.scale).abs() > 0.01 {
-            self.scale = scale;
-            ui.window().dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor: scale });
+        let label = if name.is_empty() { "the primary display".to_string() } else { name.to_string() };
+        if !self.live.is_empty() {
+            self.toast(&format!("Moves to {label} next time"), "The launcher can't restart while a game is running.", 0);
+            return;
         }
-        self.relayout();
-        self.push_grid();
+        self.toast(&format!("Moving to {label}…"), "", 0);
+        slint::Timer::single_shot(std::time::Duration::from_millis(600), || with_app(|app| app.app_restart()));
     }
 }

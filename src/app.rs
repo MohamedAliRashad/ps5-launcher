@@ -84,7 +84,7 @@ pub const GENRES: [(&str, &str); 16] = [
     ("VR", r"(?i)\bvr\b|virtual reality"),
 ];
 
-pub const SORTS: [&str; 6] = ["Recently added", "Name (A–Z)", "Release date", "Top rated", "Size (largest)", "Size (smallest)"];
+pub const SORTS: [&str; 7] = ["Recently added", "Name (A–Z)", "Release date", "Top rated", "Size (largest)", "Size (smallest)", "KytyPS5 compatibility"];
 
 /// A catalog game plus derived data.
 pub struct GameV {
@@ -205,6 +205,8 @@ pub struct App {
     pub kyty: crate::kyty_ui::KytyUi,
     pub warming: bool,
     pub upd: crate::update::AppUpdate,
+    pub compat: crate::compat::Db,
+    pub compat_checked: f64,
 }
 
 thread_local! {
@@ -324,6 +326,8 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, scale: f32, target_monitor: Op
         kyty: Default::default(),
         warming: false,
         upd: Default::default(),
+        compat: crate::compat::load().0,
+        compat_checked: 0.0,
     };
     ui.set_grid_rows(ModelRc::from(app.grid_model.clone()));
     ui.set_tiles(ModelRc::from(app.tile_model.clone()));
@@ -339,6 +343,7 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, scale: f32, target_monitor: Op
     with_app(move |app| app.boot_start(first_run));
     with_app(|app| app.kyty_start());
     with_app(|app| app.app_update_start());
+    with_app(|app| app.compat_start());
 
     wire_callbacks(&ui);
     crate::gamepad::spawn(|p| post(move |app| app.on_pad(p)));
@@ -542,6 +547,10 @@ impl App {
         if installed > 0 {
             list.push(("Installed".into(), installed));
         }
+        let in_game = self.games.iter().filter(|g| self.game_compat(g).is_some_and(|e| e.status == crate::compat::Status::InGame)).count();
+        if in_game > 0 {
+            list.push(("In-game on KytyPS5".into(), in_game));
+        }
         let mut rest: Vec<(&str, usize)> = counts.into_iter().collect();
         rest.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
         list.extend(rest.into_iter().map(|(n, c)| (n.to_string(), c)));
@@ -557,7 +566,10 @@ impl App {
         let mut list: Vec<usize> = (0..self.games.len())
             .filter(|&i| {
                 let g = &self.games[i];
-                (genre == "All" || (genre == "Installed" && g.local.is_some()) || g.buckets.contains(&genre))
+                (genre == "All"
+                    || (genre == "Installed" && g.local.is_some())
+                    || (genre == "In-game on KytyPS5" && self.game_compat(g).is_some_and(|e| e.status == crate::compat::Status::InGame))
+                    || g.buckets.contains(&genre))
                     && words.iter().all(|w| g.norm.contains(w.as_str()))
             })
             .collect();
@@ -569,6 +581,11 @@ impl App {
             3 => list.sort_by(|a, b| score(*b).partial_cmp(&score(*a)).unwrap_or(std::cmp::Ordering::Equal)),
             4 => list.sort_by(|a, b| gs[*b].g.size_gb.unwrap_or(-1.0).partial_cmp(&gs[*a].g.size_gb.unwrap_or(-1.0)).unwrap_or(std::cmp::Ordering::Equal)),
             5 => list.sort_by(|a, b| gs[*a].g.size_gb.unwrap_or(1e9).partial_cmp(&gs[*b].g.size_gb.unwrap_or(1e9)).unwrap_or(std::cmp::Ordering::Equal)),
+            6 => {
+                // Best status first, untested last; ties by name.
+                let rank = |i: usize| self.game_compat(&gs[i]).map(|e| e.status as u8).unwrap_or(9);
+                list.sort_by(|a, b| rank(*a).cmp(&rank(*b)).then_with(|| gs[*a].name.to_lowercase().cmp(&gs[*b].name.to_lowercase())))
+            }
             _ => list.sort_by(|a, b| gs[*b].g.date.cmp(&gs[*a].g.date)),
         }
         self.filtered = list;
@@ -695,6 +712,57 @@ impl App {
             post(|app| {
                 app.warming = false;
                 app.boot_covers_done();
+            });
+        });
+    }
+
+    // ------------------------------------------------------------------ KytyPS5 compatibility
+
+    pub fn game_compat(&self, g: &GameV) -> Option<&crate::compat::Entry> {
+        (!g.g.title_id.is_empty()).then(|| self.compat.get(&g.g.title_id)).flatten()
+    }
+
+    pub fn target_compat(&self, t: Target) -> Option<&crate::compat::Entry> {
+        let tid = t.local.map(|l| self.locals[l].l.title_id.clone()).filter(|s| !s.is_empty())
+            .or_else(|| t.game.map(|g| self.games[g].g.title_id.clone()))?;
+        self.compat.get(&tid.to_uppercase())
+    }
+
+    /// Refresh the community list in the background (at start and every 6 hours).
+    pub fn compat_start(&mut self) {
+        let (_, age) = crate::compat::load();
+        if age > crate::compat::REFRESH || self.compat.is_empty() {
+            self.compat_fetch();
+        }
+        let t = slint::Timer::default();
+        t.start(slint::TimerMode::Repeated, Duration::from_secs(30 * 60), || {
+            with_app(|app| {
+                if util::now_secs() - app.compat_checked > crate::compat::REFRESH {
+                    app.compat_fetch();
+                }
+            })
+        });
+        std::mem::forget(t);
+    }
+
+    fn compat_fetch(&mut self) {
+        self.compat_checked = util::now_secs();
+        std::thread::spawn(|| {
+            let res = crate::compat::fetch();
+            post(move |app| match res {
+                Ok(db) => {
+                    let changed = db.len() != app.compat.len()
+                        || db.iter().any(|(k, v)| app.compat.get(k).map(|o| o.status != v.status).unwrap_or(true));
+                    app.compat = db;
+                    if changed {
+                        app.build_genres();
+                        app.apply_filter();
+                        if !app.boot.active {
+                            app.push_all();
+                        }
+                    }
+                }
+                Err(e) => crate::log!("compatibility list refresh failed: {e}"),
             });
         });
     }
@@ -1531,6 +1599,10 @@ impl App {
                 }
             }
             "settings" => self.open_settings(),
+            "compat" => {
+                open_url(crate::compat::LIST_PAGE);
+                self.toast("Opened the KytyPS5 compatibility list", "", 1);
+            }
             _ => {}
         }
     }
@@ -1651,6 +1723,7 @@ impl App {
             items.push(mk("folder", "Open game folder", "folder"));
             items.push(mk("log", "View emulator log", "log"));
         }
+        items.push(mk("compat", "KytyPS5 compatibility list", "web"));
         items.push(mk("settings", "Settings", "gear"));
         let title = t.local.map(|l| self.locals[l].name.clone()).or_else(|| t.game.map(|g| self.games[g].name.clone())).unwrap_or_default();
         self.menu_target = Some(t);

@@ -190,6 +190,22 @@ user that access; if yours doesn't, add yourself to the `input` group.
   or watch the trailer.
 - **Multi-monitor:** the launcher opens on one display and never spans two. Choose which one in
   Settings.
+- **KytyPS5 compatibility tags:** every game shows how far it gets in KytyPS5, from the
+  community [compatibility list](https://kytyps5.github.io/) (the same data KytyPS5's own
+  launcher uses, refreshed every 6 hours):
+
+  | Tag | Meaning |
+  |---|---|
+  | 🟢 **In-game** | Reaches gameplay |
+  | 🟡 **Menus** | Reaches the main menu, not gameplay |
+  | 🟠 **Boots** | Shows the intro logos, then stops |
+  | 🔴 **Doesn't boot** | Doesn't start |
+  | ⚪ **Untested** | No reports yet |
+
+  Tags appear on Library covers, on the Home screen and in the Game Hub (with the number of
+  reports, when it was last tested and, if different, the result on Linux). In the Library,
+  **In-game on KytyPS5** filters to games that reach gameplay, and the **KytyPS5 compatibility**
+  sort puts the best-supported games first.
 - **KytyPS5 auto-updates:** installs the official build on first launch, then keeps it current,
   with rollback.
 - **Launcher auto-updates:** new PS5 Launcher releases install themselves in the background and

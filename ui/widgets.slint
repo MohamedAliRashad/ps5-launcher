@@ -19,6 +19,65 @@ export component FocusRing inherits Rectangle {
     animate opacity { duration: Theme.fast; }
 }
 
+// Five stars filled to `score` (e.g. 3.74 → three full stars and most of the fourth).
+export component Stars inherits HorizontalLayout {
+    in property <float> score;
+    in property <length> size: 17px;
+    spacing: 2px;
+    for i in [0, 1, 2, 3, 4]: Rectangle {
+        width: root.size;
+        height: root.size;
+        Image { source: Icons.star; colorize: #ffffff33; width: root.size; height: root.size; }
+        Rectangle {
+            x: 0;
+            width: root.size * clamp(root.score - i, 0, 1);
+            height: root.size;
+            clip: true;
+            Image { x: 0; source: Icons.star; colorize: #ffc940; width: root.size; height: root.size; }
+        }
+    }
+}
+
+export component KeyCap inherits Rectangle {
+    in property <string> text;
+    in property <bool> round;
+    in property <color> fg: #ffffff;
+    in property <color> bg: #ffffff24;
+    height: 30px;
+    width: round ? 30px : max(30px, t.preferred-width + 16px);
+    border-radius: round ? 15px : 8px;
+    background: bg;
+    border-width: 1px;
+    border-color: #ffffff1f;
+    t := Text { text: root.text; font-size: 14px; font-weight: 700; color: root.fg; }
+}
+
+// "‹ Back  [Esc]": a visible way out of overlays, for mouse and keyboard users alike.
+export component BackButton inherits Rectangle {
+    in property <bool> pad;
+    callback clicked();
+    width: row.preferred-width;
+    height: 48px;
+    border-radius: 24px;
+    background: ta.has-hover ? #ffffff2e : #0b1020c8;
+    border-width: 1px;
+    border-color: #ffffff26;
+    animate background { duration: 120ms; }
+    row := HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 10px;
+        spacing: 10px;
+        alignment: center;
+        Image { source: Icons.chevl; colorize: #ffffff; width: 26px; height: 26px; y: 11px; }
+        Text { text: "Back"; font-size: 19px; font-weight: 600; color: #ffffff; vertical-alignment: center; }
+        KeyCap { text: root.pad ? "○" : "Esc"; round: root.pad; fg: root.pad ? #ff8f9c : #ffffff; y: 9px; }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
 export component Chip inherits Rectangle {
     in property <ChipData> data;
     height: 40px;
@@ -30,6 +89,17 @@ export component Chip inherits Rectangle {
         padding-left: 16px;
         padding-right: 16px;
         spacing: 8px;
+        if data.stars > 0: Stars {
+            score: data.stars;
+            y: (parent.height - self.preferred-height) / 2;
+        }
+        if data.dot > 0: Rectangle {
+            width: 10px;
+            height: 10px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 5px;
+            background: Theme.compat-color(data.dot);
+        }
         if data.icon != "": Image {
             source: Icons.get(data.icon);
             colorize: data.gold ? #ffc940 : Theme.text2;
@@ -152,18 +222,4 @@ export component Switch inherits Rectangle {
         background: #ffffff;
         animate x { duration: Theme.move; easing: cubic-bezier(0.2, 0.8, 0.2, 1); }
     }
-}
-
-export component KeyCap inherits Rectangle {
-    in property <string> text;
-    in property <bool> round;
-    in property <color> fg: #ffffff;
-    in property <color> bg: #ffffff24;
-    height: 30px;
-    width: round ? 30px : max(30px, t.preferred-width + 16px);
-    border-radius: round ? 15px : 8px;
-    background: bg;
-    border-width: 1px;
-    border-color: #ffffff1f;
-    t := Text { text: root.text; font-size: 14px; font-weight: 700; color: root.fg; }
 }

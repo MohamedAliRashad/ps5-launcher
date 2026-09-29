@@ -1,5 +1,5 @@
 import { Theme, Icons, Zone, ChipData, ActionData, TileData, HeroData, CardData, CardRow, GenreChip, Fact, FactRow, Shot, HubData, SettingData, ToastData, MenuItem, RunningData } from "theme.slint";
-import { FocusRing, Chip, Btn, Kicker, Badge, Switch, KeyCap } from "widgets.slint";
+import { FocusRing, Chip, Btn, Kicker, Badge, Switch, KeyCap, BackButton } from "widgets.slint";
 
 export { Theme, Zone }
 
@@ -46,8 +46,10 @@ export component AppWindow inherits Window {
     background: Theme.bg;
     default-font-family: "Inter";
     default-font-size: 22px;
-    preferred-width: 1920px;
-    preferred-height: 1080px;
+    // No preferred size: the window's size comes from the window manager / place_window, and the
+    // UI scale follows it (see App::fit_scale). A preferred size would fight every rescale.
+    min-width: 640px;
+    min-height: 360px;
 
     // ---------------------------------------------------------------- state from Rust
     in property <int> view;          // 0 home, 1 library
@@ -76,6 +78,7 @@ export component AppWindow inherits Window {
     in property <string> count-label;
     in property <[GenreChip]> genres;
     in property <length> genres-x;
+    in property <bool> genres-more-right;
     in property <[CardRow]> grid-rows;
     in-out property <length> grid-y;
     in property <length> grid-h;
@@ -323,7 +326,7 @@ export component AppWindow inherits Window {
                         property <bool> f: root.zone == Zone.grid && root.idx == c.index && root.overlay == 0;
                         Rectangle {
                             y: 0;
-                            height: root.card-w * 1.25;
+                            height: root.card-w * 1.5;   // official covers are 2:3
                             FocusRing { w: parent.width; h: parent.height; on: f; radius: 14px; }
                             Rectangle {
                                 border-radius: 14px;
@@ -338,6 +341,28 @@ export component AppWindow inherits Window {
                                     animate opacity { duration: 250ms; }
                                 }
                                 Badge { x: 10px; y: 10px; text: c.badge; size: 12px; }
+                                if c.compat != "": Rectangle {
+                                    x: 10px;
+                                    y: parent.height - self.height - 10px;
+                                    width: cp.preferred-width + 30px;
+                                    height: 26px;
+                                    border-radius: 6px;
+                                    background: #000000c4;
+                                    Rectangle {
+                                        x: 9px;
+                                        width: 8px;
+                                        height: 8px;
+                                        border-radius: 4px;
+                                        background: Theme.compat-color(c.compat-level);
+                                    }
+                                    cp := Text {
+                                        x: 23px;
+                                        text: c.compat;
+                                        font-size: 13px;
+                                        font-weight: 700;
+                                        color: #ffffff;
+                                    }
+                                }
                                 if c.rating != "": Rectangle {
                                     x: parent.width - self.width - 10px;
                                     y: parent.height - self.height - 10px;
@@ -350,7 +375,7 @@ export component AppWindow inherits Window {
                             }
                         }
                         VerticalLayout {
-                            y: root.card-w * 1.25 + 14px;
+                            y: root.card-w * 1.5 + 14px;
                             spacing: 4px;
                             Text {
                                 text: c.title;
@@ -445,7 +470,7 @@ export component AppWindow inherits Window {
                 Flickable {
                     x: 92px;
                     y: 192px;
-                    width: root.width - 184px;
+                    width: root.width - 92px;
                     height: 52px;
                     content-x: root.genres-x;
                     interactive: false;
@@ -467,6 +492,21 @@ export component AppWindow inherits Window {
                         }
                         TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.chips, i); } }
                     }
+                }
+                // Fades hint that the chip row scrolls.
+                if root.genres-more-right: Rectangle {
+                    x: root.width - 160px;
+                    y: 192px;
+                    width: 160px;
+                    height: 52px;
+                    background: @linear-gradient(90deg, #070a1400 0%, #070a14 85%);
+                }
+                if root.genres-x < 0: Rectangle {
+                    x: 0;
+                    y: 192px;
+                    width: 150px;
+                    height: 52px;
+                    background: @linear-gradient(90deg, #070a14 55%, #070a1400 100%);
                 }
             }
         }
@@ -635,7 +675,7 @@ export component AppWindow inherits Window {
                 x: 96px;
                 y: 130px;
                 width: 380px;
-                height: 475px;
+                height: 570px;   // 2:3, like the official covers
                 border-radius: 20px;
                 clip: true;
                 background: Theme.panel;
@@ -761,6 +801,13 @@ export component AppWindow inherits Window {
             }
         }
 
+        if root.overlay == 1: BackButton {
+            x: 96px;
+            y: 44px;
+            pad: root.pad-hints;
+            clicked => { root.click(Zone.hub, -1); }
+        }
+
         // ------------------------------------------------------------ SETTINGS
         if root.overlay == 2: Rectangle {
             background: #03050ccc;
@@ -785,6 +832,11 @@ export component AppWindow inherits Window {
                         padding-top: 64px;
                         padding-bottom: 120px;
                         spacing: 0;
+                        HorizontalLayout {
+                            alignment: start;
+                            padding-bottom: 20px;
+                            BackButton { pad: root.pad-hints; clicked => { root.click(Zone.settings, -1); } }
+                        }
                         Text { text: "Settings"; font-size: 44px; font-weight: 600; color: Theme.text; }
                         Text { text: "Changes are saved automatically"; font-size: 18px; color: Theme.text3; }
                         for s[i] in root.settings: VerticalLayout {
@@ -871,10 +923,10 @@ export component AppWindow inherits Window {
         if root.overlay == 3: Rectangle {
             background: #000000f2;
             Image {
-                x: root.width * 0.04;
-                y: root.height * 0.04;
-                width: root.width * 0.92;
-                height: root.height * 0.92;
+                x: 48px;
+                y: 104px;
+                width: root.width - 96px;
+                height: root.height - 160px;
                 source: root.viewer-image;
                 image-fit: contain;
             }
@@ -888,6 +940,12 @@ export component AppWindow inherits Window {
                 vc := Text { text: root.viewer-count + "   ◂ ▸ to browse · Esc to close"; font-size: 16px; color: Theme.text2; }
             }
             TouchArea { clicked => { root.click(Zone.shots, -1); } }
+            BackButton {
+                x: 48px;
+                y: 36px;
+                pad: root.pad-hints;
+                clicked => { root.click(Zone.shots, -1); }
+            }
         }
 
         // ------------------------------------------------------------ OPTIONS MENU

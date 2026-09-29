@@ -51,10 +51,27 @@ pub fn scale_for(m: Option<&Monitor>) -> f32 {
 }
 
 /// Put the window on one monitor (never spanning two) and make it borderless fullscreen.
+/// The native window only exists once the event loop runs, so this retries until the window
+/// is there and the window manager has actually made it fullscreen.
 pub fn place_window(ui: &crate::AppWindow, target: Option<&Monitor>, windowed: bool) {
+    fn attempt(weak: slint::Weak<crate::AppWindow>, target: Option<Monitor>, windowed: bool, tries: u32) {
+        let Some(ui) = weak.upgrade() else { return };
+        let done = place_now(&ui, target.as_ref(), windowed);
+        if !done && tries > 0 {
+            slint::Timer::single_shot(std::time::Duration::from_millis(120), move || attempt(weak, target, windowed, tries - 1));
+        }
+    }
+    attempt(ui.as_weak(), target.cloned(), windowed, 25);
+}
+
+/// Returns true once the window exists and is in the requested state.
+fn place_now(ui: &crate::AppWindow, target: Option<&Monitor>, windowed: bool) -> bool {
     let name = target.map(|m| m.name.clone());
     let geom = target.map(|m| (m.x, m.y, m.w, m.h));
     ui.window().with_winit_window(move |w: &winit::window::Window| {
+        if !windowed && w.fullscreen().is_some() {
+            return true;
+        }
         let handle = name.as_ref().and_then(|n| w.available_monitors().find(|m| m.name().as_deref() == Some(n.as_str())));
         if windowed {
             if let Some((x, y, mw, mh)) = geom {
@@ -63,13 +80,17 @@ pub fn place_window(ui: &crate::AppWindow, target: Option<&Monitor>, windowed: b
                 w.set_outer_position(winit::dpi::PhysicalPosition::new(x + (mw - ww) as i32 / 2, y + (mh - wh) as i32 / 2));
             }
         } else {
-            if let Some((x, y, _, _)) = geom {
+            if let Some((x, y, mw, mh)) = geom {
                 w.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+                // Fill the monitor even if the window manager ignores the fullscreen hint.
+                let _ = w.request_inner_size(winit::dpi::PhysicalSize::new(mw, mh));
             }
             w.set_fullscreen(Some(winit::window::Fullscreen::Borderless(handle.or_else(|| w.current_monitor()))));
         }
         w.focus_window();
-    });
+        windowed
+    })
+    .unwrap_or(false)
 }
 
 pub fn window_has_focus(ui: &crate::AppWindow) -> bool {

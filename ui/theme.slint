@@ -20,6 +20,11 @@ export global Theme {
     out property <color> ring: #ffffff;
     out property <color> glow: #0a6cff8c;
     out property <duration> fast: 160ms;
+
+    // KytyPS5 compatibility colours: in-game, menus, boots, doesn't boot, untested.
+    public pure function compat-color(level: int) -> color {
+        return level == 1 ? #3ddc97 : level == 2 ? #ffd24d : level == 3 ? #ff9f43 : level == 4 ? #ff5a6a : #8a93ab;
+    }
     out property <duration> move: 240ms;
 }
 
@@ -73,7 +78,9 @@ export global Zone {
     out property <int> menu: 12;
 }
 
-export struct ChipData { icon: string, text: string, gold: bool }
+// dot: KytyPS5 compatibility level (0 none, 1 in-game, 2 menus, 3 boots, 4 doesn't boot, 5 untested)
+// stars: star rating out of 5 drawn as five stars (0 = none)
+export struct ChipData { icon: string, text: string, gold: bool, dot: int, stars: float }
 export struct ActionData { id: string, label: string, icon: string, primary: bool, danger: bool, round: bool }
 
 export struct TileData {
@@ -103,6 +110,8 @@ export struct CardData {
     meta: string,
     rating: string,
     badge: string,
+    compat: string,
+    compat-level: int,
     image: image,
     loaded: bool,
 }

@@ -258,7 +258,16 @@ impl App {
         let Ok(exe) = std::env::current_exe() else { return };
         // current_exe() of a replaced binary reads "…/ps5-launcher (deleted)": use the path itself.
         let exe = PathBuf::from(exe.to_string_lossy().trim_end_matches(" (deleted)"));
-        let args: Vec<String> = std::env::args().skip(1).collect();
+        // Drop --monitor: after a display change the saved setting must win.
+        let mut args: Vec<String> = Vec::new();
+        let mut it = std::env::args().skip(1);
+        while let Some(a) = it.next() {
+            if a == "--monitor" {
+                it.next();
+            } else {
+                args.push(a);
+            }
+        }
         crate::log!("restarting into the new version");
         use std::os::unix::process::CommandExt;
         let err = Command::new(&exe).args(&args).env_remove("PS5_LAUNCHER_PRETEND_VERSION").exec();
