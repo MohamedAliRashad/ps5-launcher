@@ -11,7 +11,7 @@ Needs: Xvfb, xdotool, ffmpeg (libx264, libwebp, libass), ImageMagick (`convert`)
 Outputs (default: dist/demo/):
     demo-loop.webp            ~15 s loop for the top of the README
     walkthrough.mp4           full quality captioned walkthrough (1920x1200)
-    walkthrough-small.mp4     smaller copy (1280x800), fits GitHub's 10 MB inline-video limit
+    walkthrough-small.mp4     1600x1000 copy under 10 MB, for uploading to the README on github.com
     walkthrough-poster.jpg    thumbnail for linking the video
 """
 
@@ -162,10 +162,12 @@ class Session:
 # ---------------------------------------------------------------------- scripted scenes
 
 def scene_first_launch(s: Session, out: Path):
-    s.record(out)
-    time.sleep(0.4)
+    # Start recording only once the window is drawn: the video's first frame doubles as
+    # the thumbnail GitHub's player shows, so it must not be black.
     s.launch()
     s.window()
+    time.sleep(0.8)
+    s.record(out)
     time.sleep(1.2)
     s.cap("First launch", "The first time it opens, a welcome screen gets everything ready.")
     time.sleep(4.5)
@@ -393,13 +395,14 @@ def build(args, work: Path, clip1: Path, dur1: float, ev1, marks1, clip2: Path, 
     vf = (f"pad={W}:{H + BAND}:0:0:color=0x05070f,"
           f"drawbox=x=0:y={H}:w={W}:h=1:color=white@0.08:t=fill,"
           f"subtitles={ass}:fontsdir={FONTS},"
-          f"fade=t=in:st=0:d=0.6,fade=t=out:st={total - 0.8:.2f}:d=0.8,format=yuv420p")
+          f"fade=t=out:st={total - 0.8:.2f}:d=0.8,format=yuv420p")
     full = out / "walkthrough.mp4"
     run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(joined), "-vf", vf, "-c:v", "libx264", "-preset", "slow",
          "-crf", "20", "-tune", "animation", "-movflags", "+faststart", "-an", str(full)])
     small = out / "walkthrough-small.mp4"
-    for crf in (27, 30, 33):
-        run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(full), "-vf", "scale=1280:-2:flags=lanczos",
+    # GitHub accepts README video uploads up to 10 MB: as sharp as fits.
+    for crf in (26, 28, 31):
+        run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(full), "-vf", "scale=1600:-2:flags=lanczos",
              "-c:v", "libx264", "-preset", "slow", "-crf", str(crf), "-tune", "animation", "-movflags", "+faststart",
              "-an", str(small)])
         if small.stat().st_size < 9.5 * 1024 * 1024:
