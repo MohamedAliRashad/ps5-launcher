@@ -1,0 +1,1088 @@
+import { Theme, Icons, Zone, ChipData, ActionData, TileData, HeroData, CardData, CardRow, GenreChip, Fact, FactRow, Shot, HubData, SettingData, ToastData, MenuItem, RunningData } from "theme.slint";
+import { FocusRing, Chip, Btn, Kicker, Badge, Switch, KeyCap } from "widgets.slint";
+
+export { Theme, Zone }
+
+component Toast inherits Rectangle {
+    in property <ToastData> data;
+    property <bool> shown: false;
+    init => { shown = true; }
+    width: min(620px, body.preferred-width + 60px);
+    height: body.preferred-height + 36px;
+    border-radius: 16px;
+    background: #161e38f5;
+    border-width: 1px;
+    border-color: Theme.line;
+    drop-shadow-blur: 30px;
+    drop-shadow-color: #00000080;
+    opacity: shown ? 1 : 0;
+    animate opacity { duration: 220ms; }
+    Rectangle {
+        x: 22px;
+        y: 26px;
+        width: 12px;
+        height: 12px;
+        border-radius: 6px;
+        background: data.kind == 1 ? Theme.ok : data.kind == 2 ? Theme.danger : #3d8bff;
+    }
+    body := VerticalLayout {
+        x: 48px;
+        y: 18px;
+        width: parent.width - 70px;
+        spacing: 4px;
+        Text { text: data.text; font-size: 19px; color: Theme.text; wrap: word-wrap; }
+        if data.sub != "": Text {
+            text: data.sub;
+            font-size: 15px;
+            color: Theme.text3;
+            wrap: word-wrap;
+            font-family: "DejaVu Sans Mono";
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "PS5 Launcher";
+    icon: @image-url("../assets/icons/app-icon.svg");
+    background: Theme.bg;
+    default-font-family: "Inter";
+    default-font-size: 22px;
+    preferred-width: 1920px;
+    preferred-height: 1080px;
+
+    // ---------------------------------------------------------------- state from Rust
+    in property <int> view;          // 0 home, 1 library
+    in property <int> overlay;       // 0 none, 1 hub, 2 settings, 3 viewer, 4 launch, 5 menu
+    in property <int> zone;
+    in property <int> idx;
+    in property <string> clock;
+    in property <RunningData> running;
+    in property <[ToastData]> toasts;
+    in property <string> status;
+    in property <bool> status-busy;
+    in property <bool> pad-hints;
+    in property <image> bg-a;
+    in property <image> bg-b;
+    in property <bool> bg-show-b;
+    in property <bool> bg-dim;
+
+    in property <[TileData]> tiles;
+    in property <int> sel;
+    in property <string> row-name;
+    in property <string> row-sub;
+    in property <HeroData> hero;
+
+    in-out property <string> query;
+    in property <string> sort-label;
+    in property <string> count-label;
+    in property <[GenreChip]> genres;
+    in property <length> genres-x;
+    in property <[CardRow]> grid-rows;
+    in-out property <length> grid-y;
+    in property <length> grid-h;
+    in property <length> card-w;
+    in property <length> row-h;
+    in property <length> grid-gap;
+    in property <string> grid-empty;
+
+    in property <HubData> hub;
+    in property <bool> hub-open;
+    in-out property <length> hub-y;
+    in property <length> shots-x;
+
+    in property <[SettingData]> settings;
+    in-out property <length> settings-y;
+    in property <int> edit-index: -1;
+    in-out property <string> edit-text;
+
+    in property <image> viewer-image;
+    in property <string> viewer-count;
+
+    in property <image> launch-bg;
+    in property <image> launch-icon;
+    in property <string> launch-name;
+
+    in property <string> menu-title;
+    in property <[MenuItem]> menu-items;
+
+    in property <bool> boot-first;
+    in property <bool> boot-ready;
+    in property <float> boot-progress;
+    in property <string> boot-status;
+    in property <string> boot-detail;
+
+    // ---------------------------------------------------------------- callbacks to Rust
+    callback key(string, bool, bool, bool) -> bool;   // text, ctrl, alt, repeat
+    callback click(int, int);                         // zone, index
+    callback row-wheel(float);
+    callback grid-scrolled();
+    callback resized();
+    callback search-edited(string);
+    callback search-done(bool);                       // accepted (Enter)
+    callback edit-done(string, bool);
+
+    public function focus-root() { scope.focus(); }
+    public function focus-search() { search-input.focus(); search-input.select-all(); }
+
+    changed width => { root.resized(); }
+    changed height => { root.resized(); }
+
+    scope := FocusScope {
+        init => { self.focus(); }
+        key-pressed(e) => {
+            return root.key(e.text, e.modifiers.control, e.modifiers.alt, e.repeat) ? EventResult.accept : EventResult.reject;
+        }
+
+        // ------------------------------------------------------------ background
+        Rectangle {
+            background: @radial-gradient(circle, #13204a 0%, Theme.bg 70%);
+        }
+        Image {
+            source: root.bg-a;
+            width: root.width;
+            height: root.height;
+            image-fit: cover;
+            opacity: root.bg-show-b ? 0 : 1;
+            animate opacity { duration: 450ms; easing: ease-in-out; }
+        }
+        Image {
+            source: root.bg-b;
+            width: root.width;
+            height: root.height;
+            image-fit: cover;
+            opacity: root.bg-show-b ? 1 : 0;
+            animate opacity { duration: 450ms; easing: ease-in-out; }
+        }
+        Rectangle { background: @linear-gradient(90deg, #04060ef0 0%, #04060eb8 30%, #04060e2e 62%, #04060e00 80%); }
+        Rectangle { background: @linear-gradient(0deg, #04060ef5 0%, #04060e59 38%, #04060e00 60%); }
+        Rectangle { background: @linear-gradient(180deg, #04060ed9 0%, #04060e00 26%); }
+        Rectangle {
+            background: #04060e;
+            opacity: root.bg-dim ? 0.84 : 0;
+            animate opacity { duration: 300ms; }
+        }
+
+        // ------------------------------------------------------------ HOME
+        home := Rectangle {
+            opacity: root.view == 0 ? 1 : 0;
+            visible: self.opacity > 0;
+            animate opacity { duration: 220ms; }
+
+            // Tile row: the selected tile is larger with its name beside it (PS5 home).
+            property <length> big: 172px;
+            property <length> small: 112px;
+            property <length> gap: 22px;
+            property <length> x0: 96px;
+            property <length> label-w: min(560px, max(row-name-t.preferred-width, row-sub-t.preferred-width)) + gap * 2.6;
+
+            Rectangle {
+                y: 128px;
+                height: 210px;
+                for t[i] in root.tiles: Rectangle {
+                    x: i < root.sel ? home.x0 - (root.sel - i) * (home.small + home.gap) - home.gap
+                        : i == root.sel ? home.x0 : home.x0 + home.big + home.label-w + (i - root.sel - 1) * (home.small + home.gap);
+                    y: 0;
+                    width: i == root.sel ? home.big : home.small;
+                    height: self.width;
+                    opacity: i < root.sel ? 0 : 1;
+                    visible: self.x < root.width + 40px && i >= root.sel - 2;
+                    animate x, width, opacity { duration: Theme.move; easing: cubic-bezier(0.2, 0.8, 0.2, 1); }
+                    FocusRing { w: parent.width; h: parent.height; on: i == root.sel && root.zone == Zone.row && root.overlay == 0; radius: 18px; }
+                    Rectangle {
+                        border-radius: 18px;
+                        clip: true;
+                        background: t.special ? #ffffff1f : Theme.panel;
+                        border-width: t.special ? 1px : 0;
+                        border-color: Theme.line;
+                        drop-shadow-blur: 0;
+                        if !t.special: Image {
+                            source: t.image;
+                            width: parent.width;
+                            height: parent.height;
+                            image-fit: cover;
+                            opacity: t.loaded ? 1 : 0;
+                            animate opacity { duration: 250ms; }
+                        }
+                        if t.special: Image {
+                            source: Icons.grid;
+                            colorize: Theme.text;
+                            width: parent.width * 0.42;
+                            height: self.width;
+                        }
+                    }
+                    if t.badge != "": Badge {
+                        x: 10px;
+                        y: parent.height - self.height - 10px;
+                        text: t.badge;
+                        size: i == root.sel ? 13px : 10px;
+                    }
+                    Rectangle {
+                        border-radius: 18px;
+                        border-width: t.badge == "Playing" ? 3px : 0;
+                        border-color: Theme.ok;
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.click(Zone.row, i); }
+                    }
+                }
+                Rectangle {
+                    x: home.x0 + home.big + home.gap * 1.2;
+                    y: 0;
+                    height: home.big;
+                    width: min(560px, max(row-name-t.preferred-width, row-sub-t.preferred-width));
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 6px;
+                        row-name-t := Text { text: root.row-name; font-size: 30px; font-weight: 500; color: Theme.text; overflow: elide; }
+                        row-sub-t := Text { text: root.row-sub; font-size: 18px; color: Theme.text2; overflow: elide; }
+                    }
+                }
+                TouchArea {
+                    scroll-event(e) => {
+                        root.row-wheel((e.delta-y + e.delta-x) / 1px);
+                        return EventResult.accept;
+                    }
+                }
+            }
+
+            // Hero: kicker, logo/title, chips, description, actions (anchored to the bottom).
+            VerticalLayout {
+                x: 96px;
+                width: 900px;
+                y: 360px;
+                height: root.height - 360px - 112px;
+                alignment: end;
+                spacing: 0;
+                Kicker { text: root.hero.kicker; accent: root.hero.kicker-accent; live: root.hero.kicker-live; }
+                Rectangle { height: 14px; }
+                if root.hero.has-logo: Image {
+                    source: root.hero.logo;
+                    width: root.hero.logo-w;
+                    height: root.hero.logo-h;
+                    image-fit: contain;
+                }
+                if !root.hero.has-logo: Text {
+                    text: root.hero.title;
+                    font-size: 84px;
+                    font-weight: 700;
+                    color: Theme.text;
+                    wrap: word-wrap;
+                    overflow: elide;
+                    max-height: 180px;
+                }
+                Rectangle { height: 22px; }
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    for c in root.hero.chips: Chip { data: c; }
+                }
+                Rectangle { height: 20px; }
+                Text {
+                    text: root.hero.desc;
+                    font-size: 21px;
+                    color: Theme.text2;
+                    wrap: word-wrap;
+                    overflow: elide;
+                    max-width: 780px;
+                    max-height: 96px;
+                }
+                Rectangle { height: 34px; }
+                HorizontalLayout {
+                    spacing: 16px;
+                    alignment: start;
+                    for a[i] in root.hero.actions: Btn {
+                        data: a;
+                        focused: root.zone == Zone.actions && root.idx == i && root.overlay == 0;
+                        clicked => { root.click(Zone.actions, i); }
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------ LIBRARY
+        Rectangle {
+            opacity: root.view == 1 ? 1 : 0;
+            visible: self.opacity > 0;
+            animate opacity { duration: 220ms; }
+
+            // Grid (virtualized: only rows near the viewport exist).
+            grid := Flickable {
+                y: 262px;
+                height: root.height - 262px;
+                width: root.width;
+                content-height: root.grid-h;
+                content-y <=> root.grid-y;
+                interactive: true;
+                changed content-y => { root.grid-scrolled(); }
+                for r in root.grid-rows: Rectangle {
+                    y: r.index * root.row-h + 16px;
+                    height: root.row-h;
+                    for c[j] in r.cards: Rectangle {
+                        x: 96px + j * (root.card-w + root.grid-gap);
+                        width: root.card-w;
+                        property <bool> f: root.zone == Zone.grid && root.idx == c.index && root.overlay == 0;
+                        Rectangle {
+                            y: 0;
+                            height: root.card-w * 1.25;
+                            FocusRing { w: parent.width; h: parent.height; on: f; radius: 14px; }
+                            Rectangle {
+                                border-radius: 14px;
+                                clip: true;
+                                background: Theme.panel;
+                                Image {
+                                    source: c.image;
+                                    width: parent.width;
+                                    height: parent.height;
+                                    image-fit: cover;
+                                    opacity: c.loaded ? 1 : 0;
+                                    animate opacity { duration: 250ms; }
+                                }
+                                Badge { x: 10px; y: 10px; text: c.badge; size: 12px; }
+                                if c.rating != "": Rectangle {
+                                    x: parent.width - self.width - 10px;
+                                    y: parent.height - self.height - 10px;
+                                    width: rt.preferred-width + 16px;
+                                    height: 26px;
+                                    border-radius: 6px;
+                                    background: #000000b8;
+                                    rt := Text { text: "★ " + c.rating; font-size: 14px; font-weight: 700; color: #ffd666; }
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            y: root.card-w * 1.25 + 14px;
+                            spacing: 4px;
+                            Text {
+                                text: c.title;
+                                font-size: 19px;
+                                font-weight: f ? 600 : 500;
+                                color: f ? #ffffff : Theme.text;
+                                wrap: word-wrap;
+                                overflow: elide;
+                                height: 48px;
+                                vertical-alignment: top;
+                            }
+                            Text { text: c.meta; font-size: 16px; color: f ? Theme.text2 : Theme.text3; overflow: elide; }
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.click(Zone.grid, c.index); }
+                        }
+                    }
+                }
+            }
+            if root.grid-empty != "": Text {
+                y: 420px;
+                width: root.width;
+                horizontal-alignment: center;
+                text: root.grid-empty;
+                font-size: 24px;
+                color: Theme.text3;
+            }
+
+            // Header: search, sort, count, genre chips.
+            Rectangle {
+                y: 0;
+                height: 262px;
+                background: @linear-gradient(180deg, #070a14 0%, #070a14 88%, #070a1400 100%);
+                HorizontalLayout {
+                    x: 96px;
+                    y: 112px;
+                    width: root.width - 192px;
+                    height: 62px;
+                    spacing: 18px;
+                    Rectangle {
+                        width: 640px;
+                        border-radius: 31px;
+                        background: root.zone == Zone.search ? #232c47 : #ffffff14;
+                        border-width: root.zone == Zone.search ? 3px : 1px;
+                        border-color: root.zone == Zone.search ? #ffffff : Theme.line;
+                        drop-shadow-blur: root.zone == Zone.search ? 18px : 0;
+                        drop-shadow-color: #3d8bff66;
+                        Image { x: 24px; source: Icons.search; colorize: Theme.text2; width: 24px; height: 24px; }
+                        search-input := TextInput {
+                            x: 62px;
+                            width: parent.width - 86px;
+                            height: parent.height;
+                            vertical-alignment: center;
+                            font-size: 22px;
+                            color: Theme.text;
+                            text <=> root.query;
+                            single-line: true;
+                            edited => { root.search-edited(self.text); }
+                            accepted => { root.search-done(true); }
+                        }
+                        if root.query == "": Text {
+                            x: 62px;
+                            text: "Search games";
+                            font-size: 22px;
+                            color: Theme.text3;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            mouse-cursor: text;
+                            clicked => { root.click(Zone.search, 0); }
+                        }
+                    }
+                    Rectangle {
+                        width: sort-row.preferred-width + 40px;
+                        border-radius: 31px;
+                        background: root.zone == Zone.sort ? #ffffff26 : #ffffff14;
+                        border-width: root.zone == Zone.sort ? 3px : 1px;
+                        border-color: root.zone == Zone.sort ? #ffffff : Theme.line;
+                        sort-row := HorizontalLayout {
+                            spacing: 10px;
+                            alignment: center;
+                            Image { source: Icons.chevl; colorize: Theme.text3; width: 22px; height: 22px; y: (parent.height - 22px) / 2; }
+                            Text { text: root.sort-label; font-size: 20px; color: Theme.text; vertical-alignment: center; }
+                            Image { source: Icons.chevr; colorize: Theme.text3; width: 22px; height: 22px; y: (parent.height - 22px) / 2; }
+                        }
+                        TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.sort, 0); } }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text { text: root.count-label; font-size: 19px; color: Theme.text3; vertical-alignment: center; }
+                }
+                Flickable {
+                    x: 92px;
+                    y: 192px;
+                    width: root.width - 184px;
+                    height: 52px;
+                    content-x: root.genres-x;
+                    interactive: false;
+                    for g[i] in root.genres: Rectangle {
+                        x: g.x + 4px;
+                        y: 4px;
+                        width: g.w;
+                        height: 44px;
+                        border-radius: 22px;
+                        property <bool> f: root.zone == Zone.chips && root.idx == i && root.overlay == 0;
+                        background: g.on ? #ffffff : #ffffff0f;
+                        border-width: f ? 3px : 1px;
+                        border-color: f ? (g.on ? Theme.accent : #ffffff) : Theme.line;
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 6px;
+                            Text { text: g.label; font-size: 18px; color: g.on ? #0a0d18 : (f ? Theme.text : Theme.text2); vertical-alignment: center; }
+                            Text { text: g.count; font-size: 15px; color: g.on ? #56607a : Theme.text3; vertical-alignment: center; }
+                        }
+                        TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.chips, i); } }
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------ TOP BAR
+        Rectangle {
+            y: 0;
+            height: 104px;
+            HorizontalLayout {
+                x: 96px;
+                y: 0;
+                height: 104px;
+                spacing: 44px;
+                alignment: start;
+                for tab[i] in ["Games", "Library"]: Rectangle {
+                    width: tt.preferred-width + 8px;
+                    property <bool> active: root.view == i;
+                    property <bool> f: root.zone == Zone.tabs && root.idx == i && root.overlay == 0;
+                    tt := Text {
+                        text: tab;
+                        font-size: 30px;
+                        font-weight: 500;
+                        color: active || f ? Theme.text : Theme.text3;
+                        animate color { duration: Theme.fast; }
+                    }
+                    Rectangle {
+                        y: parent.height / 2 + 28px;
+                        width: active ? 28px : 0;
+                        height: 3px;
+                        border-radius: 2px;
+                        background: #ffffff;
+                        animate width { duration: Theme.move; easing: cubic-bezier(0.2, 0.8, 0.2, 1); }
+                    }
+                    Rectangle {
+                        visible: f;
+                        x: -14px;
+                        width: parent.width + 28px;
+                        y: parent.height / 2 - 26px;
+                        height: 52px;
+                        border-radius: 26px;
+                        border-width: 3px;
+                        border-color: #ffffff;
+                    }
+                    TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.tabs, i); } }
+                }
+            }
+            HorizontalLayout {
+                x: root.width - self.width - 96px;
+                y: 0;
+                width: self.preferred-width;
+                height: 104px;
+                spacing: 22px;
+                if root.running.active: Rectangle {
+                    height: 52px;
+                    y: 26px;
+                    width: pill.preferred-width;
+                    border-radius: 26px;
+                    background: #3ddc9724;
+                    border-width: 1px;
+                    border-color: #3ddc975a;
+                    pill := HorizontalLayout {
+                        padding-left: 18px;
+                        padding-right: 8px;
+                        spacing: 12px;
+                        Rectangle { width: 10px; height: 10px; y: 21px; border-radius: 5px; background: Theme.ok; }
+                        Text { text: root.running.name; font-size: 18px; font-weight: 600; color: Theme.text; vertical-alignment: center; }
+                        Text { text: root.running.time; font-size: 18px; color: Theme.text2; vertical-alignment: center; }
+                        for b[i] in ["Resume", "Stop"]: Rectangle {
+                            y: 7px;
+                            height: 38px;
+                            width: bt.preferred-width + 28px;
+                            border-radius: 19px;
+                            property <bool> f: root.zone == Zone.top && root.idx == i && root.overlay == 0;
+                            background: f ? (i == 1 ? Theme.danger : #ffffff) : #ffffff1f;
+                            bt := Text { text: b; font-size: 16px; font-weight: 600; color: f && i == 0 ? #0a0d18 : #ffffff; }
+                            TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.top, i); } }
+                        }
+                    }
+                }
+                for ic[i] in [Icons.search, Icons.gear]: Rectangle {
+                    width: 52px;
+                    height: 52px;
+                    y: 26px;
+                    border-radius: 26px;
+                    property <bool> f: root.zone == Zone.top && root.idx == i + 2 && root.overlay == 0;
+                    background: f ? #ffffff : ta.has-hover ? #ffffff14 : transparent;
+                    Image { source: ic; colorize: f ? #0a0d18 : Theme.text2; width: 26px; height: 26px; }
+                    ta := TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.top, i + 2); } }
+                }
+                Rectangle {
+                    width: 46px;
+                    height: 46px;
+                    y: 29px;
+                    border-radius: 23px;
+                    background: @linear-gradient(135deg, #0a6cff 0%, #8b5cf6 50%, #ec4899 100%);
+                    border-width: 2px;
+                    border-color: #ffffff59;
+                    Image { source: Icons.user; colorize: #ffffff; width: 25px; height: 25px; }
+                }
+                Text {
+                    text: root.clock;
+                    font-size: 26px;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    min-width: 80px;
+                    horizontal-alignment: right;
+                }
+            }
+        }
+
+        // ------------------------------------------------------------ status + hints
+        if root.status != "": HorizontalLayout {
+            x: 96px;
+            y: root.height - 64px;
+            height: 30px;
+            spacing: 10px;
+            if root.status-busy: Image {
+                source: Icons.spinner;
+                width: 18px;
+                height: 18px;
+                y: 6px;
+                transform-rotation: animation-tick() / 1ms * 0.4deg;
+            }
+            Text { text: root.status; font-size: 17px; color: Theme.text3; vertical-alignment: center; }
+        }
+        Rectangle {
+            x: root.width - self.width - 76px;
+            y: root.height - self.height - 30px;
+            width: hints.preferred-width;
+            height: 50px;
+            border-radius: 25px;
+            background: #070a14e6;
+            border-width: 1px;
+            border-color: Theme.line;
+            // Hidden over the library grid so it never covers game titles.
+            visible: root.overlay != 4 && root.overlay != 3 && root.overlay != 6 && (root.view == 0 || root.overlay != 0);
+            hints := HorizontalLayout {
+                padding-left: 20px;
+                padding-right: 22px;
+                spacing: 24px;
+                alignment: center;
+                for h in root.pad-hints
+                    ? [{k: "✕", l: "Select", c: #8fb6ff, r: true}, {k: "○", l: "Back", c: #ff8f9c, r: true}, {k: "□", l: "Trailer", c: #f5a3e6, r: true}, {k: "△", l: "Search", c: #6ee7c8, r: true}, {k: "☰", l: "Options", c: #ffffff, r: false}]
+                    : [{k: "Enter", l: "Select", c: #ffffff, r: false}, {k: "Esc", l: "Back", c: #ffffff, r: false}, {k: "T", l: "Trailer", c: #ffffff, r: false}, {k: "/", l: "Search", c: #ffffff, r: false}, {k: "O", l: "Options", c: #ffffff, r: false}]
+                    : HorizontalLayout {
+                        spacing: 10px;
+                        KeyCap { text: h.k; round: h.r; fg: h.c; y: 10px; }
+                        Text { text: h.l; font-size: 17px; color: Theme.text2; vertical-alignment: center; }
+                    }
+            }
+        }
+
+        // ------------------------------------------------------------ GAME HUB
+        if root.overlay == 1 || root.hub-open: Rectangle {
+            background: Theme.bg;
+            Image {
+                source: root.bg-show-b ? root.bg-b : root.bg-a;
+                width: root.width;
+                height: root.height;
+                image-fit: cover;
+            }
+            Rectangle { background: @linear-gradient(90deg, #04060ef7 0%, #04060edb 45%, #04060e59 80%, #04060e33 100%); }
+            Rectangle { background: @linear-gradient(0deg, #04060ee6 0%, #04060e00 50%); }
+
+            Rectangle {
+                x: 96px;
+                y: 130px;
+                width: 380px;
+                height: 475px;
+                border-radius: 20px;
+                clip: true;
+                background: Theme.panel;
+                drop-shadow-blur: 0;
+                Image {
+                    source: root.hub.cover;
+                    width: parent.width;
+                    height: parent.height;
+                    image-fit: cover;
+                    opacity: root.hub.cover-loaded ? 1 : 0;
+                    animate opacity { duration: 250ms; }
+                }
+            }
+            Flickable {
+                x: 540px;
+                width: root.width - 540px - 60px;
+                height: root.height;
+                content-y <=> root.hub-y;
+                content-height: hub-col.preferred-height + 200px;
+                hub-col := VerticalLayout {
+                    x: 0;
+                    y: 0;
+                    width: min(1060px, root.width - 540px - 96px);
+                    height: self.preferred-height;
+                    padding-top: 130px;
+                    spacing: 0;
+                    Kicker { text: root.hub.kicker; accent: root.hub.kicker-accent; live: root.hub.kicker-live; }
+                    Rectangle { height: 16px; }
+                    if root.hub.has-logo: Image {
+                        source: root.hub.logo;
+                        width: root.hub.logo-w;
+                        height: root.hub.logo-h;
+                        image-fit: contain;
+                    }
+                    if !root.hub.has-logo: Text {
+                        text: root.hub.title;
+                        font-size: 72px;
+                        font-weight: 700;
+                        color: Theme.text;
+                        wrap: word-wrap;
+                    }
+                    Rectangle { height: 22px; }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        alignment: start;
+                        for c in root.hub.chips: Chip { data: c; }
+                    }
+                    Rectangle { height: 30px; }
+                    HorizontalLayout {
+                        spacing: 16px;
+                        alignment: start;
+                        for a[i] in root.hub.actions: Btn {
+                            data: a;
+                            focused: root.zone == Zone.hub && root.idx == i && root.overlay == 1;
+                            clicked => { root.click(Zone.hub, i); }
+                        }
+                    }
+                    Rectangle { height: 40px; }
+                    for fr in root.hub.facts: HorizontalLayout {
+                        spacing: 14px;
+                        padding-bottom: 14px;
+                        for f in fr.items: Rectangle {
+                            width: (min(1060px, root.width - 540px - 96px) - 28px) / 3;
+                            height: 92px;
+                            border-radius: 16px;
+                            background: #0b1020b8;
+                            border-width: 1px;
+                            border-color: Theme.line;
+                            VerticalLayout {
+                                padding-left: 22px;
+                                padding-right: 16px;
+                                alignment: center;
+                                spacing: 6px;
+                                Text { text: f.key; font-size: 15px; font-weight: 600; letter-spacing: 1.5px; color: Theme.text3; }
+                                Text { text: f.value; font-size: 21px; font-weight: 500; color: Theme.text; overflow: elide; }
+                            }
+                        }
+                    }
+                    if root.hub.shots.length > 0: VerticalLayout {
+                        padding-top: 22px;
+                        spacing: 14px;
+                        Text { text: "SCREENSHOTS"; font-size: 18px; font-weight: 600; letter-spacing: 2px; color: Theme.text3; }
+                        Flickable {
+                            height: 180px;
+                            interactive: false;
+                            content-x: root.shots-x;
+                            content-width: root.hub.shots.length * 314px + 12px;
+                            for s[i] in root.hub.shots: Rectangle {
+                                x: 6px + i * 314px;
+                                y: 6px;
+                                width: 300px;
+                                height: 169px;
+                                FocusRing { w: parent.width; h: parent.height; on: root.zone == Zone.shots && root.idx == i && root.overlay == 1; radius: 12px; }
+                                Rectangle {
+                                    border-radius: 12px;
+                                    clip: true;
+                                    background: Theme.panel;
+                                    Image {
+                                        source: s.image;
+                                        width: parent.width;
+                                        height: parent.height;
+                                        image-fit: cover;
+                                        opacity: s.loaded ? 1 : 0;
+                                        animate opacity { duration: 250ms; }
+                                    }
+                                }
+                                TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.shots, i); } }
+                            }
+                        }
+                    }
+                    if root.hub.about.length > 0: VerticalLayout {
+                        padding-top: 30px;
+                        spacing: 16px;
+                        Text { text: "ABOUT"; font-size: 18px; font-weight: 600; letter-spacing: 2px; color: root.zone == Zone.desc ? Theme.text : Theme.text3; }
+                        for p in root.hub.about: Text {
+                            text: p;
+                            font-size: 21px;
+                            color: Theme.text2;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------ SETTINGS
+        if root.overlay == 2: Rectangle {
+            background: #03050ccc;
+            TouchArea { clicked => { root.click(Zone.settings, -1); } }
+            Rectangle {
+                x: root.width - 760px;
+                width: 760px;
+                background: @linear-gradient(180deg, #111a33 0%, #0a1024 100%);
+                border-width: 1px;
+                border-color: Theme.line;
+                TouchArea {}
+                Flickable {
+                    content-y <=> root.settings-y;
+                    content-height: sheet.preferred-height;
+                    sheet := VerticalLayout {
+                        x: 0;
+                        y: 0;
+                        width: 760px;
+                        height: self.preferred-height;
+                        padding-left: 56px;
+                        padding-right: 56px;
+                        padding-top: 64px;
+                        padding-bottom: 120px;
+                        spacing: 0;
+                        Text { text: "Settings"; font-size: 44px; font-weight: 600; color: Theme.text; }
+                        Text { text: "Changes are saved automatically"; font-size: 18px; color: Theme.text3; }
+                        for s[i] in root.settings: VerticalLayout {
+                            property <bool> f: root.zone == Zone.settings && root.idx == i;
+                            padding-top: s.kind == 0 ? 36px : 8px;
+                            padding-bottom: s.kind == 0 ? 10px : 4px;
+                            spacing: 6px;
+                            if s.kind == 0: Text { text: s.label; font-size: 16px; font-weight: 600; letter-spacing: 2px; color: Theme.text3; }
+                            if s.kind == 1: Text { text: s.label; font-size: 19px; color: Theme.text2; }
+                            if s.kind == 1: Rectangle {
+                                height: 54px;
+                                border-radius: 12px;
+                                background: f ? #ffffff1f : #ffffff12;
+                                border-width: f ? 3px : 1px;
+                                border-color: f ? #ffffff : (s.hint-kind == 2 ? Theme.danger : Theme.line);
+                                if root.edit-index != i: Text {
+                                    x: 18px;
+                                    width: parent.width - 36px;
+                                    text: s.value != "" ? s.value : (s.secret ? "Not set" : "—");
+                                    font-size: 19px;
+                                    color: s.value != "" ? Theme.text : Theme.text3;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    font-family: "DejaVu Sans Mono";
+                                }
+                                if root.edit-index == i: TextInput {
+                                    x: 18px;
+                                    width: parent.width - 36px;
+                                    height: parent.height;
+                                    text <=> root.edit-text;
+                                    single-line: true;
+                                    input-type: s.secret ? InputType.password : InputType.text;
+                                    font-size: 19px;
+                                    color: Theme.text;
+                                    vertical-alignment: center;
+                                    font-family: "DejaVu Sans Mono";
+                                    init => { self.focus(); self.select-all(); }
+                                    accepted => { root.edit-done(self.text, true); }
+                                }
+                                TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.settings, i); } }
+                            }
+                            if (s.kind == 2 || s.kind == 3 || s.kind == 4): Rectangle {
+                                height: 64px;
+                                border-radius: 12px;
+                                background: f ? (s.danger ? #ff5a6a40 : #ffffff1f) : #ffffff0d;
+                                border-width: f ? 3px : 1px;
+                                border-color: f ? (s.danger ? Theme.danger : #ffffff) : Theme.line;
+                                HorizontalLayout {
+                                    padding-left: 18px;
+                                    padding-right: 18px;
+                                    spacing: 12px;
+                                    Text {
+                                        text: s.label;
+                                        font-size: 19px;
+                                        color: s.danger ? #ffb3bb : Theme.text;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                        font-weight: s.kind == 4 ? 600 : 400;
+                                    }
+                                    if s.kind == 2: Switch { on: s.on; y: 16px; }
+                                    if s.kind == 3: HorizontalLayout {
+                                        spacing: 8px;
+                                        Image { source: Icons.chevl; colorize: f ? Theme.text : Theme.text3; width: 22px; height: 22px; y: 21px; }
+                                        Text { text: s.value; font-size: 19px; color: Theme.text; vertical-alignment: center; }
+                                        Image { source: Icons.chevr; colorize: f ? Theme.text : Theme.text3; width: 22px; height: 22px; y: 21px; }
+                                    }
+                                    if s.kind == 4 && s.value != "": Text { text: s.value; font-size: 16px; color: Theme.text3; vertical-alignment: center; }
+                                }
+                                TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.settings, i); } }
+                            }
+                            if s.hint != "": Text {
+                                text: s.hint;
+                                font-size: 16px;
+                                wrap: word-wrap;
+                                color: s.hint-kind == 1 ? Theme.ok : s.hint-kind == 2 ? Theme.danger : Theme.text3;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------ SCREENSHOT VIEWER
+        if root.overlay == 3: Rectangle {
+            background: #000000f2;
+            Image {
+                x: root.width * 0.04;
+                y: root.height * 0.04;
+                width: root.width * 0.92;
+                height: root.height * 0.92;
+                source: root.viewer-image;
+                image-fit: contain;
+            }
+            Rectangle {
+                x: root.width - self.width - 48px;
+                y: root.height - self.height - 36px;
+                width: vc.preferred-width + 28px;
+                height: 36px;
+                border-radius: 18px;
+                background: #000000b3;
+                vc := Text { text: root.viewer-count + "   ◂ ▸ to browse · Esc to close"; font-size: 16px; color: Theme.text2; }
+            }
+            TouchArea { clicked => { root.click(Zone.shots, -1); } }
+        }
+
+        // ------------------------------------------------------------ OPTIONS MENU
+        if root.overlay == 5: Rectangle {
+            background: #03050c99;
+            TouchArea { clicked => { root.click(Zone.menu, -1); } }
+            Rectangle {
+                x: (root.width - self.width) / 2;
+                y: (root.height - self.height) / 2;
+                width: 520px;
+                height: menu-col.preferred-height;
+                border-radius: 22px;
+                background: #121a31fa;
+                border-width: 1px;
+                border-color: Theme.line;
+                drop-shadow-blur: 40px;
+                drop-shadow-color: #00000099;
+                TouchArea {}
+                menu-col := VerticalLayout {
+                    padding: 18px;
+                    spacing: 6px;
+                    Text {
+                        text: root.menu-title;
+                        font-size: 20px;
+                        font-weight: 600;
+                        color: Theme.text2;
+                        overflow: elide;
+                        horizontal-alignment: left;
+                    }
+                    Rectangle { height: 6px; }
+                    for m[i] in root.menu-items: Rectangle {
+                        height: 58px;
+                        border-radius: 12px;
+                        property <bool> f: root.zone == Zone.menu && root.idx == i;
+                        background: f ? #ffffff : transparent;
+                        HorizontalLayout {
+                            padding-left: 18px;
+                            spacing: 16px;
+                            Image { source: Icons.get(m.icon); colorize: f ? #0a0d18 : Theme.text2; width: 24px; height: 24px; y: 17px; }
+                            Text { text: m.label; font-size: 20px; color: f ? #0a0d18 : Theme.text; vertical-alignment: center; }
+                        }
+                        TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.menu, i); } }
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------ LAUNCH SPLASH
+        if root.overlay == 4: Rectangle {
+            background: #000000;
+            Image {
+                source: root.launch-bg;
+                width: root.width;
+                height: root.height;
+                image-fit: cover;
+                opacity: 0.45;
+            }
+            Rectangle { background: @radial-gradient(circle, #00000033 0%, #000000d9 75%); }
+            VerticalLayout {
+                alignment: center;
+                spacing: 0;
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 220px;
+                        height: 220px;
+                        border-radius: 28px;
+                        clip: true;
+                        background: Theme.panel;
+                        Image { source: root.launch-icon; width: parent.width; height: parent.height; image-fit: cover; }
+                    }
+                }
+                Rectangle { height: 34px; }
+                Text { text: root.launch-name; font-size: 44px; font-weight: 600; color: Theme.text; horizontal-alignment: center; }
+                Rectangle { height: 10px; }
+                Text { text: "Starting with KytyPS5…"; font-size: 20px; color: Theme.text2; horizontal-alignment: center; }
+                Rectangle { height: 36px; }
+                HorizontalLayout {
+                    alignment: center;
+                    Image {
+                        source: Icons.spinner;
+                        width: 44px;
+                        height: 44px;
+                        transform-rotation: animation-tick() / 1ms * 0.4deg;
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------ BOOT / WELCOME
+        boot := Rectangle {
+            property <bool> shown: root.overlay == 6;
+            opacity: shown ? 1 : 0;
+            visible: self.opacity > 0.01;
+            animate opacity { duration: 450ms; easing: ease-in-out; }
+            background: @radial-gradient(circle, #14224d 0%, #070b1a 55%, #03050c 100%);
+            TouchArea { clicked => { root.click(Zone.row, -2); } }
+            VerticalLayout {
+                alignment: center;
+                spacing: 0;
+                HorizontalLayout {
+                    alignment: center;
+                    Image {
+                        source: @image-url("../assets/icons/app-icon.svg");
+                        width: 150px;
+                        height: 150px;
+                    }
+                }
+                Rectangle { height: 40px; }
+                Text {
+                    text: root.boot-first ? "Welcome" : "";
+                    visible: root.boot-first;
+                    font-size: 64px;
+                    font-weight: 700;
+                    color: Theme.text;
+                    horizontal-alignment: center;
+                }
+                Rectangle { height: root.boot-first ? 8px : 0; }
+                if root.boot-first: Text {
+                    text: "Your PS5-style game launcher is getting ready";
+                    font-size: 24px;
+                    color: Theme.text2;
+                    horizontal-alignment: center;
+                }
+                Rectangle { height: root.boot-first ? 56px : 8px; }
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 520px;
+                        height: 6px;
+                        border-radius: 3px;
+                        background: #ffffff1f;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * root.boot-progress;
+                            border-radius: 3px;
+                            background: @linear-gradient(90deg, #3d8bff 0%, #8fb6ff 100%);
+                            animate width { duration: 300ms; easing: ease-out; }
+                        }
+                    }
+                }
+                Rectangle { height: 22px; }
+                Text {
+                    text: root.boot-status;
+                    font-size: 19px;
+                    color: Theme.text2;
+                    horizontal-alignment: center;
+                }
+                Rectangle { height: 8px; }
+                if root.boot-first: Text {
+                    text: root.boot-detail;
+                    font-size: 16px;
+                    color: Theme.text3;
+                    horizontal-alignment: center;
+                }
+                Rectangle { height: 48px; }
+                if root.boot-first: HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        height: 64px;
+                        width: prompt.preferred-width + 60px;
+                        border-radius: 32px;
+                        background: root.boot-ready ? #ffffff : #ffffff1a;
+                        border-width: 1px;
+                        border-color: #ffffff33;
+                        animate background { duration: 300ms; }
+                        prompt := HorizontalLayout {
+                            alignment: center;
+                            spacing: 12px;
+                            KeyCap { text: root.pad-hints ? "✕" : "Enter"; round: root.pad-hints; fg: root.boot-ready ? #ffffff : #8fb6ff; bg: root.boot-ready ? #0a0d18 : #ffffff24; y: 17px; }
+                            Text {
+                                text: root.boot-ready ? "Start" : "Skip and continue";
+                                font-size: 21px;
+                                font-weight: 600;
+                                color: root.boot-ready ? #0a0d18 : Theme.text;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------ TOASTS
+        VerticalLayout {
+            x: root.width - 56px - 620px;
+            y: 110px;
+            width: 620px;
+            spacing: 12px;
+            alignment: start;
+            for t in root.toasts: HorizontalLayout {
+                alignment: end;
+                Toast { data: t; }
+            }
+        }
+    }
+}

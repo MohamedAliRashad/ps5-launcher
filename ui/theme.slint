@@ -1,0 +1,148 @@
+// Colors, icons and shared data types. Everything is laid out on a 1920×1080 logical
+// canvas; the Rust side sets the scale factor so it fills the chosen display exactly.
+
+import "../assets/fonts/Inter-Regular.ttf";
+import "../assets/fonts/Inter-Medium.ttf";
+import "../assets/fonts/Inter-SemiBold.ttf";
+import "../assets/fonts/Inter-Bold.ttf";
+
+export global Theme {
+    out property <color> bg: #05070f;
+    out property <color> panel: #121a31;
+    out property <color> text: #f5f7fb;
+    out property <color> text2: #b9c3da;
+    out property <color> text3: #7d88a3;
+    out property <color> accent: #0a6cff;
+    out property <color> ok: #3ddc97;
+    out property <color> warn: #ffb547;
+    out property <color> danger: #ff5a6a;
+    out property <color> line: #ffffff1c;
+    out property <color> ring: #ffffff;
+    out property <color> glow: #0a6cff8c;
+    out property <duration> fast: 160ms;
+    out property <duration> move: 240ms;
+}
+
+export global Icons {
+    out property <image> search: @image-url("../assets/icons/search.svg");
+    out property <image> gear: @image-url("../assets/icons/gear.svg");
+    out property <image> play: @image-url("../assets/icons/play.svg");
+    out property <image> film: @image-url("../assets/icons/film.svg");
+    out property <image> info: @image-url("../assets/icons/info.svg");
+    out property <image> grid: @image-url("../assets/icons/grid.svg");
+    out property <image> web: @image-url("../assets/icons/web.svg");
+    out property <image> disk: @image-url("../assets/icons/disk.svg");
+    out property <image> cal: @image-url("../assets/icons/cal.svg");
+    out property <image> user: @image-url("../assets/icons/user.svg");
+    out property <image> tag: @image-url("../assets/icons/tag.svg");
+    out property <image> stop: @image-url("../assets/icons/stop.svg");
+    out property <image> star: @image-url("../assets/icons/star.svg");
+    out property <image> bag: @image-url("../assets/icons/bag.svg");
+    out property <image> power: @image-url("../assets/icons/power.svg");
+    out property <image> chevl: @image-url("../assets/icons/chevl.svg");
+    out property <image> chevr: @image-url("../assets/icons/chevr.svg");
+    out property <image> check: @image-url("../assets/icons/check.svg");
+    out property <image> folder: @image-url("../assets/icons/folder.svg");
+    out property <image> log: @image-url("../assets/icons/log.svg");
+    out property <image> spinner: @image-url("../assets/icons/spinner.svg");
+    out property <image> none;
+
+    public pure function get(name: string) -> image {
+        return name == "play" ? play : name == "stop" ? stop : name == "film" ? film : name == "info" ? info
+            : name == "grid" ? grid : name == "web" ? web : name == "disk" ? disk : name == "cal" ? cal
+            : name == "user" ? user : name == "tag" ? tag : name == "star" ? star : name == "bag" ? bag
+            : name == "power" ? power : name == "search" ? search : name == "gear" ? gear
+            : name == "check" ? check : name == "folder" ? folder : name == "log" ? log : none;
+    }
+}
+
+// Focus zones (mirrored in src/app.rs).
+export global Zone {
+    out property <int> tabs: 0;
+    out property <int> top: 1;
+    out property <int> row: 2;
+    out property <int> actions: 3;
+    out property <int> search: 4;
+    out property <int> sort: 5;
+    out property <int> chips: 6;
+    out property <int> grid: 7;
+    out property <int> hub: 8;
+    out property <int> shots: 9;
+    out property <int> desc: 10;
+    out property <int> settings: 11;
+    out property <int> menu: 12;
+}
+
+export struct ChipData { icon: string, text: string, gold: bool }
+export struct ActionData { id: string, label: string, icon: string, primary: bool, danger: bool, round: bool }
+
+export struct TileData {
+    image: image,
+    loaded: bool,
+    special: bool,
+    badge: string,      // "", "Installed", "Playing", "New"
+}
+
+export struct HeroData {
+    kicker: string,
+    kicker-accent: string,   // green/colored segment ("● Installed", "● Playing")
+    kicker-live: bool,
+    title: string,
+    logo: image,
+    has-logo: bool,
+    logo-w: length,
+    logo-h: length,
+    chips: [ChipData],
+    desc: string,
+    actions: [ActionData],
+}
+
+export struct CardData {
+    index: int,
+    title: string,
+    meta: string,
+    rating: string,
+    badge: string,
+    image: image,
+    loaded: bool,
+}
+
+export struct CardRow { index: int, cards: [CardData] }
+export struct GenreChip { label: string, count: string, on: bool, x: length, w: length }
+export struct Fact { key: string, value: string }
+export struct FactRow { items: [Fact] }
+export struct Shot { image: image, loaded: bool }
+
+export struct HubData {
+    kicker: string,
+    kicker-accent: string,
+    kicker-live: bool,
+    title: string,
+    logo: image,
+    has-logo: bool,
+    logo-w: length,
+    logo-h: length,
+    cover: image,
+    cover-loaded: bool,
+    chips: [ChipData],
+    age-icon: image,
+    actions: [ActionData],
+    facts: [FactRow],
+    shots: [Shot],
+    about: [string],
+}
+
+export struct SettingData {
+    kind: int,        // 0 header, 1 text, 2 toggle, 3 cycle, 4 button
+    label: string,
+    value: string,
+    on: bool,
+    hint: string,
+    hint-kind: int,   // 0 dim, 1 good, 2 bad
+    secret: bool,
+    danger: bool,
+}
+
+export struct ToastData { id: int, text: string, sub: string, kind: int } // kind 0 info, 1 ok, 2 error
+export struct MenuItem { label: string, icon: string }
+export struct RunningData { active: bool, name: string, time: string }

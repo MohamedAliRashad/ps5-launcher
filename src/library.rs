@@ -1,0 +1,77 @@
+//! Installed games: folders containing sce_sys/param.json.
+
+use crate::util::sha1_hex;
+use std::path::{Path, PathBuf};
+
+#[derive(Clone, Debug, Default)]
+pub struct LocalGame {
+    pub id: String,
+    pub name: String,
+    pub title_id: String,
+    pub content_id: String,
+    pub version: String,
+    pub path: PathBuf,
+    pub icon0: Option<PathBuf>,
+    pub pic0: Option<PathBuf>,
+}
+
+pub fn read_param(dir: &Path) -> Option<LocalGame> {
+    let sce = dir.join("sce_sys");
+    let bytes = std::fs::read(sce.join("param.json")).ok()?;
+    let p: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let lp = &p["localizedParameters"];
+    let lang = lp["defaultLanguage"].as_str().unwrap_or("en-US");
+    let tid = p["titleId"].as_str().unwrap_or("").to_string();
+    let name = lp[lang]["titleName"]
+        .as_str()
+        .or(lp["en-US"]["titleName"].as_str())
+        .map(String::from)
+        .unwrap_or_else(|| if tid.is_empty() { dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() } else { tid.clone() });
+    let file = |n: &str| Some(sce.join(n)).filter(|p| p.is_file());
+    Some(LocalGame {
+        id: sha1_hex(&dir.to_string_lossy())[..12].to_string(),
+        name,
+        title_id: tid,
+        content_id: p["contentId"].as_str().unwrap_or("").to_string(),
+        version: p["contentVersion"].as_str().unwrap_or("").to_string(),
+        path: dir.to_path_buf(),
+        icon0: file("icon0.png"),
+        pic0: file("pic0.png"),
+    })
+}
+
+/// Scan each folder, its children, and grandchildren (for "Games/<Title>/<PPSAxxxxx-app0>").
+pub fn scan(dirs: &[PathBuf]) -> Vec<LocalGame> {
+    let mut found: Vec<LocalGame> = Vec::new();
+    let mut push = |g: LocalGame| {
+        if !found.iter().any(|x| x.id == g.id) {
+            found.push(g);
+        }
+    };
+    for root in dirs {
+        if let Some(g) = read_param(root) {
+            push(g);
+        }
+        let Ok(rd) = std::fs::read_dir(root) else { continue };
+        let mut children: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        children.sort();
+        for c in children {
+            if c.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')) {
+                continue;
+            }
+            if let Some(g) = read_param(&c) {
+                push(g);
+                continue;
+            }
+            if let Ok(rd) = std::fs::read_dir(&c) {
+                for gc in rd.flatten().map(|e| e.path()).filter(|p| p.join("sce_sys").is_dir()) {
+                    if let Some(g) = read_param(&gc) {
+                        push(g);
+                    }
+                }
+            }
+        }
+    }
+    found.sort_by_key(|g| g.name.to_lowercase());
+    found
+}

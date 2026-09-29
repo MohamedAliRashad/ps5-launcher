@@ -1,0 +1,169 @@
+import { Theme, Icons, ChipData, ActionData } from "theme.slint";
+
+// White focus ring with a soft blue halo, drawn around its parent.
+export component FocusRing inherits Rectangle {
+    in property <length> radius: 16px;
+    in property <bool> on;
+    in property <length> w;
+    in property <length> h;
+    x: -4px;
+    y: -4px;
+    width: w + 8px;
+    height: h + 8px;
+    border-radius: self.radius + 4px;
+    border-width: 4px;
+    border-color: Theme.ring;
+    opacity: self.on ? 1 : 0;
+    drop-shadow-blur: self.on ? 18px : 0;
+    drop-shadow-color: Theme.glow;
+    animate opacity { duration: Theme.fast; }
+}
+
+export component Chip inherits Rectangle {
+    in property <ChipData> data;
+    height: 40px;
+    border-radius: 20px;
+    background: #ffffff17;
+    border-width: 1px;
+    border-color: #ffffff12;
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 8px;
+        if data.icon != "": Image {
+            source: Icons.get(data.icon);
+            colorize: data.gold ? #ffc940 : Theme.text2;
+            width: 18px;
+            height: 18px;
+            y: (parent.height - self.height) / 2;
+        }
+        Text {
+            text: data.text;
+            color: Theme.text;
+            font-size: 17px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component Btn inherits Rectangle {
+    in property <ActionData> data;
+    in property <bool> focused;
+    in property <length> h: 68px;
+    callback clicked();
+    height: h;
+    width: data.round ? h : max(data.primary ? 240px : 0px, row.preferred-width);
+    border-radius: h / 2;
+    background: focused ? (data.danger ? Theme.danger : #ffffff)
+        : data.primary ? #ffffffeb : data.danger ? #ff5a6a2e : #ffffff24;
+    border-width: 1px;
+    border-color: data.danger && !focused ? #ff5a6a5a : #ffffff1a;
+    drop-shadow-blur: focused ? 28px : 0;
+    drop-shadow-color: focused ? #8cb9ffaa : transparent;
+    animate background, drop-shadow-blur { duration: Theme.fast; }
+    row := HorizontalLayout {
+        alignment: center;
+        padding-left: data.round ? 0 : 36px;
+        padding-right: data.round ? 0 : 36px;
+        spacing: 12px;
+        Image {
+            source: Icons.get(data.icon);
+            colorize: (focused && !data.danger) || (data.primary && !focused) ? #0a0d18 : #ffffff;
+            width: 26px;
+            height: 26px;
+            y: (parent.height - self.height) / 2;
+        }
+        if !data.round: Text {
+            text: data.label;
+            font-size: 22px;
+            font-weight: 600;
+            color: (focused && !data.danger) || (data.primary && !focused) ? #0a0d18 : #ffffff;
+            vertical-alignment: center;
+        }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// "PS5 · ● Installed · PPSA02929"
+export component Kicker inherits HorizontalLayout {
+    in property <string> text;
+    in property <string> accent;
+    in property <bool> live;
+    spacing: 12px;
+    alignment: start;
+    Rectangle {
+        background: #ffffff24;
+        border-radius: 6px;
+        width: ps.preferred-width + 18px;
+        height: 30px;
+        ps := Text { text: "PS5"; font-size: 17px; font-weight: 700; color: #ffffff; }
+    }
+    if accent != "": Text {
+        text: accent;
+        font-size: 18px;
+        font-weight: 600;
+        letter-spacing: 2px;
+        color: Theme.ok;
+        vertical-alignment: center;
+    }
+    Text {
+        text: root.text;
+        font-size: 18px;
+        font-weight: 600;
+        letter-spacing: 2px;
+        color: live ? Theme.text : Theme.text2;
+        vertical-alignment: center;
+    }
+}
+
+export component Badge inherits Rectangle {
+    in property <string> text;
+    in property <length> size: 13px;
+    visible: text != "";
+    width: label.preferred-width + 16px;
+    height: label.preferred-height + 6px;
+    border-radius: 6px;
+    background: text == "Installed" ? Theme.ok : text == "Playing" ? Theme.ok : text == "New" ? Theme.accent : #000000b8;
+    label := Text {
+        text: root.text == "Playing" ? "● PLAYING" : root.text == "Installed" ? "INSTALLED" : root.text == "New" ? "NEW" : root.text;
+        font-size: size;
+        font-weight: 700;
+        letter-spacing: 1px;
+        color: root.text == "Installed" || root.text == "Playing" ? #03140c : #ffffff;
+    }
+}
+
+export component Switch inherits Rectangle {
+    in property <bool> on;
+    width: 58px;
+    height: 32px;
+    border-radius: 16px;
+    background: on ? Theme.accent : #ffffff33;
+    animate background { duration: Theme.fast; }
+    Rectangle {
+        x: on ? 30px : 4px;
+        y: 4px;
+        width: 24px;
+        height: 24px;
+        border-radius: 12px;
+        background: #ffffff;
+        animate x { duration: Theme.move; easing: cubic-bezier(0.2, 0.8, 0.2, 1); }
+    }
+}
+
+export component KeyCap inherits Rectangle {
+    in property <string> text;
+    in property <bool> round;
+    in property <color> fg: #ffffff;
+    in property <color> bg: #ffffff24;
+    height: 30px;
+    width: round ? 30px : max(30px, t.preferred-width + 16px);
+    border-radius: round ? 15px : 8px;
+    background: bg;
+    border-width: 1px;
+    border-color: #ffffff1f;
+    t := Text { text: root.text; font-size: 14px; font-weight: 700; color: root.fg; }
+}
