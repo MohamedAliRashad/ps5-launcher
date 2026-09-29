@@ -97,17 +97,45 @@ On Ubuntu and Debian: `sudo apt install xdotool mpv yt-dlp x11-xserver-utils`
 | `--sync` | Re-download the game catalog on start |
 | `--help`, `--version` | Show help or the version |
 
-**First launch:** a welcome screen downloads the catalog (about 1 second) and the official
-artwork (about a minute for all 700+ games). Then it preloads the Home screen and asks you to
-press **✕ / Enter** to start. You can skip the wait; artwork keeps loading in the background.
+**First launch:** a welcome screen gets everything ready before you're let in. With one
+progress bar it:
+
+1. downloads the catalog (about 1 second);
+2. downloads the official artwork (about a minute for all 700+ games);
+3. downloads the **latest KytyPS5 build**;
+4. preloads the Home screen and the first page of the Library.
+
+Then it asks you to press **✕ / Enter** to start. You can skip the wait; anything left keeps
+downloading in the background.
 
 **Later launches:** a short splash shows while the Home screen loads from the local cache,
 which takes well under a second.
 
-**Set up the emulator:** the launcher looks for `kyty_emulator` on its own, in your `PATH` and
-in common build folders. If it isn't found, set the path in **Settings → KytyPS5 executable**.
-Then point **Settings → Game folders** at the folder that holds your games. A game is any folder
-with a `sce_sys/param.json`.
+**Add your games:** point **Settings → Game folders** at the folder that holds your games. A
+game is any folder with a `sce_sys/param.json`.
+
+## KytyPS5 updates
+
+The launcher installs and updates [KytyPS5](https://github.com/KytyPS5/KytyPS5) for you, using
+its official Linux builds from GitHub Releases.
+
+- **Automatic:** it checks for a new build at startup and every 6 hours, and installs it in the
+  background. A small progress line shows at the bottom, and a notification appears when it's
+  done.
+- **Never mid-game:** if a game is running, the update waits until you close it.
+- **Verified:** every download is checked against GitHub's SHA-256 checksum. The new build must
+  start before the launcher switches to it.
+- **Your saves are safe:** Kyty's saves, shader caches and patches (`_SaveData`,
+  `_PipelineCache`, …) live in one shared folder that every version uses. Updates never touch them.
+- **Rollback:** the previous build is kept. **Settings → Roll back to previous KytyPS5** switches
+  back to it, and that build won't be reinstalled automatically.
+- **Using your own build:** if you set **Settings → KytyPS5 executable** to a build you compiled,
+  the launcher tells you when a newer official build exists but leaves yours alone.
+  **Switch to official KytyPS5 builds** moves you to auto-updates and *copies* your saves across;
+  your own build folder isn't changed.
+
+To turn this off, disable **Settings → Keep KytyPS5 updated automatically**. Managed builds live
+in `~/.local/share/ps5-launcher/kyty/`.
 
 ## Controls
 
@@ -151,6 +179,8 @@ user that access; if yours doesn't, add yourself to the `input` group.
   or watch the trailer.
 - **Multi-monitor:** the launcher opens on one display and never spans two. Choose which one in
   Settings.
+- **KytyPS5 auto-updates:** installs the official build on first launch, then keeps it current,
+  with rollback.
 
 ## Where things are stored
 
@@ -159,6 +189,7 @@ user that access; if yours doesn't, add yourself to the `input` group.
 | `~/.config/ps5-launcher/config.json` | Settings |
 | `~/.config/ps5-launcher/playtime.json` | Playtime per game |
 | `~/.cache/ps5-launcher/` | Catalog, artwork, decoded thumbnails, emulator logs (safe to delete) |
+| `~/.local/share/ps5-launcher/kyty/` | Managed KytyPS5 builds and their shared saves and caches (`data/`) |
 
 ## Performance
 

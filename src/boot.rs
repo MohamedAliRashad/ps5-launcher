@@ -1,6 +1,10 @@
-//! Welcome / boot screen. On the first run it downloads the catalog and official artwork
-//! with a progress bar; every launch it waits (briefly) until the Home screen's tiles,
-//! background and logo are decoded, so the UI never appears half-loaded.
+//! Welcome / boot screen.
+//!
+//! First run: downloads the catalog, the official artwork and the latest KytyPS5 build in
+//! parallel (one combined progress bar), then preloads the Home screen and the first Library
+//! page, so nothing is missing or still loading when the user gets in.
+//! Later runs: a short splash while the Home screen decodes from cache. If the emulator has
+//! gone missing, it is fetched here too.
 
 use crate::app::*;
 use crate::audio::{self, Sound};
@@ -14,14 +18,26 @@ pub const OVERLAY_BOOT: i32 = 6;
 pub struct Boot {
     pub active: bool,
     pub first: bool,
-    pub waiting_art: bool,
     pub ready: bool,
+    pub waiting_catalog: bool,
+    pub waiting_art: bool,
+    pub waiting_kyty: bool,
+    pub kyty_needed: bool,
+    pub collected: bool,
     pub keys: HashSet<String>,
     pub total: usize,
     pub started: Option<Instant>,
+    // Progress of each task, 0..1
+    pub f_catalog: f32,
+    pub f_art: f32,
+    pub f_kyty: f32,
+    pub f_img: f32,
+    pub text_main: String,
+    pub text_kyty: String,
+    pub kyty_note: String,
 }
 
-fn parse_progress(s: &str) -> Option<f32> {
+fn parse_fraction(s: &str) -> Option<f32> {
     let (a, b) = s.rsplit_once(' ')?.1.split_once('/')?;
     let (a, b): (f32, f32) = (a.parse().ok()?, b.parse().ok()?);
     (b > 0.0).then(|| (a / b).clamp(0.0, 1.0))
@@ -29,69 +45,189 @@ fn parse_progress(s: &str) -> Option<f32> {
 
 impl App {
     pub fn boot_start(&mut self, first: bool) {
-        self.boot = Boot { active: true, first, waiting_art: first, started: Some(Instant::now()), ..Default::default() };
+        let cfg = self.cfg.lock().unwrap().clone();
+        let managed = crate::kyty::is_managed(&cfg.emulator_path());
+        // First start: always get the latest official KytyPS5 (unless the user turned updates off).
+        // Any start: fetch it if the emulator is missing.
+        let kyty_needed = cfg.kyty_auto_update && ((first && !(managed && cfg.emulator_ok())) || !cfg.emulator_ok());
+        self.boot = Boot {
+            active: true,
+            first,
+            waiting_catalog: self.games.is_empty(),
+            waiting_art: first,
+            waiting_kyty: kyty_needed,
+            kyty_needed,
+            started: Some(Instant::now()),
+            f_catalog: if self.games.is_empty() { 0.0 } else { 1.0 },
+            ..Default::default()
+        };
         let ui = self.ui();
         ui.set_overlay(OVERLAY_BOOT);
         ui.set_boot_first(first);
         ui.set_boot_ready(false);
         ui.set_boot_progress(0.0);
-        let cfg = self.cfg.lock().unwrap().clone();
-        let emu = if cfg.emulator_ok() { "KytyPS5 emulator found".to_string() } else { "KytyPS5 emulator not found · you can set it in Settings".to_string() };
-        let n = self.locals.len();
-        ui.set_boot_detail(format!("{emu} · {n} installed game{}", if n == 1 { "" } else { "s" }).into());
-        ui.set_boot_status(if first { "Getting things ready…".into() } else { "Loading…".into() });
-        if !first {
-            self.boot_collect();
+        self.boot.kyty_note = if cfg.emulator_ok() && !kyty_needed {
+            "KytyPS5 emulator found".into()
+        } else if kyty_needed {
+            "Getting the latest KytyPS5 emulator".into()
+        } else {
+            "KytyPS5 emulator not found · you can set it in Settings".into()
+        };
+        self.boot_render();
+        if kyty_needed {
+            self.kyty.force_install = true;
+            self.kyty_check(false);
         }
-        // Never keep a returning user waiting on a slow network.
-        let limit = if first { 0 } else { 5 };
-        if limit > 0 {
-            slint::Timer::single_shot(Duration::from_secs(limit), || with_app(|app| app.boot_ready()));
+        self.boot_maybe_ready();
+        if !first {
+            // Never keep a returning user waiting on a slow network (unless the emulator is missing).
+            slint::Timer::single_shot(Duration::from_secs(5), || {
+                with_app(|app| {
+                    if !app.boot.waiting_kyty {
+                        app.boot_ready();
+                    }
+                })
+            });
         }
     }
 
-    /// Status text from background work (catalog sync, artwork downloads) drives the progress bar.
-    pub fn boot_status(&mut self, text: &str) {
-        if !self.boot.active || !self.boot.first || self.boot.ready {
+    fn boot_progress(&self) -> f32 {
+        let b = &self.boot;
+        let mut parts: Vec<(f32, f32)> = Vec::new();
+        if b.first {
+            parts.push((0.12, b.f_catalog));
+            parts.push((0.43, b.f_art));
+        }
+        if b.kyty_needed {
+            parts.push((if b.first { 0.35 } else { 0.8 }, b.f_kyty));
+        }
+        parts.push((if parts.is_empty() { 1.0 } else { 0.1 }, b.f_img));
+        let total: f32 = parts.iter().map(|p| p.0).sum();
+        parts.iter().map(|(w, f)| w * f).sum::<f32>() / total.max(0.001)
+    }
+
+    fn boot_render(&mut self) {
+        if !self.boot.active {
             return;
         }
-        let p = parse_progress(text).unwrap_or(0.0);
-        let overall = if text.contains("catalog") { 0.05 + p * 0.25 } else if text.contains("artwork") { 0.3 + p * 0.55 } else { return };
+        let b = &self.boot;
+        let status = if b.ready {
+            if b.first { "All set".to_string() } else { "Ready".to_string() }
+        } else {
+            let mut parts = Vec::new();
+            if (b.waiting_catalog || b.waiting_art) && !b.text_main.is_empty() {
+                parts.push(b.text_main.clone());
+            }
+            if b.waiting_kyty && !b.text_kyty.is_empty() {
+                parts.push(b.text_kyty.clone());
+            }
+            if parts.is_empty() {
+                parts.push(if b.collected { "Preparing your games…".into() } else if b.first { "Getting things ready…".into() } else { "Loading…".into() });
+            }
+            parts.join("   ·   ")
+        };
+        let n = self.locals.len();
+        let detail = format!("{} · {n} installed game{}", self.boot.kyty_note, if n == 1 { "" } else { "s" });
+        let progress = self.boot_progress();
         let ui = self.ui();
-        ui.set_boot_status(text.into());
-        ui.set_boot_progress(overall.max(ui.get_boot_progress()));
+        ui.set_boot_status(status.into());
+        ui.set_boot_detail(detail.into());
+        ui.set_boot_progress(progress.max(ui.get_boot_progress()));
     }
 
-    /// Called when background artwork enrichment has finished.
-    pub fn boot_art_done(&mut self) {
-        if self.boot.active && self.boot.waiting_art {
-            self.boot.waiting_art = false;
-            self.boot_collect();
-        }
-    }
-
-    /// Request everything the Home screen shows first and wait for it.
-    pub fn boot_collect(&mut self) {
+    /// Status text from catalog sync / artwork downloads.
+    pub fn boot_status(&mut self, text: &str) {
         if !self.boot.active || self.boot.ready {
             return;
         }
-        if self.games.is_empty() && (self.syncing || self.boot.first) && self.boot.waiting_art {
+        let f = parse_fraction(text);
+        if text.contains("catalog") {
+            self.boot.f_catalog = 0.05 + f.unwrap_or(0.0) * 0.95;
+        } else if text.contains("artwork") {
+            self.boot.f_art = f.unwrap_or(self.boot.f_art);
+        } else {
             return;
         }
+        self.boot.text_main = text.to_string();
+        self.boot_render();
+    }
+
+    pub fn boot_catalog_done(&mut self) {
+        if self.boot.active {
+            self.boot.waiting_catalog = false;
+            self.boot.f_catalog = 1.0;
+            self.boot_maybe_ready();
+        }
+    }
+
+    pub fn boot_art_done(&mut self) {
+        if self.boot.active && self.boot.waiting_art {
+            self.boot.waiting_art = false;
+            self.boot.f_art = 1.0;
+            // Artwork changed the image choices: collect again with the final art.
+            self.boot.collected = false;
+            self.boot_maybe_ready();
+        }
+    }
+
+    pub fn boot_kyty_progress(&mut self, text: &str, frac: f32) {
+        if self.boot.active && self.boot.waiting_kyty {
+            self.boot.f_kyty = frac;
+            self.boot.text_kyty = text.to_string();
+            self.boot_render();
+        }
+    }
+
+    pub fn boot_kyty_done(&mut self, note: &str) {
+        if self.boot.active && self.boot.waiting_kyty {
+            self.boot.waiting_kyty = false;
+            self.boot.f_kyty = 1.0;
+            self.boot.kyty_note = note.to_string();
+            self.boot_maybe_ready();
+        }
+    }
+
+    /// Ready when every download is done and the first screen's images are decoded.
+    pub fn boot_maybe_ready(&mut self) {
+        if !self.boot.active || self.boot.ready {
+            return;
+        }
+        if self.boot.waiting_catalog || self.boot.waiting_art {
+            self.boot_render();
+            return;
+        }
+        if !self.boot.collected {
+            self.boot_collect();
+        }
+        if self.boot.keys.is_empty() && !self.boot.waiting_kyty {
+            self.boot_ready();
+        } else {
+            self.boot_render();
+        }
+    }
+
+    /// Request everything the first screens show: Home tiles, hero art and logo, neighbours,
+    /// and the first page of the Library.
+    fn boot_collect(&mut self) {
+        self.boot.collected = true;
         let mut reqs = Vec::new();
         for (i, it) in self.row.clone().into_iter().enumerate() {
-            if i < 12 {
+            if i < 14 {
                 reqs.extend(self.tile_req(it));
             }
         }
-        reqs.extend(self.hero_bg_url(self.sel));
-        if let Some(it) = self.row.get(self.sel).copied() {
-            if it != RowItem::All {
-                let info = self.target_info(self.row_target(self.sel));
-                if let Some(r) = info.as_ref().and_then(|i| crate::present::req_url(&i.logo, 960, 0.0)) {
-                    reqs.push(r);
+        for i in 0..3.min(self.row.len()) {
+            reqs.extend(self.hero_bg_url(i));
+            if let Some(it) = self.row.get(i).copied() {
+                if it != RowItem::All {
+                    let info = self.target_info(self.row_target(i));
+                    reqs.extend(info.as_ref().and_then(|x| crate::present::req_url(&x.logo, 960, 0.0)));
                 }
             }
+        }
+        let first_page = (self.cols * 3).min(self.filtered.len());
+        for k in 0..first_page {
+            reqs.extend(self.card_req(self.filtered[k]));
         }
         let mut keys = HashSet::new();
         for r in reqs {
@@ -101,24 +237,15 @@ impl App {
         }
         self.boot.total = keys.len();
         self.boot.keys = keys;
-        let ui = self.ui();
-        ui.set_boot_status("Preparing your games…".into());
-        if self.boot.keys.is_empty() {
-            self.boot_ready();
-        }
+        self.boot.f_img = if self.boot.total == 0 { 1.0 } else { 0.0 };
     }
 
     pub fn boot_image_loaded(&mut self, key: &str) {
         if !self.boot.active || !self.boot.keys.remove(key) {
             return;
         }
-        if self.boot.first {
-            let done = 1.0 - self.boot.keys.len() as f32 / self.boot.total.max(1) as f32;
-            self.ui().set_boot_progress(0.85 + done * 0.15);
-        }
-        if self.boot.keys.is_empty() {
-            self.boot_ready();
-        }
+        self.boot.f_img = 1.0 - self.boot.keys.len() as f32 / self.boot.total.max(1) as f32;
+        self.boot_maybe_ready();
     }
 
     pub fn boot_ready(&mut self) {
@@ -126,11 +253,12 @@ impl App {
             return;
         }
         self.boot.ready = true;
+        self.boot.f_img = 1.0;
         self.push_all();
+        self.boot_render();
         let ui = self.ui();
         ui.set_boot_progress(1.0);
         if self.boot.first {
-            ui.set_boot_status("All set".into());
             ui.set_boot_ready(true);
             audio::play(Sound::Select);
         } else {
@@ -146,9 +274,11 @@ impl App {
         if !self.boot.active {
             return;
         }
-        if self.boot.first && !self.boot.ready {
-            // Skip waiting: artwork keeps downloading in the background.
-            self.boot.waiting_art = false;
+        if !self.boot.ready {
+            if !self.boot.first {
+                return;
+            }
+            // Skip waiting: downloads keep going in the background (shown in the status line).
             self.boot.ready = true;
             self.push_all();
         }
@@ -168,5 +298,10 @@ impl App {
         self.want_background(self.hero_bg_url(self.sel), true);
         self.prefetch_neighbors();
         ui.invoke_focus_root();
+        // Background work that was hidden behind the splash now shows in the status line.
+        if self.kyty.busy {
+            let p = self.kyty.progress.clone();
+            self.set_status(&p, true);
+        }
     }
 }

@@ -20,6 +20,8 @@ pub struct Config {
     pub rawg_key: String,
     /// Output name (e.g. "DP-2"); empty = primary display.
     pub monitor: String,
+    /// Keep the launcher-managed KytyPS5 on the latest official build.
+    pub kyty_auto_update: bool,
 }
 
 impl Default for Config {
@@ -37,6 +39,7 @@ impl Default for Config {
             return_on_exit: true,
             rawg_key: String::new(),
             monitor: String::new(),
+            kyty_auto_update: true,
         }
     }
 }
@@ -56,7 +59,10 @@ impl Config {
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
         if cfg.emulator.is_empty() || !cfg.emulator_path().is_file() {
-            if let Some(found) = detect_emulator() {
+            let managed = crate::kyty::managed_emulator();
+            if managed.is_file() {
+                cfg.emulator = managed.to_string_lossy().into_owned();
+            } else if let Some(found) = detect_emulator() {
                 cfg.emulator = found.to_string_lossy().into_owned();
             }
         }

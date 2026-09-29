@@ -202,6 +202,7 @@ pub struct App {
     pub bg_pending: Option<String>,
     pub settings_ids: Vec<crate::settings::SId>,
     pub boot: crate::boot::Boot,
+    pub kyty: crate::kyty_ui::KytyUi,
 }
 
 thread_local! {
@@ -318,6 +319,7 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, scale: f32, target_monitor: Op
         bg_pending: None,
         settings_ids: Vec::new(),
         boot: Default::default(),
+        kyty: Default::default(),
     };
     ui.set_grid_rows(ModelRc::from(app.grid_model.clone()));
     ui.set_tiles(ModelRc::from(app.tile_model.clone()));
@@ -331,6 +333,7 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, scale: f32, target_monitor: Op
     }
     APP.with(|a| *a.borrow_mut() = Some(app));
     with_app(move |app| app.boot_start(first_run));
+    with_app(|app| app.kyty_start());
 
     wire_callbacks(&ui);
     crate::gamepad::spawn(|p| post(move |app| app.on_pad(p)));
@@ -588,15 +591,17 @@ impl App {
                             app.toast(&format!("Catalog updated · {} games", app.games.len()), "", 1);
                         }
                         app.set_status("", false);
+                        app.boot_catalog_done();
                         app.start_enrich();
                     }
                     Err(e) => {
                         app.set_status("", false);
                         app.toast("Catalog refresh failed", &e, 2);
-                        if app.boot.active && app.games.is_empty() {
-                            app.ui().set_boot_status("Offline · the catalog could not be downloaded".into());
+                        if app.boot.active {
+                            // Offline: don't hold the welcome screen for the catalog or artwork.
                             app.boot.waiting_art = false;
-                            app.boot_ready();
+                            app.boot.text_main = "Offline · the catalog could not be downloaded".into();
+                            app.boot_catalog_done();
                         }
                         app.start_enrich();
                     }
@@ -706,6 +711,9 @@ impl App {
                 self.push_hub();
             }
             self.tick();
+            if self.live.is_empty() {
+                self.kyty_games_closed();
+            }
         }
     }
 

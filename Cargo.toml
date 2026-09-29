@@ -1,6 +1,6 @@
 [package]
 name = "ps5-launcher"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "A fast, native PS5-style game launcher for Linux"
 rust-version = "1.88"
@@ -19,6 +19,7 @@ libc = "0.2"
 libloading = "0.8"
 html-escape = "0.2"
 percent-encoding = "2"
+sha2 = "0.10"
 
 [build-dependencies]
 slint-build = "1.18"

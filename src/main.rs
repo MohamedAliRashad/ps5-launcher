@@ -8,6 +8,8 @@ mod config;
 mod display;
 mod gamepad;
 mod images;
+mod kyty;
+mod kyty_ui;
 mod library;
 mod present;
 mod psn;

@@ -99,7 +99,7 @@ impl App {
         info.and_then(|i| req_url(&i.logo, 960, 0.0))
     }
 
-    fn card_req(&self, gi: usize) -> Option<ImgReq> {
+    pub fn card_req(&self, gi: usize) -> Option<ImgReq> {
         let g = &self.games[gi];
         let info = g.info.as_ref();
         info.and_then(|i| req_url(&i.portrait, 440, 0.0))

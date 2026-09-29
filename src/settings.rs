@@ -11,6 +11,9 @@ use slint::ComponentHandle;
 pub enum SId {
     Header,
     Emulator,
+    KytyUpdate,
+    KytyAuto,
+    KytyRollback,
     Dirs,
     Resolution,
     Present,
@@ -43,6 +46,44 @@ impl App {
         r.hint = if ok { "Emulator found".into() } else { "Emulator not found at this path".into() };
         r.hint_kind = if ok { 1 } else { 2 };
         rows.push((SId::Emulator, r));
+
+        // KytyPS5 updates
+        let managed = self.kyty_managed();
+        let latest = self.kyty.latest.as_ref().map(|r| crate::kyty::pretty(&r.tag));
+        let (label, value) = if self.kyty.busy {
+            ("Updating KytyPS5…".to_string(), self.kyty.progress.replace("Downloading KytyPS5 ", ""))
+        } else if self.kyty.checking {
+            ("Checking for KytyPS5 updates…".to_string(), String::new())
+        } else if !managed && !ok {
+            ("Download KytyPS5".to_string(), latest.clone().map(|l| format!("latest {l}")).unwrap_or_else(|| "latest official build".into()))
+        } else if !managed {
+            ("Switch to official KytyPS5 builds".to_string(), "auto-updates · saves are copied".to_string())
+        } else if self.kyty_update_available() {
+            ("Update KytyPS5".to_string(), latest.clone().map(|l| format!("→ {l}")).unwrap_or_default())
+        } else {
+            ("Check for KytyPS5 updates".to_string(), if latest.is_some() { "up to date".into() } else { String::new() })
+        };
+        let mut r = row(4, &label);
+        r.value = value.into();
+        if !self.kyty.error.is_empty() {
+            r.hint = self.kyty.error.clone().into();
+            r.hint_kind = 2;
+        } else {
+            let st = crate::kyty::load_state();
+            let checked = if st.last_check > 0.0 { format!(" · checked {}", util::fmt_last_played(st.last_check).to_lowercase()) } else { String::new() };
+            r.hint = format!("Installed: {}{checked}", if self.kyty.version.is_empty() { "…" } else { &self.kyty.version }).into();
+            r.hint_kind = if managed && !self.kyty_update_available() { 1 } else { 0 };
+        }
+        rows.push((SId::KytyUpdate, r));
+        let mut r = row(2, "Keep KytyPS5 updated automatically");
+        r.on = cfg.kyty_auto_update;
+        rows.push((SId::KytyAuto, r));
+        let prev = crate::kyty::load_state().previous;
+        if managed && !prev.is_empty() && crate::kyty::root().join("versions").join(&prev).is_dir() {
+            let mut r = row(4, "Roll back to previous KytyPS5");
+            r.value = crate::kyty::pretty(&prev).into();
+            rows.push((SId::KytyRollback, r));
+        }
 
         let mut r = row(1, "Game folders (separate with ;)");
         r.value = cfg.game_dirs.join("; ").into();
@@ -181,14 +222,18 @@ impl App {
                 self.save_cfg(|c| c.monitor = next.clone());
                 self.move_to_monitor(&next);
             }
-            SId::Fullscreen | SId::Amd | SId::ReturnOnExit | SId::Sounds => {
+            SId::Fullscreen | SId::Amd | SId::ReturnOnExit | SId::Sounds | SId::KytyAuto => {
                 let on = dir > 0;
                 self.save_cfg(|c| match id {
                     SId::Fullscreen => c.fullscreen = on,
                     SId::Amd => c.amd_cpu = on,
                     SId::ReturnOnExit => c.return_on_exit = on,
+                    SId::KytyAuto => c.kyty_auto_update = on,
                     _ => c.sounds = on,
                 });
+                if id == SId::KytyAuto && on {
+                    self.kyty_check(false);
+                }
                 if id == SId::Sounds {
                     audio::set_enabled(on);
                 }
@@ -216,7 +261,7 @@ impl App {
                 ui.set_edit_text(text.into());
                 ui.set_edit_index(i as i32);
             }
-            SId::Fullscreen | SId::Amd | SId::ReturnOnExit | SId::Sounds => {
+            SId::Fullscreen | SId::Amd | SId::ReturnOnExit | SId::Sounds | SId::KytyAuto => {
                 let on = self.settings_rows[i].on;
                 self.settings_change(i, if on { -1 } else { 1 });
             }
@@ -228,6 +273,28 @@ impl App {
                 self.refresh_settings();
                 let first = self.settings_ids.iter().position(|s| *s == SId::Rawg).unwrap_or(0);
                 self.set_focus(Z_SETTINGS, first as i32);
+            }
+            SId::KytyUpdate => {
+                audio::play(Sound::Select);
+                if self.kyty.busy || self.kyty.checking {
+                    return;
+                }
+                let managed = self.kyty_managed();
+                if !managed {
+                    self.kyty_switch_to_managed();
+                } else if self.kyty_update_available() {
+                    if let Some(rel) = self.kyty.latest.clone() {
+                        self.kyty_install(rel);
+                    }
+                } else {
+                    self.kyty_check(true);
+                }
+                self.refresh_settings();
+            }
+            SId::KytyRollback => {
+                audio::play(Sound::Select);
+                self.kyty_rollback();
+                self.refresh_settings();
             }
             SId::Refresh => {
                 audio::play(Sound::Select);
@@ -255,6 +322,7 @@ impl App {
         match id {
             SId::Emulator => {
                 self.save_cfg(|c| c.emulator = t);
+                self.kyty_refresh_version();
                 let ok = self.cfg.lock().unwrap().emulator_ok();
                 self.toast(if ok { "Emulator path saved" } else { "Emulator not found at that path" }, "", if ok { 1 } else { 2 });
             }
