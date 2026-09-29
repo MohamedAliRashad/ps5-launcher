@@ -10,15 +10,6 @@ CPU when idle.
 
 ![PS5 Launcher: moving through the Home screen, a Game Hub and the Library](docs/demo/demo-loop.webp)
 
-### Walkthrough (2 minutes, MP4 · 4.5 MB)
-
-[![Watch the walkthrough: first launch, Home, Game Hub, Library, Options, playing a game and Settings](docs/demo/walkthrough-poster.jpg)](https://raw.githubusercontent.com/MohamedAliRashad/ps5-launcher/main/docs/demo/walkthrough.mp4)
-
-A captioned tour, with no voiceover: the first-launch setup, the Home screen, a Game Hub, the
-Library (filter, sort, search), the Options menu, playing and stopping a game, and Settings. It
-was recorded from the real app by [`scripts/record_demo.py`](scripts/record_demo.py); the
-first-launch download is sped up and labelled as such.
-
 ## Install
 
 ### Quick install (recommended)
