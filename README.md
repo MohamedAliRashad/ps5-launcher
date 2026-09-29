@@ -8,13 +8,16 @@ It's a single native binary written in Rust with a GPU-accelerated [Slint](https
 UI, and it doesn't use a browser or Electron. It starts in a fraction of a second and uses no
 CPU when idle.
 
-![Home screen](docs/screenshots/home.jpg)
+![PS5 Launcher: moving through the Home screen, a Game Hub and the Library](docs/demo/demo-loop.webp)
 
-| Game Hub | Library |
-|---|---|
-| ![Game Hub](docs/screenshots/game-hub.jpg) | ![Library](docs/screenshots/library.jpg) |
-| **Playing, with Resume / Stop** | **Options menu** |
-| ![Playing](docs/screenshots/playing.jpg) | ![Options menu](docs/screenshots/options-menu.jpg) |
+### Walkthrough (2 minutes)
+
+[![Watch the walkthrough: first launch, Home, Game Hub, Library, Options, playing a game and Settings](docs/demo/walkthrough-poster.jpg)](https://raw.githubusercontent.com/MohamedAliRashad/ps5-launcher/main/docs/demo/walkthrough.mp4)
+
+A captioned tour, with no voiceover: the first-launch setup, the Home screen, a Game Hub, the
+Library (filter, sort, search), the Options menu, playing and stopping a game, and Settings. It
+was recorded from the real app by [`scripts/record_demo.py`](scripts/record_demo.py); the
+first-launch download is sped up and labelled as such.
 
 ## Install
 
@@ -103,13 +106,17 @@ progress bar it:
 1. downloads the catalog (about 1 second);
 2. downloads the official artwork (about a minute for all 700+ games);
 3. downloads the **latest KytyPS5 build**;
-4. preloads the Home screen and the first page of the Library.
+4. downloads every Library cover, so browsing never shows an empty card;
+5. preloads the Home screen and the first page of the Library.
+
+On a typical connection this takes about a minute.
 
 Then it asks you to press **✕ / Enter** to start. You can skip the wait; anything left keeps
 downloading in the background.
 
 **Later launches:** a short splash shows while the Home screen loads from the local cache,
-which takes well under a second.
+which takes well under a second. Covers for newly added games download quietly in the
+background.
 
 **Add your games:** point **Settings → Game folders** at the folder that holds your games. A
 game is any folder with a `sce_sys/param.json`.
@@ -182,6 +189,10 @@ user that access; if yours doesn't, add yourself to the `input` group.
 - **KytyPS5 auto-updates:** installs the official build on first launch, then keeps it current,
   with rollback.
 
+| Game Hub | Settings |
+|---|---|
+| ![Game Hub](docs/screenshots/game-hub.jpg) | ![Settings](docs/screenshots/settings.jpg) |
+
 ## Where things are stored
 
 | Path | Contents |
@@ -223,6 +234,15 @@ user that access; if yours doesn't, add yourself to the `input` group.
 cargo build --release            # binary: target/release/ps5-launcher
 cargo test --release             # unit tests
 ```
+
+To regenerate the README demo after UI changes (needs Xvfb, xdotool, ffmpeg and ImageMagick):
+
+```bash
+scripts/record_demo.py --game /path/to/an/installed/game   # writes dist/demo/
+```
+
+It runs the real launcher on a hidden virtual display with a throwaway home folder, drives it
+with key presses and captions each step, so nothing personal appears in the recording.
 
 ## Disclaimer
 

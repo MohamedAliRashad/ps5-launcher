@@ -41,7 +41,7 @@ impl App {
         rows.push((SId::Header, row(0, "EMULATOR")));
 
         let mut r = row(1, "KytyPS5 executable");
-        r.value = cfg.emulator.clone().into();
+        r.value = util::display_path(&cfg.emulator).into();
         let ok = cfg.emulator_ok();
         r.hint = if ok { "Emulator found".into() } else { "Emulator not found at this path".into() };
         r.hint_kind = if ok { 1 } else { 2 };
@@ -86,7 +86,7 @@ impl App {
         }
 
         let mut r = row(1, "Game folders (separate with ;)");
-        r.value = cfg.game_dirs.join("; ").into();
+        r.value = cfg.game_dirs.iter().map(|d| util::display_path(d)).collect::<Vec<_>>().join("; ").into();
         let n = self.locals.len();
         r.hint = format!("{n} installed game{} found · scanned for sce_sys/param.json", if n == 1 { "" } else { "s" }).into();
         rows.push((SId::Dirs, r));

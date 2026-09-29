@@ -170,6 +170,29 @@ fn fetch(url: &str) -> Option<Vec<u8>> {
     None
 }
 
+/// Download (but don't decode) images into the disk cache, 24 at a time (the image servers
+/// answer in ~1 s per request regardless of load, so throughput scales with parallelism). Already-cached files
+/// are skipped instantly. `progress(done, total)` is called as files complete.
+pub fn warm(urls: Vec<String>, progress: &(dyn Fn(usize, usize) + Sync)) {
+    let todo: Vec<String> = urls.into_iter().filter(|u| !raw_cache_path(u).exists()).collect();
+    let total = todo.len();
+    if total == 0 {
+        return;
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..24 {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(u) = todo.get(i) else { break };
+                let _ = fetch(u);
+                progress(done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1, total);
+            });
+        }
+    });
+}
+
 fn load(job: &Job) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     let tp = thumb_path(&job.key);
     if let Ok(bytes) = std::fs::read(&tp) {

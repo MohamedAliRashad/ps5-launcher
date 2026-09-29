@@ -54,6 +54,16 @@ pub fn expand_home(p: &str) -> PathBuf {
     }
 }
 
+/// Show paths under the home folder as "~/…" (shorter, and no user names on screen).
+pub fn display_path(p: &str) -> String {
+    let home = home();
+    let home = home.to_string_lossy();
+    match p.strip_prefix(home.as_ref()) {
+        Some(rest) if !home.is_empty() && (rest.is_empty() || rest.starts_with('/')) => format!("~{rest}"),
+        _ => p.to_string(),
+    }
+}
+
 pub fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;

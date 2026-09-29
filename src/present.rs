@@ -518,7 +518,8 @@ impl App {
 
     pub fn first_visible_card(&self) -> usize {
         let y = -self.ui().get_grid_y();
-        let row = ((y + 10.0) / self.row_h).ceil().max(0.0) as usize;
+        // First row whose top is on screen (a row scrolled away by a few pixels still counts).
+        let row = ((y - 20.0) / self.row_h).ceil().max(0.0) as usize;
         (row * self.cols).min(self.filtered.len().saturating_sub(1))
     }
 
@@ -630,7 +631,7 @@ impl App {
             facts.push(("PLAY TIME", if pt.total > 0.0 { util::fmt_duration(pt.total) } else { "Never played".into() }));
             facts.push(("LAST PLAYED", util::fmt_last_played(pt.last)));
             facts.push(("INSTALLED VERSION", lv.l.version.clone()));
-            facts.push(("LOCATION", lv.l.path.to_string_lossy().into_owned()));
+            facts.push(("LOCATION", util::display_path(&lv.l.path.to_string_lossy())));
         }
         let facts: Vec<Fact> = facts.into_iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| Fact { key: k.into(), value: v.into() }).collect();
         h.facts = model(facts.chunks(3).map(|c| FactRow { items: model(c.to_vec()) }).collect());

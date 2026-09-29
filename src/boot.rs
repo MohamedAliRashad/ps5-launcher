@@ -21,6 +21,7 @@ pub struct Boot {
     pub ready: bool,
     pub waiting_catalog: bool,
     pub waiting_art: bool,
+    pub waiting_covers: bool,
     pub waiting_kyty: bool,
     pub kyty_needed: bool,
     pub collected: bool,
@@ -30,6 +31,7 @@ pub struct Boot {
     // Progress of each task, 0..1
     pub f_catalog: f32,
     pub f_art: f32,
+    pub f_covers: f32,
     pub f_kyty: f32,
     pub f_img: f32,
     pub text_main: String,
@@ -96,7 +98,8 @@ impl App {
         let mut parts: Vec<(f32, f32)> = Vec::new();
         if b.first {
             parts.push((0.12, b.f_catalog));
-            parts.push((0.43, b.f_art));
+            parts.push((0.25, b.f_art));
+            parts.push((0.18, b.f_covers));
         }
         if b.kyty_needed {
             parts.push((if b.first { 0.35 } else { 0.8 }, b.f_kyty));
@@ -115,7 +118,7 @@ impl App {
             if b.first { "All set".to_string() } else { "Ready".to_string() }
         } else {
             let mut parts = Vec::new();
-            if (b.waiting_catalog || b.waiting_art) && !b.text_main.is_empty() {
+            if (b.waiting_catalog || b.waiting_art || b.waiting_covers) && !b.text_main.is_empty() {
                 parts.push(b.text_main.clone());
             }
             if b.waiting_kyty && !b.text_kyty.is_empty() {
@@ -164,8 +167,28 @@ impl App {
         if self.boot.active && self.boot.waiting_art {
             self.boot.waiting_art = false;
             self.boot.f_art = 1.0;
+            // Next: every Library cover, so browsing never shows an empty card.
+            self.boot.waiting_covers = true;
+            self.warm_covers();
             // Artwork changed the image choices: collect again with the final art.
             self.boot.collected = false;
+            self.boot_maybe_ready();
+        }
+    }
+
+    pub fn boot_covers(&mut self, done: usize, total: usize) {
+        if self.boot.active && self.boot.waiting_covers {
+            self.boot.f_covers = done as f32 / total.max(1) as f32;
+            self.boot.text_main = format!("Downloading covers {done}/{total}");
+            self.boot_render();
+        }
+    }
+
+    pub fn boot_covers_done(&mut self) {
+        if self.boot.active && self.boot.waiting_covers {
+            self.boot.waiting_covers = false;
+            self.boot.f_covers = 1.0;
+            self.boot.text_main.clear();
             self.boot_maybe_ready();
         }
     }
@@ -192,7 +215,7 @@ impl App {
         if !self.boot.active || self.boot.ready {
             return;
         }
-        if self.boot.waiting_catalog || self.boot.waiting_art {
+        if self.boot.waiting_catalog || self.boot.waiting_art || self.boot.waiting_covers {
             self.boot_render();
             return;
         }
@@ -254,6 +277,7 @@ impl App {
         }
         self.boot.ready = true;
         self.boot.f_img = 1.0;
+        crate::log!("welcome screen ready");
         self.push_all();
         self.boot_render();
         let ui = self.ui();
@@ -292,12 +316,16 @@ impl App {
         }
         self.boot.active = false;
         self.overlay = Overlay::None;
+        crate::log!("home screen shown");
         let ui = self.ui();
         ui.set_overlay(0);
         self.set_focus(Z_ROW, 0);
         self.want_background(self.hero_bg_url(self.sel), true);
         self.prefetch_neighbors();
         ui.invoke_focus_root();
+        if !self.boot.first {
+            self.warm_covers();
+        }
         // Background work that was hidden behind the splash now shows in the status line.
         if self.kyty.busy {
             let p = self.kyty.progress.clone();

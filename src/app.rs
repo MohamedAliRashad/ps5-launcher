@@ -203,6 +203,7 @@ pub struct App {
     pub settings_ids: Vec<crate::settings::SId>,
     pub boot: crate::boot::Boot,
     pub kyty: crate::kyty_ui::KytyUi,
+    pub warming: bool,
 }
 
 thread_local! {
@@ -320,6 +321,7 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, scale: f32, target_monitor: Op
         settings_ids: Vec::new(),
         boot: Default::default(),
         kyty: Default::default(),
+        warming: false,
     };
     ui.set_grid_rows(ModelRc::from(app.grid_model.clone()));
     ui.set_tiles(ModelRc::from(app.tile_model.clone()));
@@ -661,6 +663,35 @@ impl App {
                     }
                 }
                 app.boot_art_done();
+            });
+        });
+    }
+
+    /// Download every Library cover into the disk cache (skips cached ones instantly).
+    pub fn warm_covers(&mut self) {
+        if self.warming {
+            return;
+        }
+        let urls: Vec<String> = (0..self.games.len())
+            .filter_map(|gi| self.card_req(gi))
+            .filter_map(|r| match r.src {
+                images::Src::Url(u) => Some(u),
+                _ => None,
+            })
+            .collect();
+        self.warming = true;
+        std::thread::spawn(move || {
+            let last = Mutex::new(std::time::Instant::now() - Duration::from_secs(1));
+            images::warm(urls, &|done, total| {
+                let mut l = last.lock().unwrap();
+                if l.elapsed() > Duration::from_millis(100) || done == total {
+                    *l = std::time::Instant::now();
+                    post(move |app| app.boot_covers(done, total));
+                }
+            });
+            post(|app| {
+                app.warming = false;
+                app.boot_covers_done();
             });
         });
     }
