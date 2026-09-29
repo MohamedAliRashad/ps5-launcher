@@ -130,7 +130,9 @@ export component Btn inherits Rectangle {
     height: h;
     width: !open ? h : max(data.primary ? (240px * S.k) : (0px * S.k), row.preferred-width);
     clip: true;
-    animate width { duration: Theme.move; easing: cubic-bezier(0.2, 0.8, 0.2, 1); }
+    transform-scale: focused ? 1.05 : 1.0;
+    animate width { duration: 300ms; easing: ease-out-expo; }
+    animate transform-scale { duration: 220ms; easing: ease-out-back; }
     border-radius: h / 2;
     background: focused ? (data.danger ? Theme.danger : #ffffff)
         : data.primary && !dim ? #ffffffeb : data.danger ? #ff5a6a2e : data.primary ? #ffffff38 : #ffffff24;
@@ -229,5 +231,18 @@ export component Switch inherits Rectangle {
         border-radius: (12px * S.k);
         background: #ffffff;
         animate x { duration: Theme.move; easing: cubic-bezier(0.2, 0.8, 0.2, 1); }
+    }
+}
+
+// Loading placeholder: a soft light sweeping across. Only animates while it is shown.
+export component Shimmer inherits Rectangle {
+    in property <bool> active;
+    clip: true;
+    visible: active;
+    property <float> t: active ? animation-tick() / 1ms / 1000 : 0;
+    Rectangle {
+        x: (mod(t * 0.8, 1.6) - 0.3) * parent.width - self.width / 2;
+        width: parent.width * 0.6;
+        background: @linear-gradient(90deg, #ffffff00 0%, #ffffff12 50%, #ffffff00 100%);
     }
 }

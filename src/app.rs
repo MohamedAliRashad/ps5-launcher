@@ -203,6 +203,9 @@ pub struct App {
     pub bg_pending: Option<String>,
     pub bg_standin: Option<String>,
     pub bg_timer: slint::Timer,
+    pub rest_timer: slint::Timer,
+    pub hero_flip: bool,
+    pub row_flip: bool,
     pub settings_ids: Vec<crate::settings::SId>,
     pub boot: crate::boot::Boot,
     pub kyty: crate::kyty_ui::KytyUi,
@@ -327,6 +330,9 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, target_monitor: Option<Monitor
         bg_pending: None,
         bg_standin: None,
         bg_timer: slint::Timer::default(),
+        rest_timer: slint::Timer::default(),
+        hero_flip: false,
+        row_flip: false,
         settings_ids: Vec::new(),
         boot: Default::default(),
         kyty: Default::default(),
@@ -632,6 +638,7 @@ impl App {
                         if app.boot.active {
                             // Offline: don't hold the welcome screen for the catalog or artwork.
                             app.boot.waiting_art = false;
+                            app.boot.cat_failed = true;
                             app.boot.text_main = "Offline · the catalog could not be downloaded".into();
                             app.boot_catalog_done();
                         }
@@ -722,6 +729,14 @@ impl App {
         }
         first.extend((0..self.games.len()).filter_map(|gi| url(self.card_req(gi))));
         let mut rest: Vec<String> = Vec::new();
+        // Screenshots of the games on the Home row (the ones most likely to be opened).
+        for i in 0..self.row.len() {
+            if self.row[i] != RowItem::All {
+                if let Some(info) = self.target_info(self.row_target(i)) {
+                    rest.extend(info.shots.iter().take(8).filter_map(|u| url(crate::present::req_url(u, 480, 0.0))));
+                }
+            }
+        }
         let mut order: Vec<usize> = (0..self.games.len()).collect();
         order.sort_by(|a, b| self.games[*b].g.date.cmp(&self.games[*a].g.date));
         for gi in order {
@@ -1336,7 +1351,7 @@ impl App {
             (Z_HUB, Act::Left) if self.idx > 0 => self.move_focus(Z_HUB, self.idx - 1),
             (Z_HUB, Act::Right) if (self.idx as usize) + 1 < self.hub_actions.len() => self.move_focus(Z_HUB, self.idx + 1),
             (Z_HUB, Act::Down) => {
-                if shots > 0 { self.move_focus(Z_SHOTS, 0) } else { self.move_focus(Z_DESC, 0) }
+                if shots > 0 { self.move_focus(Z_SHOTS, 0); self.prefetch_viewer(); } else { self.move_focus(Z_DESC, 0) }
                 self.scroll_hub();
             }
             (Z_HUB, Act::Confirm) => {
@@ -1506,10 +1521,13 @@ impl App {
         self.sel = i;
         audio::play(Sound::Move);
         self.ui().set_sel(i as i32);
+        self.row_flip = true;
         self.push_row_text();
+        self.hero_flip = true;
         self.push_hero();
         self.show_row_background(i, false);
         self.prefetch_neighbors();
+        self.schedule_rest_prefetch();
     }
 
     pub fn row_target(&self, i: usize) -> Target {

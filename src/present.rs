@@ -206,8 +206,19 @@ impl App {
             }
         };
         let ui = self.ui();
-        ui.set_row_name(name.into());
-        ui.set_row_sub(sub.into());
+        let front_b = ui.get_row_front_b();
+        let flip = std::mem::take(&mut self.row_flip);
+        // New selection: write the hidden slot and crossfade to it; otherwise update in place.
+        if flip != front_b {
+            ui.set_row_name_b(name.into());
+            ui.set_row_sub_b(sub.into());
+        } else {
+            ui.set_row_name(name.into());
+            ui.set_row_sub(sub.into());
+        }
+        if flip {
+            ui.set_row_front_b(!front_b);
+        }
     }
 
     fn kicker_for(&self, t: Target) -> (String, String, bool) {
@@ -260,14 +271,14 @@ impl App {
 
     pub fn push_hero_kicker(&mut self) {
         let ui = self.ui();
-        let mut h = ui.get_hero();
+        let mut h = if ui.get_hero_front_b() { ui.get_hero_b() } else { ui.get_hero() };
         if let Some(it) = self.row.get(self.sel).copied() {
             if it != RowItem::All {
                 let (k, a, live) = self.kicker_for(self.row_target(self.sel));
                 h.kicker = k.into();
                 h.kicker_accent = a.into();
                 h.kicker_live = live;
-                ui.set_hero(h);
+                if ui.get_hero_front_b() { ui.set_hero_b(h) } else { ui.set_hero(h) }
             }
         }
     }
@@ -328,7 +339,45 @@ impl App {
         if self.zone == Z_ACTIONS && self.idx as usize >= self.hero_actions.len() {
             self.set_focus(Z_ACTIONS, self.hero_actions.len().saturating_sub(1) as i32);
         }
-        self.ui().set_hero(h);
+        // A new selection goes into the hidden layer, which then crossfades in; anything else
+        // (a logo arriving, the play timer) updates the visible layer in place.
+        let ui = self.ui();
+        let front_b = ui.get_hero_front_b();
+        if std::mem::take(&mut self.hero_flip) {
+            if front_b { ui.set_hero(h) } else { ui.set_hero_b(h) }
+            ui.set_hero_front_b(!front_b);
+        } else if front_b {
+            ui.set_hero_b(h)
+        } else {
+            ui.set_hero(h)
+        }
+    }
+
+    /// Screenshots of a game you've paused on start downloading right away, so they're there
+    /// when you open its Game Hub (~1 s each from Sony's servers, 16 in parallel).
+    pub fn prefetch_shots(&mut self, t: Target) {
+        let Some(info) = self.target_info(t) else { return };
+        for u in info.shots.iter().take(8) {
+            if let Some(r) = req_url(u, 480, 0.0) {
+                self.images.want(&r.key, r.src, r.w, r.crop, prio::PREFETCH);
+            }
+        }
+    }
+
+    /// Called whenever the selection moves; acts once it has rested for 350 ms.
+    pub fn schedule_rest_prefetch(&mut self) {
+        self.rest_timer.start(slint::TimerMode::SingleShot, std::time::Duration::from_millis(350), || {
+            crate::app::with_app(|app| {
+                let t = match (app.view, app.zone) {
+                    (0, Z_ROW | Z_ACTIONS) => Some(app.row_target(app.sel)),
+                    (1, Z_GRID) => app.filtered.get(app.idx as usize).map(|&g| Target { game: Some(g), local: app.games[g].local }),
+                    _ => None,
+                };
+                if let Some(t) = t {
+                    app.prefetch_shots(t);
+                }
+            })
+        });
     }
 
     pub fn prefetch_neighbors(&mut self) {
@@ -448,6 +497,7 @@ impl App {
             }
         }
         self.boot_image_loaded(key);
+        self.boot_cover_loaded(key);
     }
 
     // ------------------------------------------------------------------ library
@@ -645,6 +695,7 @@ impl App {
     /// The Library's backdrop follows the selected game, once the selection rests for a moment
     /// (scrolling past twenty games shouldn't start twenty full-screen downloads).
     pub fn focus_card_changed(&mut self) {
+        self.schedule_rest_prefetch();
         self.bg_timer.start(slint::TimerMode::SingleShot, std::time::Duration::from_millis(160), || {
             crate::app::with_app(|app| {
                 if app.view != 1 || app.zone != Z_GRID || app.overlay != Overlay::None {
@@ -797,7 +848,19 @@ impl App {
         self.ui().set_hub_y(-y.max(0.0) * self.scale);
     }
 
+    /// The viewer's full-size copies of the selected screenshot and the next one.
+    pub fn prefetch_viewer(&mut self) {
+        for d in 0..2 {
+            if let Some(u) = self.hub_shots.get(self.idx.max(0) as usize + d).cloned() {
+                if let Some(r) = req_url(&u, 1920, 0.0) {
+                    self.images.want(&r.key, r.src, r.w, r.crop, prio::PREFETCH + 2);
+                }
+            }
+        }
+    }
+
     pub fn scroll_shots(&mut self) {
+        self.prefetch_viewer();
         let (w, _) = self.logical_size();
         let view = (w - 540.0 - 96.0).min(1060.0);
         let x = self.idx as f32 * 314.0;

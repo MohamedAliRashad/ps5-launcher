@@ -104,8 +104,8 @@ On Ubuntu and Debian: `sudo apt install xdotool mpv yt-dlp x11-xserver-utils`
 | `--sync` | Re-download the game catalog on start |
 | `--help`, `--version` | Show help or the version |
 
-**First launch:** a welcome screen gets everything ready before you're let in. With one
-progress bar it:
+**First launch:** a welcome screen gets everything ready before you're let in. Your library's
+covers drift behind it as they arrive, and a checklist shows each step as it happens:
 
 1. downloads the catalog (about 1 second);
 2. downloads the official artwork (about a minute for all 700+ games);
@@ -254,6 +254,9 @@ user that access; if yours doesn't, add yourself to the `input` group.
 - **The UI is too big or too small:** it scales itself to the window, on any screen size or
   shape. To make everything larger or smaller, set a multiplier, for example
   `PS5_LAUNCHER_SCALE=1.15 ps5-launcher`.
+- **Animations stutter:** run `SLINT_DEBUG_PERFORMANCE=overlay ps5-launcher` to show the frame
+  rate. Heavy GPU work in the background (for example a machine-learning job) slows the
+  launcher's drawing too.
 - **Images feel slow:** run `PS5_LAUNCHER_DEBUG=1 ps5-launcher` from a terminal. Every image
   load is logged with where it came from (disk or network) and how long each step took.
 - **Reset everything:** `rm -rf ~/.config/ps5-launcher ~/.cache/ps5-launcher`

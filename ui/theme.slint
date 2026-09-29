@@ -161,6 +161,9 @@ export struct SettingData {
 }
 
 // kind 0 info, 1 ok, 2 error. image: a picture for the icon tile (app or game icon), if any.
+// state: 0 waiting, 1 in progress, 2 done, 3 failed
+export struct BootStep { label: string, detail: string, state: int }
+
 export struct ToastData { id: int, text: string, sub: string, kind: int, image: image, has-image: bool, app: bool }
 export struct MenuItem { label: string, icon: string }
 export struct RunningData { active: bool, name: string, time: string }

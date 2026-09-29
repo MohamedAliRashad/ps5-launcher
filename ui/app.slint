@@ -1,5 +1,5 @@
-import { S, Theme, Icons, Zone, ChipData, ActionData, TileData, HeroData, CardData, CardRow, GenreChip, Fact, FactRow, Shot, HubData, SettingData, ToastData, MenuItem, RunningData } from "theme.slint";
-import { FocusRing, Chip, Btn, Kicker, Badge, Switch, KeyCap, BackButton } from "widgets.slint";
+import { S, Theme, Icons, Zone, BootStep, ChipData, ActionData, TileData, HeroData, CardData, CardRow, GenreChip, Fact, FactRow, Shot, HubData, SettingData, ToastData, MenuItem, RunningData } from "theme.slint";
+import { FocusRing, Chip, Btn, Kicker, Badge, Switch, KeyCap, BackButton, Shimmer } from "widgets.slint";
 
 export { S, Theme, Zone }
 
@@ -19,7 +19,9 @@ component Toast inherits Rectangle {
     drop-shadow-offset-y: (10px * S.k);
     drop-shadow-color: #00000099;
     opacity: shown ? 1 : 0;
-    animate opacity { duration: 220ms; easing: ease-out; }
+    transform-scale: shown ? 1.0 : 0.96;
+    animate opacity { duration: 240ms; easing: ease-out-quad; }
+    animate transform-scale { duration: 360ms; easing: ease-out-back; }
     // Icon tile: a real picture when we have one, otherwise a tinted symbol.
     Rectangle {
         x: (18px * S.k);
@@ -57,6 +59,69 @@ component Toast inherits Rectangle {
     }
 }
 
+// One layer of the Home hero. Two of these crossfade on every selection change.
+component HeroView inherits Rectangle {
+    in property <HeroData> data;
+    in property <bool> front;
+    in property <int> focus-idx: -1;
+    in property <length> base-y;
+    callback action(int);
+    // Incoming details rise into place; outgoing ones fade quickly and drift down.
+    y: base-y + (front ? 0 : (18px * S.k));
+    opacity: front ? 1 : 0;
+    visible: self.opacity > 0.01;
+    animate y { duration: front ? 380ms : 160ms; easing: ease-out-expo; }
+    animate opacity { duration: front ? 300ms : 140ms; easing: ease-out-quad; }
+    VerticalLayout {
+        alignment: end;
+        spacing: 0;
+        Kicker { text: data.kicker; accent: data.kicker-accent; live: data.kicker-live; }
+        Rectangle { height: (14px * S.k); }
+        if data.has-logo: Image {
+            source: data.logo;
+            width: data.logo-w;
+            height: data.logo-h;
+            image-fit: contain;
+        }
+        if !data.has-logo: Text {
+            text: data.title;
+            font-size: (84px * S.k);
+            font-weight: 700;
+            color: Theme.text;
+            wrap: word-wrap;
+            overflow: elide;
+            max-height: (180px * S.k);
+        }
+        Rectangle { height: (22px * S.k); }
+        HorizontalLayout {
+            spacing: (10px * S.k);
+            alignment: start;
+            for c in data.chips: Chip { data: c; }
+        }
+        Rectangle { height: (20px * S.k); }
+        Text {
+            text: data.desc;
+            font-size: (21px * S.k);
+            color: Theme.text2;
+            wrap: word-wrap;
+            overflow: elide;
+            max-width: (780px * S.k);
+            max-height: (96px * S.k);
+        }
+        Rectangle { height: (34px * S.k); }
+        HorizontalLayout {
+            spacing: (16px * S.k);
+            alignment: start;
+            for a[i] in data.actions: Btn {
+                data: a;
+                focused: root.front && root.focus-idx == i;
+                dim: root.front && root.focus-idx >= 0 && root.focus-idx != i;
+                clicked => { root.action(i); }
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "PS5 Launcher";
     icon: @image-url("../assets/icons/app-icon.svg");
@@ -87,8 +152,13 @@ export component AppWindow inherits Window {
     in property <[TileData]> tiles;
     in property <int> sel;
     in property <string> row-name;
+    in property <string> row-name-b;
+    in property <string> row-sub-b;
+    in property <bool> row-front-b;
     in property <string> row-sub;
     in property <HeroData> hero;
+    in property <HeroData> hero-b;
+    in property <bool> hero-front-b;
 
     in-out property <string> query;
     in property <string> sort-label;
@@ -130,6 +200,8 @@ export component AppWindow inherits Window {
     in property <float> boot-progress;
     in property <string> boot-status;
     in property <string> boot-detail;
+    in property <[BootStep]> boot-steps;
+    in property <[image]> boot-covers;
 
     // ---------------------------------------------------------------- callbacks to Rust
     callback key(string, bool, bool, bool) -> bool;   // text, ctrl, alt, repeat
@@ -163,7 +235,10 @@ export component AppWindow inherits Window {
             height: root.height;
             image-fit: cover;
             opacity: root.bg-show-b ? 0 : 1;
-            animate opacity { duration: 450ms; easing: ease-in-out; }
+            // The incoming backdrop settles from a slight zoom while it fades in.
+            transform-scale: root.bg-show-b ? 1.06 : 1.0;
+            animate opacity { duration: 520ms; easing: ease-out-quad; }
+            animate transform-scale { duration: root.bg-show-b ? 0ms : 1600ms; easing: ease-out-quint; }
         }
         Image {
             source: root.bg-b;
@@ -171,7 +246,9 @@ export component AppWindow inherits Window {
             height: root.height;
             image-fit: cover;
             opacity: root.bg-show-b ? 1 : 0;
-            animate opacity { duration: 450ms; easing: ease-in-out; }
+            transform-scale: root.bg-show-b ? 1.0 : 1.06;
+            animate opacity { duration: 520ms; easing: ease-out-quad; }
+            animate transform-scale { duration: root.bg-show-b ? 1600ms : 0ms; easing: ease-out-quint; }
         }
         Rectangle { background: @linear-gradient(90deg, #04060ef0 0%, #04060eb8 30%, #04060e2e 62%, #04060e00 80%); }
         Rectangle { background: @linear-gradient(0deg, #04060ef5 0%, #04060e59 38%, #04060e00 60%); }
@@ -186,7 +263,9 @@ export component AppWindow inherits Window {
         home := Rectangle {
             opacity: root.view == 0 ? 1 : 0;
             visible: self.opacity > 0;
-            animate opacity { duration: 220ms; }
+            x: root.view == 0 ? 0 : -(40px * S.k);
+            animate opacity { duration: 260ms; easing: ease-out-quad; }
+            animate x { duration: 420ms; easing: ease-out-expo; }
 
             // Tile row: the selected tile is larger with its name beside it (PS5 home).
             property <length> big: (172px * S.k);
@@ -206,7 +285,8 @@ export component AppWindow inherits Window {
                     height: self.width;
                     opacity: i < root.sel ? 0 : 1;
                     visible: self.x < root.width + (40px * S.k) && i >= root.sel - 2;
-                    animate x, width, opacity { duration: Theme.move; easing: cubic-bezier(0.2, 0.8, 0.2, 1); }
+                    animate x, width { duration: 360ms; easing: ease-out-expo; }
+                    animate opacity { duration: 220ms; easing: ease-out-quad; }
                     FocusRing { w: parent.width; h: parent.height; on: i == root.sel && root.zone == Zone.row && root.overlay == 0; radius: (18px * S.k); }
                     Rectangle {
                         border-radius: (18px * S.k);
@@ -246,16 +326,23 @@ export component AppWindow inherits Window {
                         clicked => { root.click(Zone.row, i); }
                     }
                 }
-                Rectangle {
-                    x: home.x0 + home.big + home.gap * 1.2;
+                // Name beside the selected tile: sized by the front slot; the two slots crossfade.
+                row-name-t := Text { visible: false; text: root.row-front-b ? root.row-name-b : root.row-name; font-size: (30px * S.k); font-weight: 500; }
+                row-sub-t := Text { visible: false; text: root.row-front-b ? root.row-sub-b : root.row-sub; font-size: (18px * S.k); }
+                for slot in [0, 1]: Rectangle {
+                    property <bool> front: (slot == 1) == root.row-front-b;
+                    x: home.x0 + home.big + home.gap * 1.2 + (front ? 0 : (14px * S.k));
                     y: 0;
                     height: home.big;
                     width: min((560px * S.k), max(row-name-t.preferred-width, row-sub-t.preferred-width));
+                    opacity: front ? 1 : 0;
+                    animate opacity { duration: front ? 280ms : 120ms; easing: ease-out-quad; }
+                    animate x { duration: front ? 360ms : 120ms; easing: ease-out-expo; }
                     VerticalLayout {
                         alignment: center;
                         spacing: (6px * S.k);
-                        row-name-t := Text { text: root.row-name; font-size: (30px * S.k); font-weight: 500; color: Theme.text; overflow: elide; }
-                        row-sub-t := Text { text: root.row-sub; font-size: (18px * S.k); color: Theme.text2; overflow: elide; }
+                        Text { text: slot == 0 ? root.row-name : root.row-name-b; font-size: (30px * S.k); font-weight: 500; color: Theme.text; overflow: elide; }
+                        Text { text: slot == 0 ? root.row-sub : root.row-sub-b; font-size: (18px * S.k); color: Theme.text2; overflow: elide; }
                     }
                 }
                 TouchArea {
@@ -266,58 +353,17 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // Hero: kicker, logo/title, chips, description, actions (anchored to the bottom).
-            VerticalLayout {
+            // Hero: two layers crossfade when the selection changes (the new game's details
+            // rise in while the old ones fade), like the PS5 home screen.
+            for slot in [0, 1]: HeroView {
                 x: (96px * S.k);
                 width: (900px * S.k);
-                y: (360px * S.k);
+                base-y: (360px * S.k);
                 height: root.height - (360px * S.k) - (112px * S.k);
-                alignment: end;
-                spacing: 0;
-                Kicker { text: root.hero.kicker; accent: root.hero.kicker-accent; live: root.hero.kicker-live; }
-                Rectangle { height: (14px * S.k); }
-                if root.hero.has-logo: Image {
-                    source: root.hero.logo;
-                    width: root.hero.logo-w;
-                    height: root.hero.logo-h;
-                    image-fit: contain;
-                }
-                if !root.hero.has-logo: Text {
-                    text: root.hero.title;
-                    font-size: (84px * S.k);
-                    font-weight: 700;
-                    color: Theme.text;
-                    wrap: word-wrap;
-                    overflow: elide;
-                    max-height: (180px * S.k);
-                }
-                Rectangle { height: (22px * S.k); }
-                HorizontalLayout {
-                    spacing: (10px * S.k);
-                    alignment: start;
-                    for c in root.hero.chips: Chip { data: c; }
-                }
-                Rectangle { height: (20px * S.k); }
-                Text {
-                    text: root.hero.desc;
-                    font-size: (21px * S.k);
-                    color: Theme.text2;
-                    wrap: word-wrap;
-                    overflow: elide;
-                    max-width: (780px * S.k);
-                    max-height: (96px * S.k);
-                }
-                Rectangle { height: (34px * S.k); }
-                HorizontalLayout {
-                    spacing: (16px * S.k);
-                    alignment: start;
-                    for a[i] in root.hero.actions: Btn {
-                        data: a;
-                        focused: root.zone == Zone.actions && root.idx == i && root.overlay == 0;
-                        dim: root.zone == Zone.actions && root.idx != i && root.overlay == 0;
-                        clicked => { root.click(Zone.actions, i); }
-                    }
-                }
+                data: slot == 0 ? root.hero : root.hero-b;
+                front: (slot == 1) == root.hero-front-b;
+                focus-idx: root.zone == Zone.actions && root.overlay == 0 ? root.idx : -1;
+                action(i) => { root.click(Zone.actions, i); }
             }
         }
 
@@ -325,7 +371,9 @@ export component AppWindow inherits Window {
         Rectangle {
             opacity: root.view == 1 ? 1 : 0;
             visible: self.opacity > 0;
-            animate opacity { duration: 220ms; }
+            x: root.view == 1 ? 0 : (40px * S.k);
+            animate opacity { duration: 260ms; easing: ease-out-quad; }
+            animate x { duration: 420ms; easing: ease-out-expo; }
 
             // Grid (virtualized: only rows near the viewport exist).
             grid := Flickable {
@@ -334,6 +382,7 @@ export component AppWindow inherits Window {
                 width: root.width;
                 content-height: root.grid-h;
                 content-y <=> root.grid-y;
+                animate content-y { duration: 260ms; easing: ease-out-quart; }
                 interactive: true;
                 changed content-y => { root.grid-scrolled(); }
                 for r in root.grid-rows: Rectangle {
@@ -346,11 +395,14 @@ export component AppWindow inherits Window {
                         Rectangle {
                             y: 0;
                             height: root.card-w * 1.5;   // official covers are 2:3
+                            transform-scale: f ? 1.05 : 1.0;
+                            animate transform-scale { duration: 220ms; easing: ease-out-back; }
                             FocusRing { w: parent.width; h: parent.height; on: f; radius: (14px * S.k); }
                             Rectangle {
                                 border-radius: (14px * S.k);
                                 clip: true;
                                 background: Theme.panel;
+                                Shimmer { active: !c.loaded; }
                                 Image {
                                     source: c.image;
                                     width: parent.width;
@@ -636,19 +688,30 @@ export component AppWindow inherits Window {
         }
 
         // ------------------------------------------------------------ status + hints
-        if root.status != "": HorizontalLayout {
-            x: (96px * S.k);
-            y: root.height - (64px * S.k);
-            height: (30px * S.k);
-            spacing: (10px * S.k);
-            if root.status-busy: Image {
-                source: Icons.spinner;
-                width: (18px * S.k);
-                height: (18px * S.k);
-                y: (6px * S.k);
-                transform-rotation: animation-tick() / 1ms * 0.4deg;
+        // Background work (downloads, updates): a small pill on the Home screen only, so it never
+        // sits on top of Library titles or panels.
+        if root.status != "" && root.view == 0 && root.overlay == 0: Rectangle {
+            x: (76px * S.k);
+            y: root.height - self.height - (30px * S.k);
+            width: status-row.preferred-width;
+            height: (50px * S.k);
+            border-radius: (25px * S.k);
+            background: #070a14e6;
+            border-width: 1px;
+            border-color: Theme.line;
+            status-row := HorizontalLayout {
+                padding-left: (18px * S.k);
+                padding-right: (20px * S.k);
+                spacing: (10px * S.k);
+                if root.status-busy: Image {
+                    source: Icons.spinner;
+                    width: (18px * S.k);
+                    height: (18px * S.k);
+                    y: (16px * S.k);
+                    transform-rotation: animation-tick() / 1ms * 0.4deg;
+                }
+                Text { text: root.status; font-size: (16px * S.k); color: Theme.text2; vertical-alignment: center; }
             }
-            Text { text: root.status; font-size: (17px * S.k); color: Theme.text3; vertical-alignment: center; }
         }
         Rectangle {
             x: root.width - self.width - (76px * S.k);
@@ -680,6 +743,10 @@ export component AppWindow inherits Window {
         // ------------------------------------------------------------ GAME HUB
         if root.overlay == 1 || root.hub-open: Rectangle {
             background: Theme.bg;
+            property <bool> entered: false;
+            init => { entered = true; }
+            opacity: entered ? 1 : 0;
+            animate opacity { duration: 240ms; easing: ease-out-quad; }
             Image {
                 source: root.bg-show-b ? root.bg-b : root.bg-a;
                 width: root.width;
@@ -792,6 +859,7 @@ export component AppWindow inherits Window {
                                     border-radius: (12px * S.k);
                                     clip: true;
                                     background: Theme.panel;
+                                    Shimmer { active: !s.loaded; }
                                     Image {
                                         source: s.image;
                                         width: parent.width;
@@ -829,10 +897,16 @@ export component AppWindow inherits Window {
 
         // ------------------------------------------------------------ SETTINGS
         if root.overlay == 2: Rectangle {
-            background: #03050ccc;
+            property <bool> entered: false;
+            init => { entered = true; }
+            background: entered ? #03050ccc : #03050c00;
+            animate background { duration: 260ms; }
             TouchArea { clicked => { root.click(Zone.settings, -1); } }
             Rectangle {
-                x: root.width - (760px * S.k);
+                x: root.width - (760px * S.k) + (entered ? 0 : (120px * S.k));
+                opacity: entered ? 1 : 0;
+                animate x { duration: 420ms; easing: ease-out-expo; }
+                animate opacity { duration: 220ms; easing: ease-out-quad; }
                 width: (760px * S.k);
                 background: @linear-gradient(180deg, #111a33 0%, #0a1024 100%);
                 border-width: 1px;
@@ -940,6 +1014,10 @@ export component AppWindow inherits Window {
 
         // ------------------------------------------------------------ SCREENSHOT VIEWER
         if root.overlay == 3: Rectangle {
+            property <bool> entered: false;
+            init => { entered = true; }
+            opacity: entered ? 1 : 0;
+            animate opacity { duration: 200ms; easing: ease-out-quad; }
             background: #000000f2;
             Image {
                 x: (48px * S.k);
@@ -969,11 +1047,18 @@ export component AppWindow inherits Window {
 
         // ------------------------------------------------------------ OPTIONS MENU
         if root.overlay == 5: Rectangle {
-            background: #03050c99;
+            property <bool> entered: false;
+            init => { entered = true; }
+            background: entered ? #03050c99 : #03050c00;
+            animate background { duration: 200ms; }
             TouchArea { clicked => { root.click(Zone.menu, -1); } }
             Rectangle {
                 x: (root.width - self.width) / 2;
                 y: (root.height - self.height) / 2;
+                opacity: entered ? 1 : 0;
+                transform-scale: entered ? 1.0 : 0.94;
+                animate opacity { duration: 180ms; easing: ease-out-quad; }
+                animate transform-scale { duration: 320ms; easing: ease-out-back; }
                 width: (520px * S.k);
                 height: menu-col.preferred-height;
                 border-radius: (22px * S.k);
@@ -1014,6 +1099,10 @@ export component AppWindow inherits Window {
 
         // ------------------------------------------------------------ LAUNCH SPLASH
         if root.overlay == 4: Rectangle {
+            property <bool> entered: false;
+            init => { entered = true; }
+            opacity: entered ? 1 : 0;
+            animate opacity { duration: 320ms; easing: ease-out-quad; }
             background: #000000;
             Image {
                 source: root.launch-bg;
@@ -1057,80 +1146,215 @@ export component AppWindow inherits Window {
         // ------------------------------------------------------------ BOOT / WELCOME
         boot := Rectangle {
             property <bool> shown: root.overlay == 6;
+            // Motion clock only runs while the screen is up, so it costs nothing afterwards.
+            property <float> t: shown ? animation-tick() / 1ms / 1000 : 0;
             opacity: shown ? 1 : 0;
             visible: self.opacity > 0.01;
-            animate opacity { duration: 450ms; easing: ease-in-out; }
-            background: @radial-gradient(circle, #14224d 0%, #070b1a 55%, #03050c 100%);
+            animate opacity { duration: 600ms; easing: ease-in-out-quad; }
+            transform-scale: shown ? 1.0 : 1.04;
+            animate transform-scale { duration: 700ms; easing: ease-in-quad; }
+            background: #05070f;
             TouchArea { clicked => { root.click(Zone.row, -2); } }
+
+            // A slowly drifting wall of the library's covers.
+            property <length> cw: (190px * S.k);
+            property <length> ch: (285px * S.k);
+            property <length> cg: (22px * S.k);
+            property <int> cols: ceil(root.width / (cw + cg)) + 1;
+            property <int> rows: ceil(root.height / (ch + cg)) + 2;
+            Rectangle {
+                opacity: root.boot-covers.length > 0 ? 0.30 : 0;
+                animate opacity { duration: 1600ms; easing: ease-out-quad; }
+                for c in boot.cols: Rectangle {
+                    property <float> speed: 14 + mod(c * 7, 11);            // px/s, each column differs
+                    property <length> shift: (boot.t * speed * 1px * S.k) + c * (97px * S.k);
+                    property <length> loop-h: boot.rows * (boot.ch + boot.cg);
+                    x: c * (boot.cw + boot.cg) - (40px * S.k);
+                    width: boot.cw;
+                    for r in boot.rows: Rectangle {
+                        property <int> k: mod(c * 7 + r * 11, max(1, root.boot-covers.length));
+                        y: mod(r * (boot.ch + boot.cg) / 1px - shift / 1px, loop-h / 1px) * 1px - boot.ch;
+                        height: boot.ch;
+                        border-radius: (14px * S.k);
+                        clip: true;
+                        background: #121a31;
+                        if root.boot-covers.length > 0: Image {
+                            source: root.boot-covers[k];
+                            width: parent.width;
+                            height: parent.height;
+                            image-fit: cover;
+                        }
+                    }
+                }
+            }
+            // Vignette + drifting light keep the centre calm and readable.
+            Rectangle { background: @radial-gradient(circle, #05070fd9 0%, #05070fa6 45%, #05070f40 100%); }
+            Rectangle {
+                x: root.width * (0.30 + 0.06 * sin(boot.t * 9deg)) - self.width / 2;
+                y: root.height * (0.35 + 0.05 * cos(boot.t * 7deg)) - self.height / 2;
+                width: (1100px * S.k);
+                height: self.width;
+                background: @radial-gradient(circle, #1f4fd13d 0%, #1f4fd100 65%);
+            }
+            Rectangle {
+                x: root.width * (0.70 + 0.05 * cos(boot.t * 8deg)) - self.width / 2;
+                y: root.height * (0.62 + 0.06 * sin(boot.t * 6deg)) - self.height / 2;
+                width: (1000px * S.k);
+                height: self.width;
+                background: @radial-gradient(circle, #8b5cf62e 0%, #8b5cf600 65%);
+            }
+
             VerticalLayout {
                 alignment: center;
                 spacing: 0;
+                // App icon with a soft breathing glow.
                 HorizontalLayout {
                     alignment: center;
-                    Image {
-                        source: @image-url("../assets/icons/app-icon.svg");
+                    Rectangle {
                         width: (150px * S.k);
-                        height: (150px * S.k);
+                        height: self.width;
+                        Rectangle {
+                            x: -(40px * S.k);
+                            y: -(40px * S.k);
+                            width: parent.width + (80px * S.k);
+                            height: self.width;
+                            background: @radial-gradient(circle, #3d8bff66 0%, #3d8bff00 68%);
+                            opacity: 0.55 + 0.45 * sin(boot.t * 120deg);
+                        }
+                        Image { source: @image-url("../assets/icons/app-icon.svg"); width: parent.width; height: parent.height; }
                     }
                 }
-                Rectangle { height: (40px * S.k); }
-                Text {
-                    text: root.boot-first ? "Welcome" : "";
-                    visible: root.boot-first;
+                Rectangle { height: (36px * S.k); }
+                if root.boot-first: Text {
+                    text: "Welcome";
                     font-size: (64px * S.k);
                     font-weight: 700;
                     color: Theme.text;
                     horizontal-alignment: center;
                 }
-                Rectangle { height: root.boot-first ? (8px * S.k) : 0; }
                 if root.boot-first: Text {
-                    text: "Your PS5-style game launcher is getting ready";
-                    font-size: (24px * S.k);
+                    text: "Setting up your PS5 launcher";
+                    font-size: (23px * S.k);
                     color: Theme.text2;
                     horizontal-alignment: center;
                 }
-                Rectangle { height: root.boot-first ? (56px * S.k) : (8px * S.k); }
-                HorizontalLayout {
+                Rectangle { height: root.boot-first ? (44px * S.k) : (6px * S.k); }
+
+                // Step list (first launch only).
+                if root.boot-first: HorizontalLayout {
                     alignment: center;
                     Rectangle {
-                        width: (520px * S.k);
+                        width: (560px * S.k);
+                        height: steps.preferred-height;
+                        border-radius: (20px * S.k);
+                        background: #0b1122cc;
+                        border-width: 1px;
+                        border-color: #ffffff17;
+                        steps := VerticalLayout {
+                            padding: (22px * S.k);
+                            spacing: (14px * S.k);
+                            for st in root.boot-steps: HorizontalLayout {
+                                spacing: (14px * S.k);
+                                height: (30px * S.k);
+                                Rectangle {
+                                    width: (26px * S.k);
+                                    height: self.width;
+                                    y: (2px * S.k);
+                                    border-radius: self.width / 2;
+                                    background: st.state == 2 ? Theme.ok.with-alpha(0.18) : st.state == 3 ? Theme.danger.with-alpha(0.18) : #ffffff10;
+                                    animate background { duration: 300ms; }
+                                    if st.state == 2: Image { source: Icons.check; colorize: Theme.ok; width: (16px * S.k); height: self.width; }
+                                    if st.state == 3: Image { source: Icons.alert; colorize: Theme.danger; width: (16px * S.k); height: self.width; }
+                                    if st.state == 1: Image {
+                                        source: Icons.spinner;
+                                        width: (18px * S.k);
+                                        height: self.width;
+                                        transform-rotation: boot.t * 400deg;
+                                    }
+                                    if st.state == 0: Rectangle {
+                                        width: (6px * S.k);
+                                        height: self.width;
+                                        border-radius: self.width / 2;
+                                        background: Theme.text3;
+                                    }
+                                }
+                                Text {
+                                    text: st.label;
+                                    font-size: (19px * S.k);
+                                    font-weight: st.state == 1 ? 600 : 500;
+                                    color: st.state == 0 ? Theme.text3 : Theme.text;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Text {
+                                    text: st.detail;
+                                    font-size: (17px * S.k);
+                                    color: st.state == 2 ? Theme.ok : st.state == 3 ? Theme.danger : Theme.text2;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+                Rectangle { height: root.boot-first ? (28px * S.k) : (4px * S.k); }
+
+                // Progress bar with a moving sheen, and the percentage.
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: (16px * S.k);
+                    Rectangle {
+                        width: root.boot-first ? (480px * S.k) : (360px * S.k);
                         height: (6px * S.k);
+                        y: (10px * S.k);
                         border-radius: (3px * S.k);
-                        background: #ffffff1f;
+                        background: #ffffff1a;
+                        clip: true;
                         Rectangle {
                             x: 0;
                             width: parent.width * root.boot-progress;
                             border-radius: (3px * S.k);
-                            background: @linear-gradient(90deg, #3d8bff 0%, #8fb6ff 100%);
-                            animate width { duration: 300ms; easing: ease-out; }
+                            background: @linear-gradient(90deg, #2f6dff 0%, #6ea8ff 60%, #b4d0ff 100%);
+                            animate width { duration: 400ms; easing: ease-out-quart; }
+                            drop-shadow-blur: (12px * S.k);
+                            drop-shadow-color: #3d8bff99;
+                        }
+                        Rectangle {
+                            x: mod(boot.t * 0.6, 1.4) * parent.width - self.width;
+                            width: (120px * S.k);
+                            background: @linear-gradient(90deg, #ffffff00 0%, #ffffff55 50%, #ffffff00 100%);
+                            visible: root.boot-progress < 1;
                         }
                     }
+                    if root.boot-first: Text {
+                        text: round(root.boot-progress * 100) + "%";
+                        font-size: (18px * S.k);
+                        font-weight: 600;
+                        color: Theme.text2;
+                        min-width: (48px * S.k);
+                    }
                 }
-                Rectangle { height: (22px * S.k); }
+                Rectangle { height: (16px * S.k); }
                 Text {
-                    text: root.boot-status;
-                    font-size: (19px * S.k);
-                    color: Theme.text2;
-                    horizontal-alignment: center;
-                }
-                Rectangle { height: (8px * S.k); }
-                if root.boot-first: Text {
-                    text: root.boot-detail;
+                    text: root.boot-first ? root.boot-detail : root.boot-status;
                     font-size: (16px * S.k);
                     color: Theme.text3;
                     horizontal-alignment: center;
                 }
-                Rectangle { height: (48px * S.k); }
+                Rectangle { height: (40px * S.k); }
                 if root.boot-first: HorizontalLayout {
                     alignment: center;
                     Rectangle {
                         height: (64px * S.k);
                         width: prompt.preferred-width + (60px * S.k);
                         border-radius: (32px * S.k);
-                        background: root.boot-ready ? #ffffff : #ffffff1a;
+                        background: root.boot-ready ? #ffffff : #ffffff14;
                         border-width: 1px;
-                        border-color: #ffffff33;
+                        border-color: #ffffff2e;
+                        drop-shadow-blur: root.boot-ready ? (30px * S.k) + (10px * S.k) * sin(boot.t * 150deg) : 0;
+                        drop-shadow-color: #8cb9ffaa;
+                        transform-scale: root.boot-ready ? 1.0 : 0.96;
                         animate background { duration: 300ms; }
+                        animate transform-scale { duration: 500ms; easing: ease-out-back; }
                         prompt := HorizontalLayout {
                             alignment: center;
                             spacing: (12px * S.k);

@@ -35,6 +35,14 @@ pub struct Boot {
     pub f_kyty: f32,
     pub f_img: f32,
     pub text_main: String,
+    pub cat_text: String,
+    pub art_text: String,
+    pub covers_text: String,
+    pub cat_failed: bool,
+    /// Covers requested for the welcome screen's backdrop, and the ones decoded so far.
+    pub cover_keys: Vec<String>,
+    pub cover_imgs: Vec<slint::Image>,
+    pub cover_shown: Vec<String>,
     pub text_kyty: String,
     pub kyty_note: String,
 }
@@ -113,29 +121,99 @@ impl App {
         if !self.boot.active {
             return;
         }
+        self.boot_feed_covers();
         let b = &self.boot;
         let status = if b.ready {
             if b.first { "All set".to_string() } else { "Ready".to_string() }
+        } else if b.first {
+            String::new()
         } else {
-            let mut parts = Vec::new();
-            if (b.waiting_catalog || b.waiting_art || b.waiting_covers) && !b.text_main.is_empty() {
-                parts.push(b.text_main.clone());
-            }
-            if b.waiting_kyty && !b.text_kyty.is_empty() {
-                parts.push(b.text_kyty.clone());
-            }
-            if parts.is_empty() {
-                parts.push(if b.collected { "Preparing your games…".into() } else if b.first { "Getting things ready…".into() } else { "Loading…".into() });
-            }
-            parts.join("   ·   ")
+            "Loading…".to_string()
         };
         let n = self.locals.len();
-        let detail = format!("{} · {n} installed game{}", self.boot.kyty_note, if n == 1 { "" } else { "s" });
+        let installed = format!("{n} installed game{} found", if n == 1 { "" } else { "s" });
+        let detail = if b.ready && n == 0 {
+            "All set · add your games folder in Settings to play".to_string()
+        } else if b.ready {
+            format!("All set · {installed}")
+        } else {
+            "This only happens once. Skip anytime — downloads continue in the background.".to_string()
+        };
+        // The step list.
+        let step = |label: &str, detail: String, state: i32| crate::BootStep { label: label.into(), detail: detail.into(), state };
+        let frac = |t: &str| t.rsplit(' ').next().filter(|x| x.contains('/')).map(|x| x.replace('/', " / ")).unwrap_or_default();
+        let mut steps = Vec::new();
+        steps.push(if b.cat_failed {
+            step("Game catalog", "Offline".into(), 3)
+        } else if b.waiting_catalog {
+            step("Game catalog", frac(&b.cat_text), 1)
+        } else {
+            step("Game catalog", format!("{} games", self.games.len()), 2)
+        });
+        steps.push(if b.waiting_catalog {
+            step("Official artwork & details", String::new(), 0)
+        } else if b.waiting_art {
+            step("Official artwork & details", frac(&b.art_text), 1)
+        } else {
+            step("Official artwork & details", "Done".into(), 2)
+        });
+        steps.push(if !b.kyty_needed {
+            if self.cfg.lock().unwrap().emulator_ok() { step("KytyPS5 emulator", "Found".into(), 2) } else { step("KytyPS5 emulator", "Not installed".into(), 3) }
+        } else if b.waiting_kyty {
+            step("KytyPS5 emulator", if b.f_kyty > 0.0 { format!("{}%", (b.f_kyty * 100.0).round()) } else { "Checking…".into() }, 1)
+        } else if b.kyty_note.starts_with("Could not") {
+            step("KytyPS5 emulator", "Failed · retry in Settings".into(), 3)
+        } else {
+            step("KytyPS5 emulator", "Latest build".into(), 2)
+        });
+        steps.push(if b.waiting_catalog || b.waiting_art {
+            step("Covers & Home screen", String::new(), 0)
+        } else if !b.ready {
+            step("Covers & Home screen", frac(&b.covers_text), 1)
+        } else {
+            step("Covers & Home screen", "Ready".into(), 2)
+        });
         let progress = self.boot_progress();
         let ui = self.ui();
+        ui.set_boot_steps(model(steps));
         ui.set_boot_status(status.into());
         ui.set_boot_detail(detail.into());
         ui.set_boot_progress(progress.max(ui.get_boot_progress()));
+    }
+
+    /// Feed the backdrop's cover wall with covers that are already on disk (up to 40).
+    fn boot_feed_covers(&mut self) {
+        if self.boot.cover_keys.len() >= 40 {
+            return;
+        }
+        let mut order: Vec<usize> = (0..self.games.len()).collect();
+        order.sort_by(|a, b| self.games[*b].g.date.cmp(&self.games[*a].g.date));
+        for gi in order.into_iter().take(80) {
+            if self.boot.cover_keys.len() >= 40 {
+                break;
+            }
+            let Some(r) = self.card_req(gi) else { continue };
+            if self.boot.cover_keys.contains(&r.key) || !self.images.on_disk(&r.key, &r.src) {
+                continue;
+            }
+            self.boot.cover_keys.push(r.key.clone());
+            if let Some(img) = self.images.want(&r.key, r.src, r.w, r.crop, crate::images::prio::TILE) {
+                self.boot.cover_shown.push(r.key.clone());
+                self.boot.cover_imgs.push(img);
+                self.ui().set_boot_covers(model(self.boot.cover_imgs.clone()));
+            }
+        }
+    }
+
+    pub fn boot_cover_loaded(&mut self, key: &str) {
+        if !self.boot.active || !self.boot.cover_keys.iter().any(|k| k == key) || self.boot.cover_shown.iter().any(|k| k == key) {
+            return;
+        }
+        self.boot.cover_shown.push(key.to_string());
+        if let Some(img) = self.images.get(key) {
+            self.boot.cover_imgs.push(img);
+            self.ui().set_boot_covers(model(self.boot.cover_imgs.clone()));
+        }
     }
 
     /// Status text from catalog sync / artwork downloads.
@@ -146,8 +224,10 @@ impl App {
         let f = parse_fraction(text);
         if text.contains("catalog") {
             self.boot.f_catalog = 0.05 + f.unwrap_or(0.0) * 0.95;
+            self.boot.cat_text = text.to_string();
         } else if text.contains("artwork") {
             self.boot.f_art = f.unwrap_or(self.boot.f_art);
+            self.boot.art_text = text.to_string();
         } else {
             return;
         }
@@ -180,6 +260,7 @@ impl App {
         if self.boot.active && self.boot.waiting_covers {
             self.boot.f_covers = done as f32 / total.max(1) as f32;
             self.boot.text_main = format!("Downloading artwork {done}/{total}");
+            self.boot.covers_text = format!("Covers {done}/{total}");
             self.boot_render();
         }
     }
