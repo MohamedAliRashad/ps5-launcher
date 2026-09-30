@@ -1,6 +1,6 @@
 //! Welcome / boot screen.
 //!
-//! First run: downloads the catalog, the official artwork and the latest KytyPS5 build in
+//! First run: loads the local catalog and downloads official artwork and the latest KytyPS5 build in
 //! parallel (one combined progress bar), then preloads the Home screen and the first Library
 //! page, so nothing is missing or still loading when the user gets in.
 //! Later runs: a short splash while the Home screen decodes from cache. If the emulator has
@@ -144,11 +144,11 @@ impl App {
         let frac = |t: &str| t.rsplit(' ').next().filter(|x| x.contains('/')).map(|x| x.replace('/', " / ")).unwrap_or_default();
         let mut steps = Vec::new();
         steps.push(if b.cat_failed {
-            step("Game catalog", "Offline".into(), 3)
+            step("RuTracker catalog", "Using offline snapshot".into(), 3)
         } else if b.waiting_catalog {
-            step("Game catalog", frac(&b.cat_text), 1)
+            step("RuTracker catalog", "Loading local snapshot".into(), 1)
         } else {
-            step("Game catalog", format!("{} games", self.games.len()), 2)
+            step("RuTracker catalog", format!("{} release topics", self.games.len()), 2)
         });
         steps.push(if b.waiting_catalog {
             step("Official artwork & details", String::new(), 0)

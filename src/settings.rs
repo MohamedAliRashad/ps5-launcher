@@ -14,6 +14,10 @@ pub enum SId {
     KytyAuto,
     KytyRollback,
     Dirs,
+    DownloadDir,
+    InstallDir,
+    SeedCompleted,
+    Downloads,
     Resolution,
     Present,
     Fullscreen,
@@ -116,6 +120,22 @@ impl App {
 
         rows.push((SId::Header, row(0, "LAUNCHER")));
 
+        let mut r = row(1, "Download folder");
+        r.value = cfg.download_dir.clone().into();
+        r.hint = "New transfers only · each torrent gets its own folder · not installed automatically".into();
+        rows.push((SId::DownloadDir, r));
+        let mut r = row(1, "Installation folder");
+        r.value = cfg.install_dir.clone().into();
+        r.hint = "Explicit Install after download · originals kept · added to the game library after validation".into();
+        rows.push((SId::InstallDir, r));
+        let mut r = row(2, "Seed completed downloads");
+        r.on = cfg.seed_after_download;
+        r.hint = "On by default · shares original downloads while open · upload limit 128 KiB/s · off stops current seeds".into();
+        rows.push((SId::SeedCompleted, r));
+        let mut r = row(4, "Manage downloads");
+        r.hint = "Background while the launcher is open · paused on exit · Ctrl+D".into();
+        rows.push((SId::Downloads, r));
+
         // PS5 Launcher updates
         let cur = crate::update::current_version();
         let latest = self.upd.latest.as_ref().map(|r| r.version.clone());
@@ -174,12 +194,14 @@ impl App {
             rows.push((SId::RawgRemove, row(4, "Remove RAWG key")));
         }
 
-        let mut r = row(4, "Refresh catalog");
+        let mut r = row(4, "Reload RuTracker catalog");
         r.value = if self.syncing {
-            "Updating…".into()
+            "Reloading…".into()
         } else {
-            format!("{} games · updated {}", self.games.len(), if self.catalog_updated > 0.0 { util::fmt_last_played(self.catalog_updated).to_lowercase() } else { "never".into() }).into()
+            let snapshot = self.games.first().map(|game| util::fmt_date(util::parse_iso_date(&game.g.peers_observed))).unwrap_or_default();
+            format!("{} releases · snapshot {}", self.games.len(), if snapshot.is_empty() { "unknown" } else { &snapshot }).into()
         };
+        r.hint = "Reloads local JSON, not the website. Peer counts are snapshot data, not live.".into();
         rows.push((SId::Refresh, r));
         rows.push((SId::Rescan, row(4, "Rescan installed games")));
         let mut r = row(4, "Quit launcher");
@@ -252,6 +274,15 @@ impl App {
                 self.save_cfg(|c| c.monitor = next.clone());
                 self.move_to_monitor(&next);
             }
+            SId::SeedCompleted => {
+                let on = dir > 0;
+                if let Err(error) = self.downloads.set_seed_after_download(on) {
+                    self.toast("Seeding setting unavailable", &error.to_string(), 2);
+                    return;
+                }
+                self.save_cfg(|c| c.seed_after_download = on);
+                self.push_downloads();
+            }
             SId::Fullscreen | SId::Amd | SId::ReturnOnExit | SId::Sounds | SId::KytyAuto | SId::AppAuto => {
                 let on = dir > 0;
                 self.save_cfg(|c| match id {
@@ -278,12 +309,14 @@ impl App {
     pub fn settings_activate(&mut self, i: usize) {
         let Some(id) = self.settings_ids.get(i).copied() else { return };
         match id {
-            SId::Emulator | SId::Dirs | SId::Extra | SId::Rawg => {
+            SId::Emulator | SId::Dirs | SId::Extra | SId::Rawg | SId::DownloadDir | SId::InstallDir => {
                 let cfg = self.cfg.lock().unwrap().clone();
                 let text = match id {
                     SId::Emulator => cfg.emulator,
                     SId::Dirs => cfg.game_dirs.join("; "),
                     SId::Extra => cfg.extra_args,
+                    SId::DownloadDir => cfg.download_dir,
+                    SId::InstallDir => cfg.install_dir,
                     _ => String::new(),
                 };
                 audio::play(Sound::Select);
@@ -292,7 +325,7 @@ impl App {
                 ui.set_edit_text(text.into());
                 ui.set_edit_index(i as i32);
             }
-            SId::Fullscreen | SId::Amd | SId::ReturnOnExit | SId::Sounds | SId::KytyAuto | SId::AppAuto => {
+            SId::Fullscreen | SId::Amd | SId::ReturnOnExit | SId::Sounds | SId::KytyAuto | SId::AppAuto | SId::SeedCompleted => {
                 let on = self.settings_rows[i].on;
                 self.settings_change(i, if on { -1 } else { 1 });
             }
@@ -358,6 +391,7 @@ impl App {
             SId::Quit => {
                 let _ = slint::quit_event_loop();
             }
+            SId::Downloads => self.open_downloads(None),
             SId::Header => {}
         }
     }
@@ -380,6 +414,18 @@ impl App {
                 self.toast("Installed games rescanned", &format!("{n} game{} found.", if n == 1 { "" } else { "s" }), 1);
             }
             SId::Extra => self.save_cfg(|c| c.extra_args = t),
+            SId::DownloadDir => {
+                if t.is_empty() || !util::expand_home(&t).is_absolute() {
+                    self.toast("Invalid download folder", "Use an absolute path or ~/Downloads/PS5.", 2);
+                } else {
+                    self.save_cfg(|c| c.download_dir = t);
+                }
+            }
+            SId::InstallDir => {
+                if t.is_empty() || !util::expand_home(&t).is_absolute() {
+                    self.toast("Invalid installation folder", "Use an absolute path or ~/Games/PS5.", 2);
+                } else { self.save_cfg(|c| c.install_dir = t); }
+            }
             SId::Rawg => {
                 if t.is_empty() {
                     return; // empty keeps the saved key

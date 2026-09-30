@@ -1,0 +1,81 @@
+//! Installation is explicit and separate from downloading. The worker never runs payload code.
+use crate::{app::*, downloads, installer, util};
+
+impl App {
+    pub fn download_for_target(&self, target: Target) -> Option<downloads::Job> {
+        let game = &self.games.get(target.game?)?.g;
+        let hash = downloads::normalize_magnet(&game.magnet).ok().map(|(key, _)| key);
+        self.downloads.snapshot().into_iter().find(|job| job.topic == game.id || hash.as_ref() == Some(&job.key))
+    }
+
+    pub fn prepare_install(&mut self, key: &str) {
+        let Some(job) = self.downloads.snapshot().into_iter().find(|job| job.key == key && job.state == downloads::State::Complete) else { return; };
+        if self.installer.snapshot().iter().any(|record| record.key == key && record.state.active()) {
+            self.open_downloads(Some(key)); return;
+        }
+        self.open_downloads(Some(key));
+        self.install_pending = Some(key.into());
+        let ui = self.ui();
+        ui.set_download_is_install(true);
+        ui.set_download_title(job.name.into());
+        ui.set_download_path(self.cfg.lock().unwrap().install_dir.clone().into());
+        ui.set_download_error("".into());
+        ui.set_download_consent(true);
+    }
+
+    pub fn confirm_install(&mut self) {
+        let Some(key) = self.install_pending.clone() else { return; };
+        let Some(job) = self.downloads.snapshot().into_iter().find(|job| job.key == key && job.state == downloads::State::Complete) else { return; };
+        let destination = self.ui().get_download_path().trim().to_owned();
+        let ids = self.games.iter().find(|game| game.g.id == job.topic).map(|game| {
+            std::iter::once(game.g.title_id.clone()).chain(game.g.title_ids.clone())
+                .filter(|id| crate::psn::valid_title_id(id)).collect()
+        }).unwrap_or_default();
+        let request = installer::Request { key: key.clone(), topic: job.topic, name: job.name,
+            source: job.folder, destination: util::expand_home(&destination), expected_ids: ids };
+        match self.installer.start(request) {
+            Ok(()) => {
+                self.install_states.insert(key.clone(), installer::State::Inspecting);
+                { let mut cfg = self.cfg.lock().unwrap(); cfg.install_dir = destination; cfg.save(); }
+                self.install_pending = None;
+                self.push_installs();
+                self.open_downloads(Some(&key));
+            }
+            Err(error) => self.ui().set_download_error(format!("{error:#}").into()),
+        }
+    }
+
+    pub fn push_installs(&mut self) {
+        let records = self.installer.snapshot();
+        let mut changed = false;
+        let mut register = false;
+        for record in &records {
+            let previous = self.install_states.insert(record.key.clone(), record.state);
+            if previous == Some(record.state) { continue; }
+            changed = true;
+            if record.state == installer::State::Installed {
+                if let Some(path) = record.path.as_ref().filter(|path| crate::library::read_param(path).is_some()) {
+                    if let Some(parent) = path.parent() {
+                        let mut cfg = self.cfg.lock().unwrap();
+                        let folder = parent.to_string_lossy().into_owned();
+                        if !cfg.game_dir_paths().iter().any(|existing| existing == parent) {
+                            cfg.game_dirs.push(folder); cfg.save();
+                        }
+                        register = true;
+                    }
+                }
+                if previous.is_some() { self.toast("Installation complete", &format!("{} · ready in your game library", record.name), 1); }
+            } else if previous.is_some() && record.state == installer::State::Failed {
+                self.toast("Installation stopped", &format!("{} · open Downloads for details", record.name), 2);
+            }
+        }
+        self.install_states.retain(|key, _| records.iter().any(|record| &record.key == key));
+        if register { self.rescan_library(); }
+        if changed && self.overlay == Overlay::Hub { self.push_hub(); }
+        if let Some(record) = records.iter().find(|record| record.state.active()) {
+            self.ui().set_install_badge(format!("{} · {:.0}%", record.state.label(), record.progress() * 100.0).into());
+            self.ui().set_install_progress(record.progress());
+            self.ui().set_install_active(true);
+        } else { self.ui().set_install_active(false); }
+    }
+}

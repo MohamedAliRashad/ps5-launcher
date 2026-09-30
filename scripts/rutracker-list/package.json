@@ -1,0 +1,14 @@
+{
+  "name": "ps5-launcher-rutracker-list",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "list": "node list.mjs",
+    "translate": "node translate.mjs",
+    "publish": "node publish.mjs",
+    "test": "node --test test.mjs translation.test.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "^1.55.0"
+  }
+}

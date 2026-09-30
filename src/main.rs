@@ -7,12 +7,18 @@ mod catalog;
 mod compat;
 mod config;
 mod display;
+mod download_ui;
+mod downloads;
 mod gamepad;
+mod game_groups;
 mod images;
+mod installer;
+mod install_ui;
 mod kyty;
 mod kyty_ui;
 mod update;
 mod library;
+mod library_layout;
 mod present;
 mod psn;
 mod sessions;
@@ -30,7 +36,8 @@ USAGE:
 OPTIONS:
     --windowed          Open in a normal window instead of fullscreen
     --monitor <NAME>    Display to use (e.g. DP-2); overrides Settings
-    --sync              Refresh the game catalog on start
+    --sync              Reload the local RuTracker catalog on start
+    --catalog <PATH>    Use an English RuTracker PS5 JSON snapshot
     --version           Print the version
     -h, --help          Show this help
 ";
@@ -44,6 +51,13 @@ fn main() {
         match a.as_str() {
             "--windowed" => windowed = true,
             "--monitor" => monitor = args.next(),
+            "--catalog" => {
+                let Some(path) = args.next().filter(|value| !value.starts_with("--")) else {
+                    eprintln!("--catalog requires a JSON file path");
+                    std::process::exit(2);
+                };
+                std::env::set_var("PS5_LAUNCHER_CATALOG_PATH", path);
+            }
             "--sync" => force_sync = true,
             "--version" | "-V" => {
                 println!("ps5-launcher {}", env!("CARGO_PKG_VERSION"));
@@ -60,8 +74,10 @@ fn main() {
         }
     }
     if force_sync {
-        // Mark the cached catalog stale; the app syncs on start.
-        let _ = std::fs::remove_file(catalog::CatalogFile::path());
+        // Keep the last-known-good cache if an external snapshot is invalid.
+        if let Err(error) = catalog::sync(&|message| eprintln!("{message}")) {
+            eprintln!("Could not reload RuTracker catalog: {error}");
+        }
     }
 
     let cfg = config::Config::load();

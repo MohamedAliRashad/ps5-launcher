@@ -116,17 +116,9 @@ pub fn query_escape(s: &str) -> String {
 // ------------------------------------------------------------------ text
 
 static TAG_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?s)<(script|style)[^>]*>.*?</(script|style)>|<[^>]+>").unwrap());
-static WS_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\s+").unwrap());
 static BR_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?i)<br\s*/?>").unwrap());
 
-/// Strip HTML tags, decode entities and collapse whitespace.
-pub fn strip_tags(s: &str) -> String {
-    let no_tags = TAG_RE.replace_all(s, " ");
-    let decoded = html_escape::decode_html_entities(&no_tags);
-    WS_RE.replace_all(&decoded, " ").trim().to_string()
-}
-
-/// Like strip_tags but keeps line breaks from <br>.
+/// Strip HTML tags and decode entities, keeping line breaks from <br>.
 pub fn clean_multiline(s: &str) -> String {
     let with_nl = BR_RE.replace_all(s, "\n");
     let no_tags = TAG_RE.replace_all(&with_nl, "");

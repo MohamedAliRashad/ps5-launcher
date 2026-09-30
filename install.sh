@@ -89,7 +89,7 @@ if ! cargo build --release --locked; then
     echo
     warn "The build failed. The most common cause is a missing system package:"
     echo "      $(distro_hint)"
-    warn "If your Rust is older than 1.88, update it:  rustup update stable"
+    warn "If your Rust is older than 1.92, update it:  rustup update stable"
     exit 1
 fi
 ok "Built target/release/$APP"

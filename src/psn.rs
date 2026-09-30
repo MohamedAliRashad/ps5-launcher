@@ -61,9 +61,9 @@ pub struct Entry {
     pub info: Option<Info>,
 }
 
-pub fn region_from_version(v: &str) -> &'static str {
+pub fn region_from_label(v: &str) -> &'static str {
     let v = v.to_uppercase();
-    if v.contains("EUR") {
+    if v.contains("EUR") || v == "GB" || v == "UK" {
         "GB"
     } else if v.contains("JP") || v.contains("JAPAN") {
         "JP"

@@ -1,0 +1,10 @@
+[package]
+name = "rutracker-search-test"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+rutracker-api = "=0.2.1"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt", "time"] }

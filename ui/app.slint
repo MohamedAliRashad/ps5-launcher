@@ -1,5 +1,7 @@
-import { S, Theme, Icons, Zone, BootStep, ChipData, ActionData, TileData, HeroData, CardData, CardRow, GenreChip, Fact, FactRow, Shot, HubData, SettingData, ToastData, MenuItem, RunningData } from "theme.slint";
+import { S, Theme, Icons, Zone, DownloadData, BootStep, ChipData, ActionData, TileData, HeroData, CardData, CardRow, GenreChip, Fact, FactRow, Shot, HubData, SettingData, ToastData, MenuItem, RunningData } from "theme.slint";
 import { FocusRing, Chip, Btn, Kicker, Badge, Switch, KeyCap, BackButton, Shimmer, Cover } from "widgets.slint";
+import { DownloadsSheet, DownloadConsent } from "downloads.slint";
+import { LibraryFilter, LibrarySortPicker } from "library.slint";
 
 export { S, Theme, Zone }
 
@@ -143,6 +145,22 @@ export component AppWindow inherits Window {
     in property <[ToastData]> toasts;
     in property <string> status;
     in property <bool> status-busy;
+    in property <[DownloadData]> downloads;
+    in property <bool> download-active;
+    in property <float> download-progress;
+    in property <string> download-badge;
+    in property <string> download-summary;
+    in property <bool> download-consent;
+    in property <bool> download-is-install;
+    in-out property <bool> download-focus-path;
+    in property <bool> install-active;
+    in property <float> install-progress;
+    in property <string> install-badge;
+    in property <string> download-title;
+    in property <string> download-error;
+    in-out property <string> download-path;
+    in-out property <bool> download-editing;
+    in-out property <length> downloads-y;
     in property <bool> pad-hints;
     in property <image> bg-a;
     in property <image> bg-b;
@@ -163,6 +181,14 @@ export component AppWindow inherits Window {
     in-out property <string> query;
     in property <string> sort-label;
     in property <string> count-label;
+    in property <string> peer-snapshot-label;
+    in property <[string]> sort-options;
+    in property <int> sort-selected;
+    in property <bool> library-compact;
+    in property <float> library-type-scale: 1;
+    in property <length> library-top: (324px * S.k);
+    in property <[GenreChip]> status-filters;
+    property <length> library-sort-anchor: (96px * S.k) + library-search.width + (18px * S.k);
     in property <[GenreChip]> genres;
     in property <length> genres-x;
     in property <bool> genres-more-right;
@@ -219,6 +245,12 @@ export component AppWindow inherits Window {
     callback search-edited(string);
     callback search-done(bool);                       // accepted (Enter)
     callback edit-done(string, bool);
+    callback download-confirm();
+    callback download-action(string, string);
+    callback download-close();
+    callback hub-release(int);
+    callback genres-scroll(int);
+    in-out property <bool> hub-details-open;
 
     public function focus-root() { scope.focus(); }
     public function focus-search() { search-input.focus(); search-input.select-all(); }
@@ -386,8 +418,8 @@ export component AppWindow inherits Window {
             // Scrolling is driven from Rust (wheel, touchpad, keyboard, controller) so each input
             // gets the right step and a short glide; only rows near the viewport exist.
             grid := Rectangle {
-                y: (262px * S.k);
-                height: root.height - (262px * S.k);
+                y: root.library-top;
+                height: root.height - root.library-top;
                 width: root.width;
                 clip: true;
                 TouchArea {
@@ -406,6 +438,7 @@ export component AppWindow inherits Window {
                     for c[j] in r.cards: Rectangle {
                         x: (96px * S.k) + j * (root.card-w + root.grid-gap);
                         width: root.card-w;
+                        height: root.row-h;
                         property <bool> f: root.zone == Zone.grid && root.idx == c.index && root.overlay == 0;
                         Rectangle {
                             y: 0;
@@ -455,23 +488,41 @@ export component AppWindow inherits Window {
                         }
                         VerticalLayout {
                             y: root.card-w * 1.5 + (14px * S.k);
+                            width: parent.width;
+                            height: (102px * root.library-type-scale) + (8px * S.k);
+                            alignment: start;
                             spacing: (4px * S.k);
-                            // Titles are pre-shortened to two lines; the box also crops at two lines,
-                            // because text drawn past its box would spill into the next row.
+                            // Every card reserves two title lines, including short titles.
                             Rectangle {
-                                height: min(title-t.preferred-height, (48px * S.k));
+                                height: (52px * root.library-type-scale);
                                 clip: true;
                                 title-t := Text {
                                     y: 0;
                                     width: parent.width;
+                                    height: parent.height;
                                     text: c.title;
-                                    font-size: (19px * S.k);
-                                    font-weight: f ? 600 : 500;
+                                    font-size: (20px * root.library-type-scale);
+                                    font-weight: 500;
                                     color: f ? #ffffff : Theme.text;
                                     wrap: word-wrap;
+                                    overflow: elide;
+                                    vertical-alignment: top;
                                 }
                             }
-                            Text { text: c.meta; font-size: (16px * S.k); color: f ? Theme.text2 : Theme.text3; overflow: elide; }
+                            HorizontalLayout {
+                                height: (26px * root.library-type-scale);
+                                spacing: (6px * S.k);
+                                Text { text: c.meta; font-size: (18px * root.library-type-scale); font-weight: 500; color: Theme.text2; overflow: elide; }
+                                Rectangle { horizontal-stretch: 1; }
+                                if c.releases != "": Text { text: c.releases; font-size: (14px * root.library-type-scale); color: Theme.text3; overflow: elide; }
+                            }
+                            HorizontalLayout {
+                                height: (24px * root.library-type-scale);
+                                spacing: (8px * S.k);
+                                alignment: start;
+                                Text { text: "↑ " + c.seeders; font-size: (16px * root.library-type-scale); font-weight: 500; color: c.seeders == "—" ? Theme.text3 : Theme.ok; }
+                                Text { text: "↓ " + c.leechers; font-size: (16px * root.library-type-scale); font-weight: 500; color: c.leechers == "—" ? Theme.text3 : Theme.danger; }
+                            }
                         }
                         TouchArea {
                             mouse-cursor: pointer;
@@ -493,7 +544,7 @@ export component AppWindow inherits Window {
             // Header: search, sort, count, genre chips.
             Rectangle {
                 y: 0;
-                height: (262px * S.k);
+                height: root.library-top;
                 background: @linear-gradient(180deg, #070a14 0%, #070a14 88%, #070a1400 100%);
                 HorizontalLayout {
                     x: (96px * S.k);
@@ -501,8 +552,8 @@ export component AppWindow inherits Window {
                     width: root.width - (192px * S.k);
                     height: (62px * S.k);
                     spacing: (18px * S.k);
-                    Rectangle {
-                        width: (640px * S.k);
+                    library-search := Rectangle {
+                        width: min((600px * S.k), max((180px * S.k), parent.width - library-sort.width - density.width - (54px * S.k)));
                         border-radius: (31px * S.k);
                         background: root.zone == Zone.search ? #232c47 : #ffffff14;
                         border-width: root.zone == Zone.search ? (3px * S.k) : (1px * S.k);
@@ -515,7 +566,7 @@ export component AppWindow inherits Window {
                             width: parent.width - (86px * S.k);
                             height: parent.height;
                             vertical-alignment: center;
-                            font-size: (22px * S.k);
+                            font-size: (22px * root.library-type-scale);
                             color: Theme.text;
                             text <=> root.query;
                             single-line: true;
@@ -525,7 +576,7 @@ export component AppWindow inherits Window {
                         if root.query == "": Text {
                             x: (62px * S.k);
                             text: "Search games";
-                            font-size: (22px * S.k);
+                            font-size: (22px * root.library-type-scale);
                             color: Theme.text3;
                             vertical-alignment: center;
                         }
@@ -534,7 +585,7 @@ export component AppWindow inherits Window {
                             clicked => { root.click(Zone.search, 0); }
                         }
                     }
-                    Rectangle {
+                    library-sort := Rectangle {
                         width: sort-row.preferred-width + (40px * S.k);
                         border-radius: (31px * S.k);
                         background: root.zone == Zone.sort ? #ffffff26 : #ffffff14;
@@ -543,55 +594,76 @@ export component AppWindow inherits Window {
                         sort-row := HorizontalLayout {
                             spacing: (10px * S.k);
                             alignment: center;
-                            Image { source: Icons.chevl; colorize: Theme.text3; width: (22px * S.k); height: (22px * S.k); y: (parent.height - (22px * S.k)) / 2; }
-                            Text { text: root.sort-label; font-size: (20px * S.k); color: Theme.text; vertical-alignment: center; }
-                            Image { source: Icons.chevr; colorize: Theme.text3; width: (22px * S.k); height: (22px * S.k); y: (parent.height - (22px * S.k)) / 2; }
+                            Text { text: root.sort-label; font-size: (20px * root.library-type-scale); color: Theme.text; vertical-alignment: center; }
+                            Image { source: Icons.chevd; colorize: Theme.text3; width: (20px * S.k); height: (20px * S.k); y: (parent.height - (20px * S.k)) / 2; }
                         }
                         TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.sort, 0); } }
                     }
                     Rectangle { horizontal-stretch: 1; }
-                    Text { text: root.count-label; font-size: (19px * S.k); color: Theme.text3; vertical-alignment: center; }
-                }
-                Flickable {
-                    x: (92px * S.k);
-                    y: (192px * S.k);
-                    width: root.width - (92px * S.k);
-                    height: (52px * S.k);
-                    content-x: root.genres-x;
-                    interactive: false;
-                    for g[i] in root.genres: Rectangle {
-                        x: g.x + (4px * S.k);
-                        y: (4px * S.k);
-                        width: g.w;
-                        height: (44px * S.k);
-                        border-radius: (22px * S.k);
-                        property <bool> f: root.zone == Zone.chips && root.idx == i && root.overlay == 0;
-                        background: g.on ? #ffffff : #ffffff0f;
-                        border-width: f ? (3px * S.k) : 1px;
-                        border-color: f ? (g.on ? Theme.accent : #ffffff) : Theme.line;
-                        HorizontalLayout {
-                            alignment: center;
-                            spacing: (6px * S.k);
-                            Text { text: g.label; font-size: (18px * S.k); color: g.on ? #0a0d18 : (f ? Theme.text : Theme.text2); vertical-alignment: center; }
-                            Text { text: g.count; font-size: (15px * S.k); color: g.on ? #56607a : Theme.text3; vertical-alignment: center; }
+                    density := Rectangle {
+                        width: density-row.preferred-width;
+                        border-radius: (31px * S.k); background: #ffffff0b; border-width: 1px; border-color: Theme.line;
+                        density-row := HorizontalLayout {
+                            padding: (5px * S.k); spacing: (4px * S.k);
+                            for label[i] in [root.width < 1000px ? "Roomy" : "Comfortable", "Compact"]: Rectangle {
+                                width: dt.preferred-width + (28px * S.k);
+                                border-radius: (26px * S.k);
+                                property <bool> chosen: root.library-compact == (i == 1);
+                                background: chosen ? #ffffff20 : transparent;
+                                border-width: root.zone == Zone.density && root.idx == i && root.overlay == 0 ? (2px * S.k) : 0;
+                                border-color: Theme.ring;
+                                dt := Text { text: label; font-size: (17px * root.library-type-scale); color: chosen ? Theme.text : Theme.text3; vertical-alignment: center; }
+                                TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.density, i); } }
+                            }
                         }
-                        TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.chips, i); } }
                     }
                 }
-                // Fades hint that the chip row scrolls.
-                if root.genres-more-right: Rectangle {
-                    x: root.width - (160px * S.k);
+                Rectangle {
+                    x: (96px * S.k);
                     y: (192px * S.k);
-                    width: (160px * S.k);
+                    width: root.width - (192px * S.k);
                     height: (52px * S.k);
-                    background: @linear-gradient(90deg, #070a1400 0%, #070a14 85%);
+                    for g in root.status-filters: LibraryFilter {
+                        x: g.x; y: (4px * S.k); data: g; type-scale: root.library-type-scale;
+                        focused: root.zone == Zone.chips && root.idx == g.index && root.overlay == 0;
+                        clicked => { root.click(Zone.chips, g.index); }
+                    }
+                    VerticalLayout {
+                        x: parent.width - self.width; width: max(count.preferred-width, snapshot.preferred-width);
+                        alignment: center; spacing: (3px * S.k);
+                        count := Text { text: root.count-label; font-size: (18px * root.library-type-scale); color: Theme.text2; horizontal-alignment: right; }
+                        snapshot := Text { text: root.peer-snapshot-label; font-size: (14px * root.library-type-scale); color: Theme.text3; horizontal-alignment: right; }
+                    }
                 }
-                if root.genres-x < 0: Rectangle {
-                    x: 0;
-                    y: (192px * S.k);
-                    width: (150px * S.k);
+                Rectangle {
+                    x: (96px * S.k); y: (254px * S.k); width: root.width - (192px * S.k);
                     height: (52px * S.k);
-                    background: @linear-gradient(90deg, #070a14 55%, #070a1400 100%);
+                    Text { x: 0; y: 0; height: parent.height; text: "GENRE"; font-size: (14px * root.library-type-scale); font-weight: 600; color: Theme.text3; width: (76px * S.k); horizontal-alignment: left; vertical-alignment: center; }
+                    Rectangle {
+                        x: (80px * S.k); y: (6px * S.k); width: (36px * S.k); height: (36px * S.k);
+                        border-radius: (18px * S.k); background: root.genres-x < 0 ? #ffffff14 : transparent;
+                        Image { source: Icons.chevl; colorize: root.genres-x < 0 ? Theme.text : Theme.text3; width: (20px * S.k); height: (20px * S.k); }
+                        TouchArea { enabled: root.genres-x < 0; mouse-cursor: pointer; clicked => { root.genres-scroll(-3); } }
+                    }
+                    Flickable {
+                        x: (124px * S.k); width: parent.width - (168px * S.k); height: parent.height;
+                        content-x: root.genres-x; interactive: false;
+                        for g in root.genres: LibraryFilter {
+                            x: g.x; y: (4px * S.k); data: g; type-scale: root.library-type-scale;
+                            focused: root.zone == Zone.chips && root.idx == g.index && root.overlay == 0;
+                            clicked => { root.click(Zone.chips, g.index); }
+                        }
+                    }
+                    if root.genres-more-right: Rectangle {
+                        x: parent.width - (92px * S.k); width: (48px * S.k); height: parent.height;
+                        background: @linear-gradient(90deg, #070a1400, #070a14);
+                    }
+                    Rectangle {
+                        x: parent.width - (36px * S.k); y: (6px * S.k); width: (36px * S.k); height: (36px * S.k);
+                        border-radius: (18px * S.k); background: root.genres-more-right ? #ffffff14 : transparent;
+                        Image { source: Icons.chevr; colorize: root.genres-more-right ? Theme.text : Theme.text3; width: (20px * S.k); height: (20px * S.k); }
+                        TouchArea { enabled: root.genres-more-right; mouse-cursor: pointer; clicked => { root.genres-scroll(3); } }
+                    }
                 }
             }
         }
@@ -606,7 +678,7 @@ export component AppWindow inherits Window {
                 height: (104px * S.k);
                 spacing: (44px * S.k);
                 alignment: start;
-                for tab[i] in ["Games", "Library"]: Rectangle {
+                for tab[i] in ["Home", "Library"]: Rectangle {
                     width: tt.preferred-width + (8px * S.k);
                     property <bool> active: root.view == i;
                     property <bool> f: root.zone == Zone.tabs && root.idx == i && root.overlay == 0;
@@ -671,7 +743,17 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                for ic[i] in [Icons.search, Icons.gear]: Rectangle {
+                if root.download-active || root.install-active: Rectangle {
+                    width: (230px * S.k); height: (52px * S.k); y: (26px * S.k);
+                    border-radius: (12px * S.k); background: #0a6cff26;
+                    Text { text: root.install-active ? root.install-badge : root.download-badge; font-size: (17px * S.k); color: #a7caff; y: (8px * S.k); height: (24px * S.k); }
+                    Rectangle {
+                        x: (14px * S.k); y: (39px * S.k); width: parent.width - (28px * S.k); height: (4px * S.k); background: #ffffff14;
+                        Rectangle { x: 0; y: 0; width: parent.width * (root.install-active ? root.install-progress : root.download-progress); background: Theme.accent; animate width { duration: 300ms; } }
+                    }
+                    TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.top, 4); } }
+                }
+                for ic[i] in [Icons.search, Icons.gear, Icons.disk]: Rectangle {
                     width: (52px * S.k);
                     height: (52px * S.k);
                     y: (26px * S.k);
@@ -728,7 +810,7 @@ export component AppWindow inherits Window {
             border-width: 1px;
             border-color: Theme.line;
             // Hidden over the library grid so it never covers game titles.
-            visible: root.overlay != 4 && root.overlay != 3 && root.overlay != 6 && (root.view == 0 || root.overlay != 0);
+            visible: root.overlay != 4 && root.overlay != 3 && root.overlay != 6 && root.overlay != 7 && (root.view == 0 || root.overlay != 0);
             hints := HorizontalLayout {
                 padding-left: (20px * S.k);
                 padding-right: (22px * S.k);
@@ -821,6 +903,8 @@ export component AppWindow inherits Window {
                         wrap: word-wrap;
                     }
                     Rectangle { height: (22px * S.k); }
+                    if root.hub.subtitle != "": Text { text: root.hub.subtitle; font-size: (20px * S.k); color: Theme.text2; wrap: word-wrap; }
+                    if root.hub.subtitle != "": Rectangle { height: (16px * S.k); }
                     HorizontalLayout {
                         spacing: (10px * S.k);
                         alignment: start;
@@ -837,7 +921,33 @@ export component AppWindow inherits Window {
                             clicked => { root.click(Zone.hub, i); }
                         }
                     }
-                    Rectangle { height: (40px * S.k); }
+                    Rectangle { height: (22px * S.k); }
+                    if root.hub.release-count > 1: Rectangle {
+                        height: (54px * S.k); border-radius: (12px * S.k); background: #ffffff0d;
+                        border-width: root.zone == Zone.releases ? (2px * S.k) : 1px;
+                        border-color: root.zone == Zone.releases ? Theme.text : Theme.line;
+                        HorizontalLayout {
+                            spacing: (12px * S.k); padding-left: (14px * S.k); padding-right: (14px * S.k);
+                            Rectangle {
+                                width: (44px * S.k);
+                                Text { text: "‹"; font-size: (30px * S.k); color: Theme.text; }
+                                TouchArea { mouse-cursor: pointer; clicked => { root.hub-release(-1); } }
+                            }
+                            Text { text: root.hub.release-label; font-size: (18px * S.k); color: Theme.text2; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                            Rectangle {
+                                width: (44px * S.k);
+                                Text { text: "›"; font-size: (30px * S.k); color: Theme.text; }
+                                TouchArea { mouse-cursor: pointer; clicked => { root.hub-release(1); } }
+                            }
+                        }
+                    }
+                    if root.hub.peer-status != "": HorizontalLayout {
+                        padding-top: (16px * S.k); padding-bottom: (22px * S.k); spacing: (10px * S.k); alignment: start;
+                        Image { source: Icons.user; colorize: Theme.text3; width: (18px * S.k); height: (18px * S.k); }
+                        Text { text: "↑ " + root.hub.seeders + " seeders"; font-size: (18px * S.k); font-weight: 600; color: root.hub.seeders == "—" ? Theme.text3 : Theme.ok; }
+                        Text { text: "↓ " + root.hub.leechers + " leechers"; font-size: (18px * S.k); font-weight: 600; color: root.hub.leechers == "—" ? Theme.text3 : Theme.danger; }
+                        Text { text: "·  " + root.hub.peer-snapshot; font-size: (17px * S.k); color: Theme.text3; wrap: word-wrap; }
+                    }
                     for fr in root.hub.facts: HorizontalLayout {
                         spacing: (14px * S.k);
                         padding-bottom: (14px * S.k);
@@ -855,6 +965,25 @@ export component AppWindow inherits Window {
                                 spacing: (6px * S.k);
                                 Text { text: f.key; font-size: (15px * S.k); font-weight: 600; letter-spacing: (1.5px * S.k); color: Theme.text3; }
                                 Text { text: f.value; font-size: (21px * S.k); font-weight: 500; color: Theme.text; overflow: elide; }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        height: (46px * S.k); border-radius: (10px * S.k);
+                        background: root.zone == Zone.hub-details ? #ffffff1f : #ffffff08;
+                        border-width: root.zone == Zone.hub-details ? (2px * S.k) : 1px;
+                        border-color: root.zone == Zone.hub-details ? Theme.text : Theme.line;
+                        Text { text: root.hub-details-open ? "−  Hide technical details" : "+  Technical details & installed game"; font-size: (18px * S.k); color: Theme.text2; }
+                        TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.hub-details, 0); } }
+                    }
+                    if root.hub-details-open: VerticalLayout {
+                        padding-top: (16px * S.k); spacing: (10px * S.k);
+                        for fr in root.hub.details: VerticalLayout {
+                            spacing: (10px * S.k);
+                            for f in fr.items: HorizontalLayout {
+                                spacing: (18px * S.k);
+                                Text { text: f.key; width: (260px * S.k); font-size: (16px * S.k); color: Theme.text3; }
+                                Text { text: f.value; font-size: (18px * S.k); color: Theme.text2; wrap: word-wrap; horizontal-stretch: 1; }
                             }
                         }
                     }
@@ -1038,6 +1167,30 @@ export component AppWindow inherits Window {
                     }
                 }
             }
+        }
+
+        // ------------------------------------------------------------ BACKGROUND DOWNLOADS
+        if root.overlay == 8: LibrarySortPicker {
+            options: root.sort-options; selected: root.idx; current: root.sort-selected;
+            type-scale: root.library-type-scale; anchor-x: root.library-sort-anchor;
+            choose(index) => { root.click(Zone.sort-picker, index); }
+            close => { root.click(Zone.sort-picker, -1); }
+        }
+        if root.overlay == 7 && !root.download-consent: DownloadsSheet {
+            data: root.downloads; summary: root.download-summary; selected: root.idx;
+            scroll-y <=> root.downloads-y;
+            action(key, action) => { root.download-action(key, action); }
+            close => { root.download-close(); }
+        }
+        if root.overlay == 7 && root.download-consent: DownloadConsent {
+            focus-path: root.download-focus-path;
+            install: root.download-is-install;
+            title: root.download-title; error: root.download-error;
+            destination <=> root.download-path;
+            confirm => { root.download-confirm(); }
+            close => { root.download-close(); }
+            edit-done => { root.focus-root(); }
+            editing(focused) => { root.download-editing = focused; root.download-focus-path = false; }
         }
 
         // ------------------------------------------------------------ SCREENSHOT VIEWER
@@ -1235,11 +1388,11 @@ export component AppWindow inherits Window {
             VerticalLayout {
                 alignment: center;
                 spacing: 0;
-                // App icon with a soft breathing glow.
+                // Custom chassis emblem, presented calmly rather than as a pulsing play button.
                 HorizontalLayout {
                     alignment: center;
                     Rectangle {
-                        width: (150px * S.k);
+                        width: (132px * S.k);
                         height: self.width;
                         Rectangle {
                             x: -(40px * S.k);
@@ -1247,12 +1400,14 @@ export component AppWindow inherits Window {
                             width: parent.width + (80px * S.k);
                             height: self.width;
                             background: @radial-gradient(circle, #3d8bff66 0%, #3d8bff00 68%);
-                            opacity: 0.55 + 0.45 * sin(boot.t * 120deg);
+                            opacity: 0.28;
                         }
-                        Image { source: @image-url("../assets/icons/app-icon.svg"); width: parent.width; height: parent.height; }
+                        Image { source: Icons.app; width: parent.width; height: parent.height; image-fit: contain; }
                     }
                 }
-                Rectangle { height: (36px * S.k); }
+                Rectangle { height: (24px * S.k); }
+                Text { text: "PS5 LAUNCHER"; font-size: (19px * S.k); font-weight: 600; letter-spacing: (3px * S.k); color: Theme.text2; horizontal-alignment: center; }
+                Rectangle { height: (18px * S.k); }
                 if root.boot-first: Text {
                     text: "Welcome";
                     font-size: (64px * S.k);

@@ -24,7 +24,7 @@ pub fn req_file(p: &std::path::Path, w: u32) -> ImgReq {
     ImgReq { key: format!("file:{}#{w}", p.display()), src: Src::File(p.to_path_buf()), w, crop: 0.0 }
 }
 
-const COVER_CROP: f32 = 0.12; // superpsx covers carry a PS5 banner on the top ~12%
+const COVER_CROP: f32 = 0.0; // RuTracker artwork has no uniform banner to crop.
 
 fn yt_art(id: &str) -> Option<ImgReq> {
     (!id.is_empty()).then(|| req_url(&format!("https://i.ytimg.com/vi/{id}/maxresdefault.jpg"), 1920, 0.0)).flatten()
@@ -186,7 +186,7 @@ impl App {
     pub fn push_row_text(&mut self) {
         let (name, sub) = match self.row.get(self.sel).copied() {
             None => (String::new(), String::new()),
-            Some(RowItem::All) => ("Game Library".into(), format!("All {} games in the catalog", self.games.len())),
+            Some(RowItem::All) => ("Game Library".into(), format!("{} games · {} releases", self.groups.members.len(), self.games.len())),
             Some(RowItem::Local(l)) => {
                 let lv = &self.locals[l];
                 let sub = if let Some(s) = self.session_for_local(l) {
@@ -240,6 +240,9 @@ impl App {
         if let Some(g) = t.game {
             let gv = &self.games[g];
             let added = util::fmt_date(util::parse_iso_date(&gv.g.date)).to_uppercase();
+            if added.is_empty() {
+                return ("RUTRACKER RELEASE".into(), String::new(), false);
+            }
             return (if gv.is_new { format!("NEW · ADDED {added}") } else { format!("ADDED {added}") }, String::new(), false);
         }
         (String::new(), String::new(), false)
@@ -302,13 +305,13 @@ impl App {
                 if self.locals.is_empty() {
                     h.kicker = "GET STARTED".into();
                     h.title = "No installed games yet".into();
-                    h.chips = model(vec![chip("grid", format!("{} games in the Library", self.games.len()), false)]);
+                    h.chips = model(vec![chip("grid", format!("{} games in the Library", self.groups.members.len()), false)]);
                     h.desc = "Point the launcher at the folder with your games in Settings, and they'll appear here ready to play. Meanwhile, browse the whole catalog in the Library.".into();
                     self.hero_actions = vec![mk("settings", "Add game folder", "folder", true), mk("library", "Browse Library", "grid", false)];
                 } else {
                     h.kicker = "COLLECTION".into();
                     h.title = "Game Library".into();
-                    h.chips = model(vec![chip("grid", format!("{} games", self.games.len()), false)]);
+                    h.chips = model(vec![chip("grid", format!("{} games", self.groups.members.len()), false)]);
                     h.desc = "Browse every PS5 game in the catalog. Search, filter by genre and sort by date, name, rating or size.".into();
                     self.hero_actions = vec![mk("library", "Open Library", "grid", true)];
                 }
@@ -521,15 +524,18 @@ impl App {
     /// Recompute grid geometry from the window size.
     pub fn relayout(&mut self) {
         let (w, _) = self.logical_size();
-        let inner = (w - 192.0).max(400.0);
-        let (min_w, gap) = (190.0, 24.0);
-        self.cols = (((inner + gap) / (min_w + gap)).floor() as usize).max(2);
-        self.card_w = (inner - (self.cols as f32 - 1.0) * gap) / self.cols as f32;
-        self.row_h = self.card_w * 1.5 + 14.0 + 50.0 + 24.0 + 30.0;
+        let compact = self.cfg.lock().unwrap().library_compact;
+        let grid = crate::library_layout::Grid::new(w, self.scale, compact);
+        self.cols = grid.cols;
+        self.card_w = grid.card;
+        self.row_h = grid.row;
         let (ui, k) = (self.ui(), self.scale);
         ui.set_card_w(self.card_w * k);
         ui.set_row_h(self.row_h * k);
-        ui.set_grid_gap(gap * k);
+        ui.set_grid_gap(grid.gap * k);
+        ui.set_library_type_scale(grid.typography);
+        ui.set_library_top(crate::library_layout::TOP * k);
+        ui.set_library_compact(compact);
     }
 
     /// Window size in design units (the 1920×1080 canvas the UI is laid out on).
@@ -565,39 +571,75 @@ impl App {
     pub fn push_library(&mut self) {
         let ui = self.ui();
         ui.set_sort_label(SORTS[self.sort].into());
+        ui.set_sort_options(model(SORTS.iter().map(|label| SharedString::from(*label)).collect()));
+        ui.set_sort_selected(self.sort as i32);
+        let observed: HashSet<_> = self.games.iter().map(|game| game.g.peers_observed.as_str()).filter(|value| !value.is_empty()).collect();
+        let snapshot = if observed.len() > 1 { "Dates in Game Hub".to_string() }
+            else { observed.iter().next().map(|value| util::fmt_date(util::parse_iso_date(value))).filter(|value| !value.is_empty()).unwrap_or_else(|| "date unknown".into()) };
+        ui.set_peer_snapshot_label(format!("Peer snapshot · {snapshot} · not live").into());
         self.push_genres();
         self.push_grid();
     }
 
     pub fn push_genres(&mut self) {
+        let words: Vec<_> = util::norm(&self.query).split_whitespace().map(String::from).collect();
+        let mut status_counts = [0usize; 3];
+        let mut genre_counts = std::collections::HashMap::<&str, usize>::new();
+        let mut genre_total = 0;
+        for members in &self.groups.members {
+            let mut status = [false; 3];
+            let mut buckets = HashSet::new();
+            let mut any = false;
+            for &index in members {
+                let game = &self.games[index];
+                if !words.iter().all(|word| game.norm.contains(word)) { continue; }
+                if self.genre == "All" || game.buckets.contains(&self.genre.as_str()) {
+                    status[0] = true;
+                    status[1] |= game.local.is_some();
+                    status[2] |= self.game_compat(game).is_some_and(|entry| entry.status == crate::compat::Status::InGame);
+                }
+                if self.matches_status(index) { any = true; buckets.extend(game.buckets.iter().copied()); }
+            }
+            for (count, present) in status_counts.iter_mut().zip(status) { *count += usize::from(present); }
+            genre_total += usize::from(any);
+            for bucket in buckets { *genre_counts.entry(bucket).or_default() += 1; }
+        }
         let mut x = 0.0f32;
         let mut chips = Vec::new();
+        let mut statuses = Vec::new();
         let mut focus_x = 0.0;
-        for (i, (label, count)) in self.genre_list.iter().enumerate() {
+        let typography = self.scale.max(0.75);
+        for (i, (label, _)) in self.genre_list.iter().enumerate() {
+            if i == 3 { x = 0.0; }
+            let count = if i < 3 { status_counts[i] } else if i == 3 { genre_total } else { *genre_counts.get(label.as_str()).unwrap_or(&0) };
             let c = count.to_string();
-            let w = 40.0 + label.chars().count() as f32 * 10.4 + 6.0 + c.len() as f32 * 9.0;
-            if (self.zone == Z_CHIPS && i as i32 == self.idx) || (self.zone != Z_CHIPS && *label == self.genre) {
+            let w = 32.0 * self.scale + (label.chars().count() as f32 * 9.5 + 6.0 + c.len() as f32 * 8.0) * typography;
+            if i >= 3 && ((self.zone == Z_CHIPS && i as i32 == self.idx) || ((self.zone != Z_CHIPS || self.idx < 3) && *label == self.genre)) {
                 focus_x = x;
             }
-            chips.push(GenreChip { label: label.clone().into(), count: c.into(), on: *label == self.genre, x: x * self.scale, w: w * self.scale });
-            x += w + 10.0;
+            let on = if i < 3 { *label == self.status_filter } else { *label == self.genre || (i == 3 && self.genre == "All") };
+            let chip = GenreChip { index: i as i32, label: label.clone().into(), count: c.into(), on, x, w };
+            if i < 3 { statuses.push(chip); } else { chips.push(chip); }
+            x += w + 10.0 * self.scale;
         }
         let (win_w, _) = self.logical_size();
-        // Keep the last chip clear of the right-edge fade.
-        let view_w = win_w - 92.0 - 110.0;
+        let view_w = (win_w - 192.0 - 168.0) * self.scale;
         let max_scroll = (x - view_w).max(0.0);
         let scroll = (focus_x - view_w * 0.35).clamp(0.0, max_scroll);
         let ui = self.ui();
         ui.set_genres(model(chips));
-        ui.set_genres_x(-scroll * self.scale);
-        ui.set_genres_more_right(x - scroll > view_w + 60.0);
+        ui.set_status_filters(model(statuses));
+        ui.set_genres_x(-scroll);
+        ui.set_genres_more_right(x - scroll > view_w + 1.0);
     }
 
     pub fn push_grid(&mut self) {
         let rows = self.filtered.len().div_ceil(self.cols.max(1));
         let ui = self.ui();
         ui.set_grid_h((rows as f32 * self.row_h + 60.0) * self.scale);
-        ui.set_count_label(format!("{} of {} games", self.filtered.len(), self.games.len()).into());
+        ui.set_count_label(if self.filtered.len() == self.groups.members.len() {
+            format!("{} games · {} releases", self.filtered.len(), self.games.len())
+        } else { format!("{} of {} games · {} releases", self.filtered.len(), self.groups.members.len(), self.games.len()) }.into());
         ui.set_grid_empty(if !self.filtered.is_empty() {
             "".into()
         } else if self.games.is_empty() {
@@ -618,7 +660,7 @@ impl App {
     pub fn set_grid_scroll(&mut self, pos: f32, glide_ms: i64) {
         let (_, h) = self.logical_size();
         let rows = self.filtered.len().div_ceil(self.cols.max(1));
-        let max = (rows as f32 * self.row_h + 60.0 - (h - 262.0)).max(0.0);
+        let max = (rows as f32 * self.row_h + 60.0 - (h - crate::library_layout::TOP)).max(0.0);
         let pos = pos.clamp(0.0, max);
         let from = self.grid_scroll;
         self.grid_scroll = pos;
@@ -655,7 +697,7 @@ impl App {
     /// adding and dropping rows at the edges instead of rebuilding the whole grid.
     fn push_grid_window_span(&mut self, lo: f32, hi: f32) {
         let (_, h) = self.logical_size();
-        let view_h = h - 262.0;
+        let view_h = h - crate::library_layout::TOP;
         let rows = self.filtered.len().div_ceil(self.cols.max(1));
         let first = ((lo / self.row_h).floor() as i64 - 2).max(0) as usize;
         let last = (((hi + view_h) / self.row_h).ceil() as usize + 2).min(rows);
@@ -715,18 +757,17 @@ impl App {
             let g = &self.games[gi];
             let ce = self.game_compat(g);
             let (compat, compat_level) = ce.map(|e| (e.status.label(), e.status.level())).unwrap_or(("", 0));
-            // Short genre names ("RPG", not "Role Playing Games") keep the line from being cut off.
-            let genre = g.buckets.first().filter(|b| **b != "Other").map(|b| b.to_string())
-                .or_else(|| g.info.as_ref().and_then(|i| i.genres.first().cloned()))
-                .or_else(|| g.g.genres.first().cloned()).unwrap_or_default();
-            let region = g.g.version.split(['–', '-']).nth(1).map(|s| s.trim().to_string()).filter(|s| s.len() <= 5).unwrap_or_default();
-            let meta = [genre, g.g.size.clone(), region].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
-            // ~2 lines at this card width (Inter 19 px averages ~11 px per character).
-            let per_line = (self.card_w / 11.0).max(8.0) as usize;
+            // Size is always visible. Version/region details belong to the selected Hub release.
+            let releases = self.groups.releases(gi).len();
+            let meta = g.g.size_gb.map(|size| if size >= 1.0 { format!("{size:.1} GB") } else { format!("{:.1} MB", size * 1024.0) }).unwrap_or_else(|| "Size unknown".into());
             cards.push(CardData {
                 index: k as i32,
-                title: truncate(&g.name, per_line * 2 - per_line / 3).into(),
+                title: g.name.clone().into(),
                 meta: meta.into(),
+                releases: if releases > 1 { format!("{releases} releases") } else { String::new() }.into(),
+                seeders: g.g.seeders.map(|count| count.to_string()).unwrap_or_else(|| "—".into()).into(),
+                leechers: g.g.leechers.map(|count| count.to_string()).unwrap_or_else(|| "—".into()).into(),
+                peer_snapshot: "".into(),
                 rating: g.info.as_ref().and_then(|i| i.rating.as_ref()).map(|r| format!("{:.1}", r.score)).unwrap_or_default().into(),
                 badge: if g.local.is_some() { "Installed".into() } else if g.is_new { "New".into() } else { "".into() },
                 compat: compat.into(),
@@ -774,7 +815,7 @@ impl App {
 
     pub fn ensure_grid_visible(&mut self) {
         let (_, h) = self.logical_size();
-        let view_h = h - 262.0;
+        let view_h = h - crate::library_layout::TOP;
         let row = self.idx.max(0) as usize / self.cols.max(1);
         let top = row as f32 * self.row_h;
         let y = self.grid_scroll;
@@ -880,7 +921,7 @@ impl App {
 
         let g_owned = t.game.map(|i| self.games[i].g.clone());
         let g = g_owned.as_ref();
-        let region = g.and_then(|g| g.version.split(['–', '-']).nth(1).map(|s| s.trim().to_string())).unwrap_or_default();
+        let region = g.map(|g| g.region.clone()).unwrap_or_default();
         let ce = self.target_compat(t).cloned();
         let mut facts: Vec<(&str, String)> = vec![
             ("ON KYTYPS5", match &ce {
@@ -895,7 +936,7 @@ impl App {
             }).unwrap_or_default()),
             ("TESTED ON", ce.as_ref().map(|e| e.platforms.join(", ")).unwrap_or_default()),
             ("ON LINUX", ce.as_ref().and_then(|e| e.linux).filter(|l| Some(*l) != ce.as_ref().map(|e| e.status)).map(|l| l.label().to_string()).unwrap_or_default()),
-            ("PUBLISHER", info.as_ref().map(|i| i.publisher.clone()).unwrap_or_default()),
+            ("PUBLISHER", info.as_ref().map(|i| i.publisher.clone()).filter(|publisher| !publisher.is_empty()).unwrap_or_else(|| g.map(|g| g.detail("publisher")).unwrap_or_default())),
             ("RELEASE", g.map(|g| g.release.clone()).filter(|s| !s.is_empty()).or_else(|| info.as_ref().map(|i| util::fmt_date(util::parse_iso_date(&i.release)))).unwrap_or_default()),
             ("SIZE", g.map(|g| g.size.clone()).unwrap_or_default()),
             ("MODE", g.map(|g| g.mode.clone()).filter(|s| !s.is_empty()).or_else(|| info.as_ref().and_then(|i| i.players.as_ref()).and_then(|p| p.as_i64()).map(|p| format!("{p} player{}", if p > 1 { "s" } else { "" }))).unwrap_or_default()),
@@ -903,6 +944,23 @@ impl App {
             ("REGION", region),
             ("UPDATE", g.map(|g| g.update.clone()).unwrap_or_default()),
         ];
+        if let Some(game) = g {
+            let observed = util::fmt_date(util::parse_iso_date(&game.peers_observed));
+            facts.splice(0..0, [
+                ("SEEDERS · SNAPSHOT", game.seeders.map(|count| count.to_string()).unwrap_or_else(|| "Unknown".into())),
+                ("LEECHERS · SNAPSHOT", game.leechers.map(|count| count.to_string()).unwrap_or_else(|| "Unknown".into())),
+                ("OBSERVED · NOT LIVE", if observed.is_empty() { "Date unknown".into() } else { observed }),
+            ]);
+            facts.extend([
+                ("RELEASE VERSION", game.version.clone()),
+                ("DEVELOPER", game.detail("developer")),
+                ("FORMAT", game.detail("format")),
+                ("CONSOLE FIRMWARE NOTE", game.detail("minimum_firmware")),
+                ("INTERFACE LANGUAGES", game.detail("interface_languages")),
+                ("AUDIO LANGUAGES", game.detail("audio_languages")),
+                ("TOPIC", format!("RuTracker #{}", game.id)),
+            ]);
+        }
         if let Some(l) = t.local {
             let lv = &self.locals[l];
             let pt = self.playtime(&lv.l);
@@ -911,8 +969,40 @@ impl App {
             facts.push(("INSTALLED VERSION", lv.l.version.clone()));
             facts.push(("LOCATION", util::display_path(&lv.l.path.to_string_lossy())));
         }
-        let facts: Vec<Fact> = facts.into_iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| Fact { key: k.into(), value: v.into() }).collect();
-        h.facts = model(facts.chunks(3).map(|c| FactRow { items: model(c.to_vec()) }).collect());
+        // A compact overview; technical provenance and installation data are expandable rows.
+        h.subtitle = [
+            info.as_ref().map(|i| i.publisher.clone()).filter(|s| !s.is_empty()).unwrap_or_else(|| g.map(|g| g.detail("publisher")).unwrap_or_default()),
+            g.map(|g| g.release.clone()).unwrap_or_default(), g.map(|g| g.region.clone()).unwrap_or_default(),
+        ].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ").into();
+        if let Some(game) = g {
+            let observed = util::fmt_date(util::parse_iso_date(&game.peers_observed));
+            h.peer_status = format!("↑ {} seeders   ↓ {} leechers   ·   Snapshot {} · not live",
+                game.seeders.map(|n| n.to_string()).unwrap_or_else(|| "—".into()),
+                game.leechers.map(|n| n.to_string()).unwrap_or_else(|| "—".into()),
+                if observed.is_empty() { "date unknown" } else { &observed }).into();
+            h.seeders = game.seeders.map(|n| n.to_string()).unwrap_or_else(|| "—".into()).into();
+            h.leechers = game.leechers.map(|n| n.to_string()).unwrap_or_else(|| "—".into()).into();
+            h.peer_snapshot = format!("Snapshot {} · not live", if observed.is_empty() { "date unknown" } else { &observed }).into();
+        }
+        if let Some(index) = t.game {
+            let members = self.groups.releases(index);
+            h.release_count = members.len() as i32;
+            let position = members.iter().position(|i| *i == index).unwrap_or(0) + 1;
+            let game = &self.games[index].g;
+            h.release_label = format!("Release {position}/{} · {} · {} · {} · topic #{}", members.len(),
+                game.name, game.version, game.region, game.id).into();
+        }
+        let summary: Vec<Fact> = [
+            ("ON KYTYPS5", ce.as_ref().map(|e| e.status.meaning().to_string()).unwrap_or_else(|| "Not tested yet".into())),
+            ("DOWNLOAD SIZE", g.map(|g| g.size.clone()).filter(|size| !size.is_empty()).unwrap_or_else(|| "Unknown".into())),
+            if let Some(local) = t.local { ("INSTALLED VERSION", self.locals[local].l.version.clone()) }
+            else { ("RELEASE VERSION", g.map(|g| g.version.clone()).unwrap_or_default()) },
+        ].into_iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| Fact { key: k.into(), value: v.into() }).collect();
+        h.facts = model(summary.chunks(3).map(|c| FactRow { items: model(c.to_vec()) }).collect());
+        let details: Vec<Fact> = facts.into_iter().filter(|(k, v)| !v.is_empty()
+            && !matches!(*k, "SEEDERS · SNAPSHOT" | "LEECHERS · SNAPSHOT" | "OBSERVED · NOT LIVE" | "ON KYTYPS5" | "SIZE" | "PUBLISHER" | "RELEASE" | "REGION"))
+            .map(|(k, v)| Fact { key: k.into(), value: v.into() }).collect();
+        h.details = model(vec![FactRow { items: model(details) }]);
 
         let shots_urls = self.hub_shots.clone();
         let mut shots = Vec::new();
@@ -942,7 +1032,10 @@ impl App {
     pub fn scroll_hub(&mut self) {
         // Rough layout estimate (see app.slint hub column).
         let facts_rows = self.ui().get_hub().facts.row_count() as f32;
-        let shots_top = 130.0 + 30.0 + 16.0 + 210.0 + 22.0 + 40.0 + 30.0 + 68.0 + 40.0 + facts_rows * 106.0;
+        let details = if self.ui().get_hub_details_open() {
+            self.ui().get_hub().details.iter().map(|row| row.items.row_count()).sum::<usize>() as f32 * 38.0
+        } else { 0.0 };
+        let shots_top = 130.0 + 30.0 + 16.0 + 210.0 + 22.0 + 40.0 + 30.0 + 68.0 + 160.0 + facts_rows * 106.0 + details;
         let ui = self.ui();
         // Never scroll past the real end of the page (measured by the UI, not estimated).
         let max = ((ui.get_hub_content_h() - ui.get_hub_view_h()) / self.scale).max(0.0);

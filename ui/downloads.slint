@@ -1,0 +1,167 @@
+import { S, Theme, DownloadData } from "theme.slint";
+import { ScrollView } from "std-widgets.slint";
+import { BackButton } from "widgets.slint";
+
+component TransferButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary;
+    in property <bool> focused;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: (48px * S.k);
+    min-width: (170px * S.k);
+    border-radius: (12px * S.k);
+    background: !enabled ? #ffffff08 : primary ? Theme.accent : touch.has-hover ? #ffffff24 : #ffffff12;
+    border-width: focused ? (3px * S.k) : 1px;
+    border-color: focused ? Theme.text : Theme.line;
+    Text { text: label; font-size: (18px * S.k); font-weight: 600; color: enabled ? Theme.text : Theme.text3; }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+export component DownloadsSheet inherits Rectangle {
+    in property <[DownloadData]> data;
+    in property <string> summary;
+    in property <int> selected;
+    in-out property <length> scroll-y;
+    callback action(string, string);
+    callback close();
+    background: #050914f7;
+    TouchArea { }
+    VerticalLayout {
+        x: (120px * S.k);
+        y: (48px * S.k);
+        width: parent.width - (240px * S.k);
+        height: parent.height - (96px * S.k);
+        spacing: (14px * S.k);
+        HorizontalLayout {
+            alignment: space-between;
+            Text { text: "Downloads"; font-size: (44px * S.k); font-weight: 600; color: Theme.text; }
+            BackButton { clicked => { root.close(); } }
+        }
+        Text { text: summary; font-size: (18px * S.k); color: Theme.text2; }
+        Text {
+            text: "Runs while the launcher is open, including when minimized. Completed downloads seed by default; disable in Settings or choose Stop seeding. Exit stops all traffic; restart never resumes automatically.";
+            font-size: (17px * S.k); color: Theme.text3; wrap: word-wrap;
+        }
+        Rectangle { height: (8px * S.k); }
+        if data.length == 0: Rectangle {
+            background: #10203c;
+            border-radius: (20px * S.k);
+            VerticalLayout {
+                padding: (52px * S.k); spacing: (18px * S.k); alignment: center;
+                Text { text: "Nothing downloading yet"; font-size: (32px * S.k); font-weight: 600; color: Theme.text; }
+                Text { text: "Open a release’s Game Hub and choose Download. Review metadata before starting any game files."; font-size: (21px * S.k); color: Theme.text2; wrap: word-wrap; }
+            }
+        }
+                if data.length > 0: Rectangle {
+                    clip: true;
+                    Flickable {
+                        content-y <=> root.scroll-y;
+                        content-height: rows.preferred-height;
+                        content-width: self.width;
+            interactive: true;
+            rows := VerticalLayout {
+                width: parent.width;
+                spacing: 0;
+                for d[i] in root.data: Rectangle {
+                    height: (d.review ? 428px : 272px) * S.k;
+                    Rectangle {
+                        height: parent.height - (16px * S.k);
+                        background: d.failed ? #331727 : #101c32;
+                        border-radius: (18px * S.k);
+                        border-width: 1px;
+                        border-color: Theme.line;
+                        VerticalLayout {
+                            padding: (22px * S.k); spacing: (10px * S.k);
+                            HorizontalLayout {
+                                spacing: (20px * S.k);
+                                Text { text: d.title; font-size: (24px * S.k); font-weight: 600; color: Theme.text; overflow: elide; horizontal-stretch: 1; }
+                                Text { text: d.state; font-size: (17px * S.k); color: d.failed ? Theme.danger : d.complete ? Theme.ok : #8dbaff; }
+                            }
+                            Rectangle {
+                                height: (7px * S.k); background: #ffffff14; border-radius: (4px * S.k);
+                                Rectangle {
+                                    x: 0; y: 0;
+                                    width: parent.width * d.progress; background: d.complete ? Theme.ok : Theme.accent;
+                                    border-radius: (4px * S.k);
+                                    animate width { duration: 300ms; }
+                                }
+                            }
+                            Text { text: d.detail; font-size: (18px * S.k); color: Theme.text2; overflow: elide; }
+                            Text { text: d.path; font-size: (16px * S.k); color: Theme.text3; overflow: elide; }
+                            if d.error != "": Text { text: d.error; font-size: (17px * S.k); color: Theme.danger; wrap: word-wrap; max-height: (46px * S.k); overflow: elide; }
+                            if d.review: Text { text: d.file-summary; font-size: (18px * S.k); color: Theme.text; }
+                            if d.review: ScrollView {
+                                height: (146px * S.k);
+                                Text { x: 0; y: 0; min-width: parent.width; text: d.files; horizontal-alignment: left; vertical-alignment: top; color: Theme.text2; font-size: (16px * S.k); wrap: word-wrap; }
+                            }
+                            HorizontalLayout {
+                                spacing: (14px * S.k); alignment: start;
+                                TransferButton { label: d.primary != "" ? d.primary : d.complete ? "Complete" : "Resolving…"; primary: true; enabled: d.primary-action != ""; focused: root.selected == i * 3; clicked => { root.action(d.key, d.primary-action); } }
+                                TransferButton { label: d.secondary; focused: root.selected == i * 3 + 1; clicked => { root.action(d.key, d.secondary-action); } }
+                                TransferButton { label: "Open folder"; focused: root.selected == i * 3 + 2; clicked => { root.action(d.key, "folder"); } }
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                        }
+                    }
+                }
+            }
+                    }
+        }
+        Text { text: "↑ ↓ select transfer · ← → select action · Enter confirm · Esc back · Cancel/Remove never delete payload files"; font-size: (16px * S.k); color: Theme.text3; wrap: word-wrap; }
+    }
+}
+
+export component DownloadConsent inherits Rectangle {
+    in property <bool> focus-path;
+    changed focus-path => { if root.focus-path { destination-input.focus(); } }
+    in property <bool> install;
+    in property <string> title;
+    in property <string> error;
+    in-out property <string> destination;
+    callback confirm();
+    callback close();
+    callback edit-done();
+    callback editing(bool);
+    background: #050914f7;
+    TouchArea { }
+    Rectangle {
+        width: min(parent.width - (160px * S.k), (1050px * S.k));
+        height: min(parent.height - (100px * S.k), (680px * S.k));
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: @linear-gradient(130deg, #152743, #10182c);
+        border-radius: (24px * S.k);
+        border-width: 1px; border-color: #ffffff24;
+        VerticalLayout {
+            padding: (40px * S.k); spacing: (20px * S.k);
+            Text { text: root.install ? "Install game" : "Set up a download"; font-size: (38px * S.k); font-weight: 600; color: Theme.text; }
+            Text { text: root.title; font-size: (24px * S.k); color: Theme.text2; wrap: word-wrap; max-height: (76px * S.k); overflow: elide; }
+            Text {
+                text: root.install ? "Extract or copy this completed download into your game library. Installation runs in the background, checks free space and validates the game folder before publishing it. Existing games are never overwritten; original downloads are kept." : "Only download content you are authorized to obtain and share. Looking up this magnet contacts trackers, DHT and peers and reveals your IP address, even before its private flag is known. Transfers upload pieces, capped at 128 KiB/s. After completion, seeding continues by default while the launcher is open; switch it off in Settings or stop an individual seed in Downloads.";
+                font-size: (19px * S.k); color: Theme.text2; wrap: word-wrap;
+            }
+            Text { text: root.install ? "Game library destination · confirm where the game will be installed" : "Destination · an owned subfolder will be created here"; font-size: (18px * S.k); color: Theme.text3; }
+            Rectangle {
+                height: (56px * S.k); background: #05091499; border-radius: (12px * S.k);
+                border-width: 1px; border-color: Theme.line;
+                destination-input := TextInput {
+                    x: (16px * S.k); width: parent.width - (32px * S.k); height: parent.height;
+                    text <=> root.destination; single-line: true; font-size: (20px * S.k); color: Theme.text;
+                    vertical-alignment: center;
+                    changed has-focus => { root.editing(self.has-focus); }
+                    accepted => { root.edit-done(); }
+                }
+            }
+            Text { text: root.install ? "RAR, ZIP, 7z and TAR support depends on system libarchive. Password-protected archives and PKG packages are unsupported. Installation validates structure, not content authenticity, and never executes payload files." : "First: retrieve metadata only. Then: review the file list and size and choose Start download. Installation is a separate explicit step."; font-size: (18px * S.k); color: #8dbaff; wrap: word-wrap; }
+            if root.error != "": Text { text: root.error; font-size: (17px * S.k); color: Theme.danger; wrap: word-wrap; }
+            Rectangle { vertical-stretch: 1; }
+            HorizontalLayout {
+                spacing: (18px * S.k);
+                TransferButton { label: root.install ? "Install" : "Look up metadata"; primary: true; focused: true; min-width: (250px * S.k); clicked => { root.confirm(); } }
+                BackButton { clicked => { root.close(); } }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+    }
+}

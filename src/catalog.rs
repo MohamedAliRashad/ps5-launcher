@@ -1,13 +1,16 @@
-//! PS5 games catalog from superpsx.com's public WordPress API.
+//! Offline RuTracker PS5 release catalog. Browser collection is a separate tool.
 
-use crate::util::{atomic_write, cache_dir, http_json, now_secs, strip_tags};
+use crate::util::{atomic_write, cache_dir, now_secs};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::LazyLock;
 
-const SITE: &str = "https://www.superpsx.com";
-const CATEGORY_SLUG: &str = "ps5-games";
 pub const CATALOG_TTL: f64 = 6.0 * 3600.0;
-pub const CATALOG_SCHEMA: u32 = 2;
+pub const CATALOG_SCHEMA: u32 = 3;
+pub const SOURCE: &str = "https://rutracker.net/forum/viewforum.php?f=546";
+const BUNDLED: &[u8] = include_bytes!("../assets/rutracker/ps5-topics.json");
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]
@@ -29,6 +32,17 @@ pub struct Game {
     pub update: String,
     pub excerpt: String,
     pub description: Vec<String>,
+    pub title_ids: Vec<String>,
+    pub region: String,
+    pub magnet: String,
+    pub seeders: Option<u64>,
+    pub leechers: Option<u64>,
+    pub peers_observed: String,
+    pub game_info: Value,
+}
+
+impl Game {
+    pub fn detail(&self, key: &str) -> String { text(&self.game_info, key) }
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -36,194 +50,247 @@ pub struct Game {
 pub struct CatalogFile {
     pub updated: f64,
     pub schema: u32,
+    pub source: String,
+    pub fingerprint: String,
+    pub snapshot_at: String,
     pub games: Vec<Game>,
 }
 
 impl CatalogFile {
-    pub fn path() -> std::path::PathBuf {
-        cache_dir().join("catalog.json")
-    }
+    pub fn path() -> PathBuf { cache_dir().join("catalog-rutracker.json") }
 
-    pub fn load() -> CatalogFile {
-        std::fs::read(Self::path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    pub fn load() -> Self {
+        let cache: Self = std::fs::read(Self::path()).ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        let valid = cache.schema == CATALOG_SCHEMA && cache.source == SOURCE && !cache.games.is_empty();
+        match source_bytes() {
+            Ok(bytes) if valid && cache.fingerprint == fingerprint(&bytes) => cache,
+            Ok(bytes) => match import(&bytes).and_then(save) {
+                Ok(file) => file,
+                Err(error) => {
+                    crate::log!("RuTracker catalog import failed: {error}");
+                    if valid { cache } else { import(BUNDLED).unwrap_or_default() }
+                }
+            },
+            Err(error) => {
+                crate::log!("RuTracker catalog source unavailable: {error}");
+                if valid { cache } else { import(BUNDLED).unwrap_or_default() }
+            }
+        }
     }
 
     pub fn stale(&self) -> bool {
-        now_secs() - self.updated > CATALOG_TTL || self.schema != CATALOG_SCHEMA || self.games.is_empty()
+        self.schema != CATALOG_SCHEMA || self.source != SOURCE || self.games.is_empty()
+            || now_secs() - self.updated > CATALOG_TTL
+            || source_bytes().map(|bytes| fingerprint(&bytes) != self.fingerprint).unwrap_or(true)
     }
 }
 
-static YT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"(?:youtube(?:-nocookie)?\.com/(?:embed/|watch\?v=)|youtu\.be/)([\w-]{11})").unwrap()
-});
-static ROW_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"(?is)<tr[^>]*>\s*<td[^>]*>(.*?)</td>\s*<td[^>]*>(.*?)</td>").unwrap());
-static PARA_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?is)<p[^>]*>(.*?)</p>").unwrap());
-static SKIP_PARA_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"(?i)download|install|password|link").unwrap());
+/// Explicit override, then user data, then a source checkout's generated JSON.
+/// Installed binaries always have a bundled snapshot if none of those exist.
+pub fn source_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("PS5_LAUNCHER_CATALOG_PATH").filter(|path| !path.is_empty()) {
+        return Some(PathBuf::from(path));
+    }
+    let data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| {
+        std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/tmp")).join(".local/share")
+    }).join("ps5-launcher/rutracker/ps5-topics.json");
+    if data.is_file() { return Some(data); }
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("dist/rutracker/ps5-topics.json");
+    generated.is_file().then_some(generated)
+}
+
+fn source_bytes() -> Result<Vec<u8>, String> {
+    match source_path() {
+        Some(path) => std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display())),
+        None => Ok(BUNDLED.to_vec()),
+    }
+}
+
+fn fingerprint(bytes: &[u8]) -> String { sha1_smol::Sha1::from(bytes).digest().to_string() }
+fn text(value: &Value, key: &str) -> String { value[key].as_str().unwrap_or("").trim().to_string() }
+
 static SIZE_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?i)([\d.,]+)\s*(TB|GB|MB)").unwrap());
-// Tolerates typos seen in posts such as "P PSA16106" and "PPPSA30140".
-static TITLE_ID_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"(?i)(?:^|[^A-Z])(?:P\s*)+S\s*A\s*(\d{5})(?:\D|$)|(?:^|[^A-Z])C\s*U\s*S\s*A\s*(\d{5})(?:\D|$)").unwrap()
-});
-static PS5_SUFFIX_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\s+PS5$").unwrap());
+static TITLE_ID_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(
+    r"(?i)(?:^|[^A-Z])(?:P\s*)+S\s*A\s*(\d{5})|(?:^|[^A-Z])C\s*U\s*S\s*A\s*(\d{5})"
+).unwrap());
+static CLEAN_TITLE_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^(?:\[[^\]]*\]\s*)+").unwrap());
+static MAGNET_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(
+    r"(?i)[?&]xt=urn:btih:(?:[a-f0-9]{40}|[a-z2-7]{32})(?:&|$)"
+).unwrap());
 
 pub fn find_title_id(texts: &[&str]) -> String {
-    for t in texts {
-        if let Some(c) = TITLE_ID_RE.captures(t) {
-            if let Some(m) = c.get(1) {
-                return format!("PPSA{}", m.as_str());
-            }
-            if let Some(m) = c.get(2) {
-                return format!("CUSA{}", m.as_str());
-            }
-        }
-    }
-    String::new()
+    texts.iter().flat_map(|value| title_ids(value)).next().unwrap_or_default()
 }
 
-fn parse_size_gb(s: &str) -> Option<f64> {
-    let c = SIZE_RE.captures(s)?;
-    let n: f64 = c[1].replace(',', ".").parse().ok()?;
-    Some(n * match c[2].to_uppercase().as_str() {
-        "TB" => 1024.0,
-        "MB" => 1.0 / 1024.0,
-        _ => 1.0,
-    })
+fn title_ids(value: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    TITLE_ID_RE.captures_iter(value).filter_map(|captures| {
+        // Do not consume the separator: adjacent IDs like PPSA12345/PPSA54321
+        // must both survive. Reject a prefix of an invalid six-digit ID.
+        if value.as_bytes().get(captures.get(0)?.end()).is_some_and(u8::is_ascii_digit) { return None; }
+        let id = captures.get(1).map(|id| format!("PPSA{}", id.as_str()))
+            .or_else(|| captures.get(2).map(|id| format!("CUSA{}", id.as_str())))?;
+        seen.insert(id.clone()).then_some(id)
+    }).collect()
 }
 
-fn parse_post(p: &serde_json::Value) -> Option<Game> {
-    let content = p["content"]["rendered"].as_str().unwrap_or("");
-    let mut info: Vec<(String, String)> = Vec::new();
-    for c in ROW_RE.captures_iter(content) {
-        let (k, v) = (strip_tags(&c[1]), strip_tags(&c[2]));
-        if !k.is_empty() && !v.is_empty() && k.len() < 30 {
-            info.push((k.to_lowercase(), v));
-        }
-    }
-    let get = |k: &str| info.iter().find(|(a, _)| a == k).map(|(_, v)| v.clone()).unwrap_or_default();
-
-    // Description: prose paragraphs only (no links, buttons or instructions).
-    let mut description = Vec::new();
-    for c in PARA_RE.captures_iter(content) {
-        let t = strip_tags(&c[1]);
-        if t.chars().count() < 60 || SKIP_PARA_RE.is_match(&t) {
-            continue;
-        }
-        description.push(t);
-        if description.len() >= 3 {
-            break;
-        }
-    }
-
-    let title = strip_tags(p["title"]["rendered"].as_str().unwrap_or(""));
-    let game_name = get("game name");
-    let name = if game_name.is_empty() { PS5_SUFFIX_RE.replace(&title, "").trim().to_string() } else { game_name };
-    let version = get("version");
-    let all_values: String = info.iter().map(|(_, v)| v.as_str()).collect::<Vec<_>>().join(" ");
-    let size = get("size");
-    Some(Game {
-        id: p["id"].as_i64()?,
-        name,
-        title,
-        date: p["date"].as_str().unwrap_or("").to_string(),
-        link: p["link"].as_str().unwrap_or("").to_string(),
-        cover: p["yoast_head_json"]["og_image"][0]["url"].as_str().unwrap_or("").to_string(),
-        trailer: YT_RE.captures(content).map(|c| c[1].to_string()).unwrap_or_default(),
-        genres: get("genre").split([',', '/', '|']).map(|g| g.trim().to_string()).filter(|g| !g.is_empty()).collect(),
-        mode: get("mode"),
-        release: get("release date"),
-        size_gb: parse_size_gb(&size),
-        size,
-        title_id: find_title_id(&[&version, &all_values]),
-        version,
-        update: get("update"),
-        excerpt: strip_tags(p["excerpt"]["rendered"].as_str().unwrap_or("")),
-        description,
-    })
+fn parse_size_gb(value: &str) -> Option<f64> {
+    let captures = SIZE_RE.captures(value)?;
+    let size: f64 = captures[1].replace(',', ".").parse().ok()?;
+    Some(size * match captures[2].to_uppercase().as_str() { "TB" => 1024.0, "MB" => 1.0 / 1024.0, _ => 1.0 })
 }
 
-/// Downloads the whole category (≈8 requests of 100 posts, fetched in parallel).
+fn clean_name(value: &str) -> String {
+    let name = CLEAN_TITLE_RE.replace(value, "");
+    let name = name.split(" [").next().unwrap_or("").trim();
+    name.strip_prefix("PSVR2 only ").or_else(|| name.strip_prefix("PSVR only ")).unwrap_or(name).to_string()
+}
+
+pub fn import(bytes: &[u8]) -> Result<CatalogFile, String> {
+    let report: Value = serde_json::from_slice(bytes).map_err(|error| format!("Invalid RuTracker JSON: {error}"))?;
+    if report["complete"].as_bool() != Some(true) || report["source"].as_str() != Some(SOURCE) {
+        return Err("Expected a complete PS5 forum 546 listing; partial results are not imported".into());
+    }
+    if report["translation"]["language"].as_str() != Some("en") {
+        return Err("Translate the RuTracker snapshot to English before importing it".into());
+    }
+    let topics = report["topics"].as_array().ok_or("RuTracker topics array is missing")?;
+    if topics.is_empty() || report["topic_count"].as_u64() != Some(topics.len() as u64) {
+        return Err("RuTracker topic count is empty or does not match the listing".into());
+    }
+    let snapshot_at = text(&report, "collected_at");
+    let mut seen = HashSet::new();
+    let mut games = Vec::with_capacity(topics.len());
+    for topic in topics {
+        let id = topic["id"].as_str().and_then(|id| id.parse::<i64>().ok())
+            .filter(|id| *id > 0).ok_or("Invalid RuTracker topic ID")?;
+        if !seen.insert(id) { return Err(format!("Duplicate RuTracker topic ID: {id}")); }
+        let info = topic["game_info"].clone();
+        let title = text(topic, "title");
+        let named = text(&info, "name");
+        let name = clean_name(if named.is_empty() { &title } else { &named });
+        if name.is_empty() { return Err(format!("Topic {id} has no game name")); }
+        let raw_id = text(&info, "title_id");
+        let ids = title_ids(&raw_id);
+        let primary_id = ids.first().cloned().unwrap_or_else(|| find_title_id(&[&title]));
+        let genre = text(&info, "genre");
+        let size = text(topic, "size");
+        let summary = text(&info, "release_summary");
+        let images: Vec<String> = info["image_urls"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str).filter(|url| url.starts_with("https://") || url.starts_with("http://"))
+            .map(str::to_string).collect();
+        let candidate = text(topic, "magnet");
+        let magnet = if candidate.starts_with("magnet:?") && MAGNET_RE.is_match(&candidate) { candidate } else { String::new() };
+        let multiplayer = text(&info, "multiplayer");
+        let mode = match multiplayer.as_str() { "No" | "None" => "Single player".to_string(), "Yes" => "Multiplayer".to_string(), _ => multiplayer };
+        // Release dates are not posting dates: do not invent "added" timestamps.
+        let release_date = text(&info, "release_date");
+        games.push(Game {
+            id, name, title, date: text(topic, "published_at"), link: format!("https://rutracker.net/forum/viewtopic.php?t={id}"),
+            cover: images.first().cloned().unwrap_or_default(), trailer: String::new(),
+            genres: genre.split([',', '/', '|']).map(str::trim).filter(|genre| !genre.is_empty()).map(str::to_string).collect(),
+            mode, release: if release_date.is_empty() { text(&info, "release_year") } else { release_date },
+            size_gb: parse_size_gb(&size), size, version: text(&info, "version"), title_id: primary_id,
+            update: text(&info, "release_update"), excerpt: summary.clone(),
+            description: (!summary.is_empty()).then_some(summary).into_iter().collect(),
+            title_ids: ids, region: text(&info, "region"), magnet,
+            seeders: topic["seeders"].as_u64(), leechers: topic["leechers"].as_u64(),
+            peers_observed: snapshot_at.clone(), game_info: info,
+        });
+    }
+    // Topics, not title IDs, are the identity: retain regional/version variants.
+    games.sort_by(|a, b| b.id.cmp(&a.id));
+    Ok(CatalogFile { updated: now_secs(), schema: CATALOG_SCHEMA, source: SOURCE.into(),
+        fingerprint: fingerprint(bytes), snapshot_at, games })
+}
+
+fn save(file: CatalogFile) -> Result<CatalogFile, String> {
+    let bytes = serde_json::to_vec(&file).map_err(|error| error.to_string())?;
+    atomic_write(&CatalogFile::path(), &bytes).map_err(|error| format!("Could not cache RuTracker catalog: {error}"))?;
+    Ok(file)
+}
+
+/// Re-import local metadata only: no website requests, torrent client or browser.
 pub fn sync(progress: &dyn Fn(String)) -> Result<CatalogFile, String> {
-    progress("Contacting server".into());
-    let cats = http_json(&format!("{SITE}/wp-json/wp/v2/categories?slug={CATEGORY_SLUG}&_fields=id,count"))?;
-    let cat_id = cats[0]["id"].as_i64().ok_or("category not found")?;
-    let count = cats[0]["count"].as_i64().unwrap_or(100).max(1);
-    let per = 100;
-    let pages = ((count + per - 1) / per) as usize;
-    let fields = "id,title,link,date,excerpt,content,yoast_head_json.og_image";
-
-    let done = std::sync::atomic::AtomicUsize::new(0);
-    let results: Vec<Result<Vec<Game>, String>> = std::thread::scope(|s| {
-        let handles: Vec<_> = (1..=pages)
-            .map(|page| {
-                let done = &done;
-                s.spawn(move || {
-                    let url = format!(
-                        "{SITE}/wp-json/wp/v2/posts?categories={cat_id}&per_page={per}&page={page}&orderby=date&order=desc&_fields={fields}"
-                    );
-                    let mut last = String::new();
-                    for attempt in 0..3 {
-                        match http_json(&url) {
-                            Ok(v) => {
-                                done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                return Ok(v.as_array().map(|a| a.iter().filter_map(parse_post).collect()).unwrap_or_default());
-                            }
-                            Err(e) if e == "HTTP 400" => return Ok(Vec::new()), // past the last page
-                            Err(e) => {
-                                last = e;
-                                std::thread::sleep(std::time::Duration::from_millis(1500 * (attempt + 1)));
-                            }
-                        }
-                    }
-                    Err(last)
-                })
-            })
-            .collect();
-        // Report progress while pages come in.
-        loop {
-            let n = done.load(std::sync::atomic::Ordering::Relaxed);
-            progress(format!("Downloading catalog {n}/{pages}"));
-            if handles.iter().all(|h| h.is_finished()) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(150));
-        }
-        handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err("worker panicked".into()))).collect()
-    });
-
-    let mut games = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for r in results {
-        for g in r? {
-            if seen.insert(g.id) {
-                games.push(g);
-            }
-        }
-    }
-    games.sort_by(|a, b| b.date.cmp(&a.date));
-    let file = CatalogFile { updated: now_secs(), schema: CATALOG_SCHEMA, games };
-    if let Ok(json) = serde_json::to_vec(&file) {
-        let _ = atomic_write(&CatalogFile::path(), &json);
-    }
-    crate::log!("catalog synced: {} games", file.games.len());
+    progress("Loading RuTracker snapshot".into());
+    let file = save(import(&source_bytes()?)?)?;
+    progress(format!("Loaded {} RuTracker releases", file.games.len()));
+    crate::log!("RuTracker catalog loaded: {} release topics", file.games.len());
     Ok(file)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn title_ids() {
-        assert_eq!(find_title_id(&["P PSA16106 – EUR"]), "PPSA16106");
-        assert_eq!(find_title_id(&["PPPSA30140 – EUR"]), "PPSA30140");
-        assert_eq!(find_title_id(&["PPSA30094 – USA"]), "PPSA30094");
-        assert_eq!(find_title_id(&["PS5 Digital Edition"]), "");
-        assert_eq!(find_title_id(&["CUSA12345"]), "CUSA12345");
+    fn fixture(topics: Value) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({ "source": SOURCE, "complete": true,
+            "translation": { "language": "en" }, "collected_at": "2026-09-30T00:56:18Z",
+            "topic_count": topics.as_array().unwrap().len(), "topics": topics })).unwrap()
     }
     #[test]
-    fn sizes() {
+    fn title_ids_and_sizes() {
+        assert_eq!(find_title_id(&["P PSA16106 – EUR"]), "PPSA16106");
+        assert_eq!(find_title_id(&["PPPSA30140 – EUR"]), "PPSA30140");
+        assert_eq!(find_title_id(&["CUSA12345"]), "CUSA12345");
+        assert_eq!(find_title_id(&["PS5 Digital Edition"]), "");
+        assert_eq!(title_ids("PPSA02572 / PPSA02571* / PPSA02572"), vec!["PPSA02572", "PPSA02571"]);
+        assert_eq!(title_ids("PPSA02572/PPSA02571"), vec!["PPSA02572", "PPSA02571"]);
+        assert_eq!(find_title_id(&["PPSA123456"]), "");
         assert_eq!(parse_size_gb("57 GB"), Some(57.0));
-        assert_eq!(parse_size_gb("100 MB").map(|x| (x * 1024.0).round()), Some(100.0));
+        assert_eq!(parse_size_gb("100 MB"), Some(100.0 / 1024.0));
+        assert_eq!(parse_size_gb("1.5 TB"), Some(1536.0));
+    }
+    #[test]
+    fn missing_and_zero_peers_are_distinct_and_variants_survive() {
+        let bytes = fixture(serde_json::json!([
+            { "id": "100", "title": "[PS5] Example [USA]", "seeders": 0, "leechers": null,
+              "game_info": { "title_id": "PPSA12345", "region": "USA", "version": "1.00" } },
+            { "id": "101", "title": "[PS5] Example [EUR]", "game_info": { "title_id": "PPSA12345" } }
+        ]));
+        let file = import(&bytes).unwrap();
+        assert_eq!(file.games.len(), 2);
+        let game = file.games.iter().find(|game| game.id == 100).unwrap();
+        assert_eq!(game.seeders, Some(0));
+        assert_eq!(game.leechers, None);
+        assert_eq!(game.title_id, "PPSA12345");
+        assert_eq!(game.region, "USA");
+        assert_eq!(game.name, "Example");
+        assert!(game.date.is_empty());
+    }
+    #[test]
+    fn rejects_partial_and_wrong_sources() {
+        let mut report: Value = serde_json::from_slice(&fixture(serde_json::json!([
+            { "id": "100", "title": "[PS5] Example" }
+        ]))).unwrap();
+        report["complete"] = Value::Bool(false);
+        assert!(import(&serde_json::to_vec(&report).unwrap()).is_err());
+        report["complete"] = Value::Bool(true);
+        report["source"] = Value::String("https://example.com".into());
+        assert!(import(&serde_json::to_vec(&report).unwrap()).is_err());
+    }
+    #[test]
+    fn rejects_count_mismatch_duplicates_and_untranslated_sources() {
+        let bytes = fixture(serde_json::json!([
+            { "id": "100", "title": "[PS5] Example" },
+            { "id": "100", "title": "[PS5] Duplicate" }
+        ]));
+        assert!(import(&bytes).is_err());
+        let mut report: Value = serde_json::from_slice(&bytes).unwrap();
+        report["topics"][1]["id"] = Value::String("101".into());
+        report["topic_count"] = Value::from(3);
+        assert!(import(&serde_json::to_vec(&report).unwrap()).is_err());
+        report["topic_count"] = Value::from(2);
+        report["translation"]["language"] = Value::String("ru".into());
+        assert!(import(&serde_json::to_vec(&report).unwrap()).is_err());
+    }
+    #[test]
+    fn bundled_snapshot_is_complete_and_keeps_magnets() {
+        let file = import(BUNDLED).unwrap();
+        assert_eq!(file.games.len(), 614);
+        assert!(file.games.iter().all(|game| !game.magnet.is_empty()));
+        assert!(file.games.iter().all(|game| game.seeders.is_some() && game.leechers.is_some()));
+        assert!(file.games.iter().all(|game| !game.name.contains("[PS5]")));
+        assert!(file.games.iter().all(|game| game.date.is_empty()));
     }
 }

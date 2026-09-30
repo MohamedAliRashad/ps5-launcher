@@ -34,6 +34,11 @@ pub const Z_SHOTS: i32 = 9;
 pub const Z_DESC: i32 = 10;
 pub const Z_SETTINGS: i32 = 11;
 pub const Z_MENU: i32 = 12;
+pub const Z_DOWNLOADS: i32 = 13;
+pub const Z_RELEASES: i32 = 14;
+pub const Z_HUB_DETAILS: i32 = 15;
+pub const Z_SORT_PICKER: i32 = 16;
+pub const Z_DENSITY: i32 = 17;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Overlay {
@@ -43,6 +48,8 @@ pub enum Overlay {
     Viewer = 3,
     Launch = 4,
     Menu = 5,
+    Downloads = 7, // 6 is reserved by the startup splash.
+    Sort = 8,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -84,7 +91,7 @@ pub const GENRES: [(&str, &str); 16] = [
     ("VR", r"(?i)\bvr\b|virtual reality"),
 ];
 
-pub const SORTS: [&str; 7] = ["Recently added", "Name (A–Z)", "Release date", "Top rated", "Size (largest)", "Size (smallest)", "KytyPS5 compatibility"];
+pub const SORTS: [&str; 7] = ["Newest topics", "Name (A–Z)", "Release date", "Top rated", "Size (largest)", "Size (smallest)", "KytyPS5 compatibility"];
 
 /// A catalog game plus derived data.
 pub struct GameV {
@@ -134,10 +141,18 @@ pub struct App {
     pub ui: slint::Weak<AppWindow>,
     pub cfg: Arc<Mutex<Config>>,
     pub games: Vec<GameV>,
+    pub groups: crate::game_groups::Groups,
     pub locals: Vec<LocalV>,
     pub library: Arc<Mutex<Vec<LocalGame>>>,
     pub art: psn::Shared,
     pub sessions: Sessions,
+    pub downloads: crate::downloads::Manager,
+    pub installer: crate::installer::Manager,
+    pub install_pending: Option<String>,
+    pub install_states: HashMap<String, crate::installer::State>,
+    pub download_pending: Option<(i64, String, String)>,
+    pub download_states: HashMap<String, crate::downloads::State>,
+    pub download_model: Rc<VecModel<crate::DownloadData>>,
     pub live: Vec<Session>,
     pub images: images::Store,
     pub monitors: Vec<Monitor>,
@@ -158,6 +173,7 @@ pub struct App {
 
     pub filtered: Vec<usize>,
     pub genre: String,
+    pub status_filter: String,
     pub genre_list: Vec<(String, usize)>,
     pub sort: usize,
     pub query: String,
@@ -273,10 +289,18 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, target_monitor: Option<Monitor
         ui: ui.as_weak(),
         cfg: cfg.clone(),
         games: Vec::new(),
+        groups: Default::default(),
         locals: Vec::new(),
         library,
         art,
         sessions,
+        downloads: crate::downloads::Manager::load(cfg.lock().unwrap().seed_after_download),
+        installer: crate::installer::Manager::load(),
+        install_pending: None,
+        install_states: HashMap::new(),
+        download_pending: None,
+        download_states: HashMap::new(),
+        download_model: Rc::new(VecModel::default()),
         live: Vec::new(),
         images: images::Store::new(pool, 200),
         monitors,
@@ -293,6 +317,7 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, target_monitor: Option<Monitor
         bg_show_b: false,
         filtered: Vec::new(),
         genre: "All".into(),
+        status_filter: "All".into(),
         genre_list: Vec::new(),
         sort: 0,
         query: String::new(),
@@ -349,6 +374,7 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, target_monitor: Option<Monitor
     };
     ui.set_grid_rows(ModelRc::from(app.grid_model.clone()));
     ui.set_tiles(ModelRc::from(app.tile_model.clone()));
+    ui.set_downloads(ModelRc::from(app.download_model.clone()));
     app.set_catalog(catalog.games.clone());
     app.relayout();
     app.push_all();
@@ -384,6 +410,8 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, target_monitor: Option<Monitor
     slint::run_event_loop().expect("event loop failed");
     drop(tick);
     with_app(|app| {
+        app.installer.shutdown();
+        app.downloads.shutdown();
         if let Some(mut t) = app.trailer.take() {
             let _ = t.kill();
         }
@@ -406,6 +434,8 @@ fn wire_callbacks(ui: &AppWindow) {
         app.update_scale();
         app.relayout();
         app.push_all();
+        app.set_grid_scroll(app.grid_scroll, 0);
+        if app.view == 1 && app.zone == Z_GRID { app.ensure_grid_visible(); }
         if app.overlay == Overlay::Settings {
             app.scroll_settings();
         }
@@ -420,6 +450,11 @@ fn wire_callbacks(ui: &AppWindow) {
         audio::play(Sound::Select);
     }));
     ui.on_edit_done(|t, _| with_app(move |app| app.finish_edit(Some(t.to_string()))));
+    ui.on_download_confirm(|| with_app(|app| app.confirm_download()));
+    ui.on_download_action(|key, action| with_app(move |app| app.download_action(&key, &action)));
+    ui.on_download_close(|| with_app(|app| app.back()));
+    ui.on_hub_release(|delta| with_app(move |app| app.cycle_hub_release(delta)));
+    ui.on_genres_scroll(|delta| with_app(move |app| app.scroll_genres(delta)));
 }
 
 // ====================================================================== data
@@ -431,7 +466,9 @@ impl App {
 
     pub fn art_for_game(&self, g: &Game) -> Option<Info> {
         let store = self.art.lock().unwrap();
-        let sony = if g.title_id.is_empty() { None } else { store.get(&g.title_id) };
+        let sony = std::iter::once(&g.title_id).chain(g.title_ids.iter())
+            .filter_map(|id| store.get(id)).find(|info| !info.master.is_empty())
+            .or_else(|| store.get(&g.title_id));
         // Chosen per game: RAWG's background, screenshots and description, the website's box art
         // as the cover, and Sony's logo and ratings.
         if self.cfg.lock().unwrap().rawg_art.contains(&g.id) {
@@ -504,34 +541,37 @@ impl App {
                 buckets.push("Other");
             }
             let rel = util::parse_long_date(&g.release).or_else(|| info.as_ref().and_then(|i| util::parse_iso_date(&i.release)));
-            let added = util::parse_iso_date(&g.date).map(|(y, m, d)| util::days_from_civil(y, m, d)).unwrap_or(0);
+            let added = util::parse_iso_date(&g.date).map(|(y, m, d)| util::days_from_civil(y, m, d));
             let publisher = info.as_ref().map(|i| i.publisher.clone()).unwrap_or_default();
             out.push(GameV {
-                norm: norm(&format!("{} {} {} {}", name, g.name, g.title_id, publisher)),
+                norm: norm(&format!("{} {} {} {} {} {} {}", name, g.name, g.title_ids.join(" "), g.title_id, publisher, g.region, g.version)),
                 name,
                 buckets,
                 rel_day: rel.map(|(y, m, d)| util::days_from_civil(y, m, d)).unwrap_or(0),
-                is_new: today - added < 14,
+                is_new: added.is_some_and(|added| (0..14).contains(&(today - added))),
                 local: None,
                 info,
                 g,
             });
         }
         self.games = out;
+        self.groups = crate::game_groups::Groups::new(self.games.iter().map(|game| (&game.g, game.name.as_str())));
         self.refresh_locals();
     }
 
     /// Rebuild installed games and link them to catalog entries.
     pub fn refresh_locals(&mut self) {
+        let hub_id = self.hub.and_then(|t| t.local).and_then(|i| self.locals.get(i)).map(|l| l.l.id.clone());
+        let menu_id = self.menu_target.and_then(|t| t.local).and_then(|i| self.locals.get(i)).map(|l| l.l.id.clone());
         let libs = self.library.lock().unwrap().clone();
         let mut by_tid: HashMap<&str, usize> = HashMap::new();
         let mut by_name: HashMap<String, usize> = HashMap::new();
         for (i, g) in self.games.iter().enumerate() {
-            if !g.g.title_id.is_empty() {
-                by_tid.insert(&g.g.title_id, i);
+            for id in std::iter::once(&g.g.title_id).chain(g.g.title_ids.iter()).filter(|id| !id.is_empty()) {
+                by_tid.entry(id).or_insert(i);
             }
-            by_name.insert(norm(&g.name), i);
-            by_name.insert(norm(&g.g.name), i);
+            by_name.entry(norm(&g.name)).or_insert(i);
+            by_name.entry(norm(&g.g.name)).or_insert(i);
         }
         let mut locals = Vec::new();
         let store = self.art.lock().unwrap();
@@ -549,8 +589,22 @@ impl App {
             if let Some(c) = l.cat {
                 self.games[c].local = Some(i);
             }
+            // An installed title can match multiple release topics, including aliases.
+            if !l.l.title_id.is_empty() {
+                for game in &mut self.games {
+                    if game.g.title_id == l.l.title_id || game.g.title_ids.contains(&l.l.title_id) {
+                        game.local = Some(i);
+                    }
+                }
+            }
         }
         self.locals = locals;
+        for (target, previous_id) in [(&mut self.hub, hub_id), (&mut self.menu_target, menu_id)] {
+            if let Some(target) = target {
+                target.local = target.game.and_then(|i| self.games.get(i)).and_then(|g| g.local)
+                    .or_else(|| previous_id.as_ref().and_then(|id| self.locals.iter().position(|l| &l.l.id == id)));
+            }
+        }
         self.build_row();
         self.build_genres();
         self.apply_filter();
@@ -571,7 +625,18 @@ impl App {
             let (pa, pb) = (self.playtime(&self.locals[*a].l).last, self.playtime(&self.locals[*b].l).last);
             pb.partial_cmp(&pa).unwrap_or(std::cmp::Ordering::Equal).then_with(|| self.locals[*a].name.cmp(&self.locals[*b].name))
         });
-        let row: Vec<RowItem> = locals.into_iter().map(RowItem::Local).collect();
+        let mut seen = std::collections::HashSet::new();
+        let row: Vec<RowItem> = locals.into_iter().filter(|i| {
+            let local = &self.locals[*i];
+            let key = if let Some(catalog) = local.cat {
+                format!("group:{:?}", self.groups.releases(catalog).first())
+            } else if !local.l.title_id.is_empty() { format!("id:{}", local.l.title_id) }
+            else {
+                let name = norm(&local.name);
+                if name.is_empty() { format!("path:{}", local.l.path.display()) } else { format!("name:{name}") }
+            };
+            seen.insert(key)
+        }).map(RowItem::Local).collect();
         // Games tab = your installed games only; the whole catalog is the Library tab.
         self.row = row;
         self.sel = prev.and_then(|p| self.row.iter().position(|r| *r == p)).unwrap_or(self.sel.min(self.row.len().saturating_sub(1)));
@@ -579,20 +644,18 @@ impl App {
 
     pub fn build_genres(&mut self) {
         let mut counts: HashMap<&'static str, usize> = HashMap::new();
-        for g in &self.games {
-            for b in &g.buckets {
+        for members in &self.groups.members {
+            let buckets: std::collections::HashSet<_> = members.iter().flat_map(|i| self.games[*i].buckets.iter().copied()).collect();
+            for b in buckets {
                 *counts.entry(b).or_default() += 1;
             }
         }
-        let mut list: Vec<(String, usize)> = vec![("All".into(), self.games.len())];
-        let installed = self.games.iter().filter(|g| g.local.is_some()).count();
-        if installed > 0 {
-            list.push(("Installed".into(), installed));
-        }
-        let in_game = self.games.iter().filter(|g| self.game_compat(g).is_some_and(|e| e.status == crate::compat::Status::InGame)).count();
-        if in_game > 0 {
-            list.push(("In-game on KytyPS5".into(), in_game));
-        }
+        let mut list: Vec<(String, usize)> = vec![("All".into(), self.groups.members.len())];
+        let installed = self.groups.members.iter().filter(|members| members.iter().any(|i| self.games[*i].local.is_some())).count();
+        list.push(("Installed".into(), installed));
+        let in_game = self.groups.members.iter().filter(|members| members.iter().any(|i| self.game_compat(&self.games[*i]).is_some_and(|e| e.status == crate::compat::Status::InGame))).count();
+        list.push(("In-game on KytyPS5".into(), in_game));
+        list.push(("All genres".into(), self.groups.members.len()));
         let mut rest: Vec<(&str, usize)> = counts.into_iter().collect();
         rest.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
         list.extend(rest.into_iter().map(|(n, c)| (n.to_string(), c)));
@@ -605,16 +668,26 @@ impl App {
     pub fn apply_filter(&mut self) {
         let words: Vec<String> = norm(&self.query).split_whitespace().map(String::from).collect();
         let genre = self.genre.as_str();
-        let mut list: Vec<usize> = (0..self.games.len())
-            .filter(|&i| {
+        let matches = |i: usize| {
                 let g = &self.games[i];
-                (genre == "All"
-                    || (genre == "Installed" && g.local.is_some())
-                    || (genre == "In-game on KytyPS5" && self.game_compat(g).is_some_and(|e| e.status == crate::compat::Status::InGame))
-                    || g.buckets.contains(&genre))
+                (genre == "All" || g.buckets.contains(&genre))
+                    && self.matches_status(i)
                     && words.iter().all(|w| g.norm.contains(w.as_str()))
-            })
-            .collect();
+            };
+        let cfg = self.cfg.lock().unwrap().clone();
+        let rank = |i: usize| {
+            let g = &self.games[i];
+            let installed_version = g.local.is_some_and(|l| {
+                let a = crate::game_groups::version_key(&g.g.version);
+                !a.is_empty() && a == crate::game_groups::version_key(&self.locals[l].l.version)
+            });
+            (installed_version, cfg.rawg_art.contains(&g.g.id), g.local.is_some(), !g.g.magnet.is_empty(),
+                g.info.as_ref().is_some_and(|info| !info.master.is_empty()), crate::game_groups::version_key(&g.g.version),
+                g.g.seeders.unwrap_or(0), g.g.id)
+        };
+        let mut list: Vec<usize> = self.groups.members.iter().filter_map(|members| {
+            members.iter().copied().filter(|i| matches(*i)).max_by_key(|i| rank(*i))
+        }).collect();
         let gs = &self.games;
         let score = |i: usize| gs[i].info.as_ref().and_then(|x| x.rating.as_ref()).map(|r| (r.score, r.total)).unwrap_or((-1.0, 0));
         match self.sort {
@@ -628,7 +701,10 @@ impl App {
                 let rank = |i: usize| self.game_compat(&gs[i]).map(|e| e.status as u8).unwrap_or(9);
                 list.sort_by(|a, b| rank(*a).cmp(&rank(*b)).then_with(|| gs[*a].name.to_lowercase().cmp(&gs[*b].name.to_lowercase())))
             }
-            _ => list.sort_by(|a, b| gs[*b].g.date.cmp(&gs[*a].g.date)),
+            _ => {
+                let newest = |i: usize| self.groups.releases(i).iter().map(|index| gs[*index].g.id).max().unwrap_or(gs[i].g.id);
+                list.sort_by(|a, b| newest(*b).cmp(&newest(*a)));
+            }
         }
         self.filtered = list;
     }
@@ -640,7 +716,7 @@ impl App {
             return;
         }
         self.syncing = true;
-        self.set_status("Updating catalog…", true);
+        self.set_status("Reloading RuTracker catalog…", true);
         std::thread::spawn(|| {
             let res = catalog::sync(&|p| post(move |app| app.set_status(&p, true)));
             post(move |app| {
@@ -652,7 +728,7 @@ impl App {
                         app.set_catalog(file.games);
                         app.push_all();
                         if !first {
-                            app.toast("Catalog updated", &format!("{} games are in the Library.", app.games.len()), 1);
+                            app.toast("RuTracker catalog reloaded", &format!("{} games · {} releases", app.groups.members.len(), app.games.len()), 1);
                         }
                         app.set_status("", false);
                         app.boot_catalog_done();
@@ -665,7 +741,7 @@ impl App {
                             // Offline: don't hold the welcome screen for the catalog or artwork.
                             app.boot.waiting_art = false;
                             app.boot.cat_failed = true;
-                            app.boot.text_main = "Offline · the catalog could not be downloaded".into();
+                            app.boot.text_main = "Catalog reload failed · keeping the offline snapshot".into();
                             app.boot_catalog_done();
                         }
                         app.start_enrich();
@@ -682,7 +758,10 @@ impl App {
         let titles: Vec<(String, &'static str)> = self
             .games
             .iter()
-            .map(|g| (g.g.title_id.clone(), psn::region_from_version(&g.g.version)))
+            .flat_map(|g| {
+                let region = psn::region_from_label(&g.g.region);
+                std::iter::once(&g.g.title_id).chain(g.g.title_ids.iter()).map(move |id| (id.clone(), region))
+            })
             .chain(self.locals.iter().map(|l| (l.l.title_id.clone(), psn::region_from_content_id(&l.l.content_id))))
             .collect();
         let key = self.cfg.lock().unwrap().rawg_key.trim().to_string();
@@ -974,6 +1053,8 @@ impl App {
     }
 
     pub fn tick(&mut self) {
+        self.push_installs();
+        self.push_downloads();
         let tm = util::local_time();
         let (h, m) = (tm.tm_hour, tm.tm_min);
         let clock = format!("{}:{:02} {}", if h % 12 == 0 { 12 } else { h % 12 }, m, if h < 12 { "AM" } else { "PM" });
@@ -1043,6 +1124,10 @@ impl App {
                 return;
             }
         }
+        if self.overlay == Overlay::Downloads && self.ui().get_download_editing() {
+            self.ui().invoke_focus_root();
+            if act == Act::Confirm { return; }
+        }
         self.act(act);
     }
 
@@ -1078,6 +1163,18 @@ impl App {
         };
 
         // Text editing: the TextInput handles typing; we get what it doesn't use.
+        if self.overlay == Overlay::Downloads && self.ui().get_download_consent()
+            && !self.ui().get_download_editing() && !ctrl && !alt && k(Key::Tab) {
+            self.ui().set_download_focus_path(true);
+            return true;
+        }
+        if self.overlay == Overlay::Downloads && self.ui().get_download_consent() && self.ui().get_download_editing() {
+            if k(Key::Escape) {
+                self.act_downloads(Act::Back);
+                return true;
+            }
+            return false;
+        }
         if self.search_editing {
             if k(Key::Escape) {
                 self.stop_search_edit();
@@ -1105,6 +1202,10 @@ impl App {
         }
         if ctrl && (text == "q" || text == "w") {
             slint::quit_event_loop().ok();
+            return true;
+        }
+        if ctrl && text == "d" && !self.boot.active {
+            self.open_downloads(None);
             return true;
         }
         if ctrl || alt {
@@ -1200,6 +1301,7 @@ impl App {
         self.apply_filter();
         self.set_grid_scroll(0.0, 0);
         self.push_grid();
+        self.push_genres();
     }
 
     pub fn start_search_edit(&mut self) {
@@ -1237,7 +1339,7 @@ impl App {
     }
 
     fn top_items(&self) -> Vec<i32> {
-        if self.live.is_empty() { vec![2, 3] } else { vec![0, 1, 2, 3] }
+        if self.live.is_empty() { vec![2, 3, 4] } else { vec![0, 1, 2, 3, 4] }
     }
 
     pub fn act(&mut self, a: Act) {
@@ -1257,6 +1359,8 @@ impl App {
             Overlay::Menu => self.act_menu(a),
             Overlay::Settings => self.act_settings(a),
             Overlay::Hub => self.act_hub(a),
+            Overlay::Downloads => self.act_downloads(a),
+            Overlay::Sort => self.act_sort_picker(a),
             Overlay::None => self.act_main(a),
         }
     }
@@ -1307,6 +1411,7 @@ impl App {
                         0 => self.resume_game(),
                         1 => self.stop_game(None),
                         2 => self.start_search_edit(),
+                        4 => self.open_downloads(None),
                         _ => self.open_settings(),
                     },
                     _ => {}
@@ -1338,27 +1443,41 @@ impl App {
             Z_SEARCH => match a {
                 Act::Right => self.move_focus(Z_SORT, 0),
                 Act::Up => self.move_focus(Z_TABS, 1),
-                Act::Down => self.focus_chip(),
+                Act::Down => self.focus_status(),
                 Act::Confirm => self.start_search_edit(),
                 _ => {}
             },
             Z_SORT => match a {
                 Act::Left => self.move_focus(Z_SEARCH, 0),
+                Act::PageUp => self.cycle_sort(-1),
+                Act::PageDown => self.cycle_sort(1),
                 Act::Up => self.move_focus(Z_TABS, 1),
-                Act::Down => self.focus_chip(),
-                Act::Confirm | Act::Right => self.cycle_sort(1),
+                Act::Down => self.focus_status(),
+                Act::Confirm => self.open_sort_picker(),
+                Act::Right => self.move_focus(Z_DENSITY, 0),
+                _ => {}
+            },
+            Z_DENSITY => match a {
+                Act::Left if self.idx > 0 => self.move_focus(Z_DENSITY, 0),
+                Act::Left => self.move_focus(Z_SORT, 0),
+                Act::Right => self.move_focus(Z_DENSITY, 1),
+                Act::Up => self.move_focus(Z_TABS, 1),
+                Act::Down => self.focus_status(),
+                Act::Confirm => self.set_library_density(self.idx == 1),
                 _ => {}
             },
             Z_CHIPS => match a {
-                Act::Left if self.idx > 0 => {
+                Act::Left if self.idx > if self.idx < 3 { 0 } else { 3 } => {
                     self.move_focus(Z_CHIPS, self.idx - 1);
                     self.push_genres();
                 }
-                Act::Right if (self.idx as usize) + 1 < self.genre_list.len() => {
+                Act::Right if (self.idx as usize) + 1 < if self.idx < 3 { 3 } else { self.genre_list.len() } => {
                     self.move_focus(Z_CHIPS, self.idx + 1);
                     self.push_genres();
                 }
+                Act::Up if self.idx >= 3 => self.focus_status(),
                 Act::Up => self.move_focus(Z_SEARCH, 0),
+                Act::Down if self.idx < 3 => self.focus_chip(),
                 Act::Down if !self.filtered.is_empty() => {
                     let first = self.first_visible_card();
                     self.move_focus(Z_GRID, first as i32);
@@ -1366,7 +1485,8 @@ impl App {
                 }
                 Act::Confirm => {
                     if let Some((g, _)) = self.genre_list.get(self.idx as usize).cloned() {
-                        self.genre = g;
+                        if self.idx < 3 { self.status_filter = g; }
+                        else { self.genre = if g == "All genres" { "All".into() } else { g }; }
                         self.apply_filter();
                         self.set_grid_scroll(0.0, 0);
                         self.push_library();
@@ -1381,8 +1501,63 @@ impl App {
     }
 
     fn focus_chip(&mut self) {
-        let i = self.genre_list.iter().position(|(g, _)| *g == self.genre).unwrap_or(0);
+        let i = self.genre_list.iter().enumerate().skip(3).find(|(_, (g, _))| *g == self.genre).map(|(i, _)| i).unwrap_or(3);
         self.move_focus(Z_CHIPS, i as i32);
+        self.push_genres();
+    }
+
+    fn focus_status(&mut self) {
+        let i = self.genre_list.iter().take(3).position(|(g, _)| *g == self.status_filter).unwrap_or(0);
+        self.move_focus(Z_CHIPS, i as i32);
+        self.push_genres();
+    }
+
+    pub fn matches_status(&self, index: usize) -> bool {
+        let game = &self.games[index];
+        self.status_filter == "All" || (self.status_filter == "Installed" && game.local.is_some())
+            || (self.status_filter == "In-game on KytyPS5" && self.game_compat(game).is_some_and(|entry| entry.status == crate::compat::Status::InGame))
+    }
+
+    pub fn open_sort_picker(&mut self) {
+        if self.overlay != Overlay::None || self.view != 1 { return; }
+        self.push_overlay(Overlay::Sort, Z_SORT_PICKER, self.sort as i32);
+    }
+
+    fn act_sort_picker(&mut self, action: Act) {
+        match action {
+            Act::Back => self.back(),
+            Act::Up => self.move_focus(Z_SORT_PICKER, (self.idx - 1).rem_euclid(SORTS.len() as i32)),
+            Act::Down => self.move_focus(Z_SORT_PICKER, (self.idx + 1).rem_euclid(SORTS.len() as i32)),
+            Act::First => self.move_focus(Z_SORT_PICKER, 0),
+            Act::Last => self.move_focus(Z_SORT_PICKER, SORTS.len() as i32 - 1),
+            Act::Confirm if (0..SORTS.len() as i32).contains(&self.idx) => {
+                self.sort = self.idx as usize;
+                self.back();
+                self.apply_filter();
+                self.set_grid_scroll(0.0, 0);
+                self.push_library();
+                audio::play(Sound::Select);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn set_library_density(&mut self, compact: bool) {
+        if self.cfg.lock().unwrap().library_compact == compact { return; }
+        let anchor = if self.zone == Z_GRID { self.idx.max(0) as usize } else { self.first_visible_card() };
+        { let mut cfg = self.cfg.lock().unwrap(); cfg.library_compact = compact; cfg.save(); }
+        self.relayout();
+        self.push_library();
+        self.set_grid_scroll((anchor / self.cols) as f32 * self.row_h, 0);
+    }
+
+    pub fn scroll_genres(&mut self, delta: i32) {
+        if self.overlay != Overlay::None || self.view != 1 { return; }
+        let i = if self.zone == Z_CHIPS && self.idx >= 3 { self.idx } else {
+            self.genre_list.iter().enumerate().skip(3).find(|(_, (g, _))| *g == self.genre).map(|(i, _)| i).unwrap_or(3) as i32
+        };
+        let last = self.genre_list.len().saturating_sub(1).max(3) as i32;
+        self.set_focus(Z_CHIPS, (i + delta).clamp(3, last));
         self.push_genres();
     }
 
@@ -1396,7 +1571,7 @@ impl App {
         }
         let cols = self.cols as i64;
         let i = self.idx as i64;
-        let page = ((self.logical_size().1 - 262.0) / self.row_h).floor().max(1.0) as i64 * cols;
+        let page = ((self.logical_size().1 - crate::library_layout::TOP) / self.row_h).floor().max(1.0) as i64 * cols;
         let j = match a {
             Act::Left => i - 1,
             Act::Right => i + 1,
@@ -1450,7 +1625,26 @@ impl App {
             (Z_HUB, Act::Left) if self.idx > 0 => self.move_focus(Z_HUB, self.idx - 1),
             (Z_HUB, Act::Right) if (self.idx as usize) + 1 < self.hub_actions.len() => self.move_focus(Z_HUB, self.idx + 1),
             (Z_HUB, Act::Down) => {
-                if shots > 0 { self.move_focus(Z_SHOTS, 0); self.prefetch_viewer(); } else { self.move_focus(Z_DESC, 0) }
+                if self.hub.and_then(|t| t.game).is_some_and(|i| self.groups.releases(i).len() > 1) {
+                    self.move_focus(Z_RELEASES, 0);
+                } else { self.move_focus(Z_HUB_DETAILS, 0); }
+                self.scroll_hub();
+            }
+            (Z_RELEASES, Act::Left) => self.cycle_hub_release(-1),
+            (Z_RELEASES, Act::Right | Act::Confirm) => self.cycle_hub_release(1),
+            (Z_RELEASES, Act::Up) => self.move_focus(Z_HUB, 0),
+            (Z_RELEASES, Act::Down) => self.move_focus(Z_HUB_DETAILS, 0),
+            (Z_HUB_DETAILS, Act::Confirm) => {
+                let ui = self.ui(); ui.set_hub_details_open(!ui.get_hub_details_open());
+            }
+            (Z_HUB_DETAILS, Act::Up) => {
+                if self.hub.and_then(|t| t.game).is_some_and(|i| self.groups.releases(i).len() > 1) {
+                    self.move_focus(Z_RELEASES, 0);
+                } else { self.move_focus(Z_HUB, 0); }
+                self.scroll_hub();
+            }
+            (Z_HUB_DETAILS, Act::Down) => {
+                if shots > 0 { self.move_focus(Z_SHOTS, 0); self.prefetch_viewer(); } else { self.move_focus(Z_DESC, 0); }
                 self.scroll_hub();
             }
             (Z_HUB, Act::Confirm) => {
@@ -1467,7 +1661,7 @@ impl App {
                 self.scroll_shots();
             }
             (Z_SHOTS, Act::Up) => {
-                self.move_focus(Z_HUB, 0);
+                self.move_focus(Z_HUB_DETAILS, 0);
                 self.scroll_hub();
             }
             (Z_SHOTS, Act::Down) => {
@@ -1483,7 +1677,7 @@ impl App {
                     self.move_focus(Z_SHOTS, 0);
                     self.scroll_hub();
                 } else {
-                    self.move_focus(Z_HUB, 0);
+                    self.move_focus(Z_HUB_DETAILS, 0);
                     self.scroll_hub();
                 }
             }
@@ -1533,6 +1727,12 @@ impl App {
 
     pub fn back(&mut self) {
         if self.overlay != Overlay::None {
+            if self.overlay == Overlay::Downloads {
+                self.download_pending = None;
+                self.install_pending = None;
+                self.ui().set_download_consent(false);
+                self.ui().invoke_focus_root();
+            }
             audio::play(Sound::Back);
             if self.overlay == Overlay::Settings && self.edit_index >= 0 {
                 self.finish_edit(None);
@@ -1698,6 +1898,15 @@ impl App {
         if !in_hub && (t.game.is_some() || t.local.is_some()) {
             a.push(mk("hub", if t.local.is_some() { "Game Hub" } else { "View Game" }, "info", t.local.is_none()));
         }
+        if t.local.is_none() && t.game.is_some_and(|g| !self.games[g].g.magnet.is_empty()) {
+            let job = self.download_for_target(t);
+            let installing = job.as_ref().is_some_and(|job| self.installer.snapshot().iter().any(|record| record.key == job.key && record.state.active()));
+            let (id, label) = if installing { ("download", "Installing…") }
+                else if job.as_ref().is_some_and(|job| job.state == crate::downloads::State::Complete) { ("install", "Install") }
+                else if job.is_some() { ("download", "View download") }
+                else { ("download", "Download") };
+            a.push(mk(id, label, "disk", a.is_empty()));
+        }
         if info.as_ref().is_some_and(|i| !i.video.is_empty()) || t.game.is_some_and(|g| !self.games[g].g.trailer.is_empty()) {
             a.push(mk("trailer", "Trailer", "film", false));
         }
@@ -1736,6 +1945,10 @@ impl App {
                 self.open_hub(t);
             }
             "trailer" => self.play_trailer(t),
+            "download" => self.prepare_download(t),
+            "install" => {
+                if let Some(job) = self.download_for_target(t) { self.prepare_install(&job.key); }
+            }
             "web" => {
                 if let Some(g) = t.game {
                     let link = self.games[g].g.link.clone();
@@ -1851,6 +2064,7 @@ impl App {
     }
 
     pub fn open_hub(&mut self, t: Target) {
+        self.ui().set_hub_details_open(false);
         if *crate::images::DEBUG {
             let ui = self.ui();
             slint::Timer::single_shot(Duration::from_millis(1500), move || {
@@ -1878,6 +2092,18 @@ impl App {
         let (bg, cover) = (self.target_bg_url(t), self.cover_req(t));
         self.want_background_or(bg, true, cover);
         self.push_hub();
+    }
+
+    pub fn cycle_hub_release(&mut self, delta: i32) {
+        if self.overlay != Overlay::Hub { return; }
+        let Some(t) = self.hub else { return; };
+        let Some(current) = t.game else { return; };
+        let members = self.groups.releases(current);
+        if members.len() < 2 { return; }
+        let position = members.iter().position(|i| *i == current).unwrap_or(0) as i32;
+        let next = members[(position + delta).rem_euclid(members.len() as i32) as usize];
+        self.open_hub(Target { game: Some(next), local: self.games[next].local.or(t.local) });
+        self.set_focus(Z_RELEASES, 0);
     }
 
     fn open_viewer(&mut self, i: usize) {

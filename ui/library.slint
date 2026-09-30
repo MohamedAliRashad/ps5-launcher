@@ -1,0 +1,59 @@
+import { Theme, S, Icons, GenreChip } from "theme.slint";
+
+export component LibraryFilter inherits Rectangle {
+    in property <GenreChip> data;
+    in property <bool> focused;
+    in property <float> type-scale;
+    callback clicked();
+    width: data.w;
+    height: (44px * S.k);
+    border-radius: (22px * S.k);
+    background: data.on ? #ffffff : ta.has-hover ? #ffffff20 : #ffffff0d;
+    border-width: focused ? (3px * S.k) : 1px;
+    border-color: focused ? (data.on ? Theme.accent : Theme.ring) : Theme.line;
+    animate background { duration: 120ms; }
+    HorizontalLayout {
+        alignment: center; spacing: (6px * S.k);
+        Text { text: root.data.label; font-size: (18px * root.type-scale); font-weight: root.data.on ? 600 : 400; color: root.data.on ? #0a0d18 : Theme.text2; vertical-alignment: center; }
+        Text { text: root.data.count; font-size: (15px * root.type-scale); color: root.data.on ? #56607a : Theme.text3; vertical-alignment: center; }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+export component LibrarySortPicker inherits Rectangle {
+    in property <[string]> options;
+    in property <int> selected;
+    in property <int> current;
+    in property <float> type-scale;
+    in property <length> anchor-x;
+    callback choose(int);
+    callback close();
+    background: #05070f65;
+    TouchArea { clicked => { root.close(); } }
+    Rectangle {
+        x: min(root.anchor-x, root.width - self.width - (96px * S.k));
+        y: (184px * S.k);
+        width: min(root.width - (192px * S.k), max((440px * S.k), (360px * root.type-scale)));
+        height: body.preferred-height;
+        border-radius: (18px * S.k); background: #121b30fc;
+        border-width: 1px; border-color: #ffffff28;
+        drop-shadow-blur: (36px * S.k); drop-shadow-color: #00000088;
+        TouchArea { }
+        body := VerticalLayout {
+            padding: (12px * S.k); spacing: (4px * S.k);
+            Text { text: "SORT BY"; font-size: (13px * root.type-scale); font-weight: 600; color: Theme.text3; height: (30px * S.k); }
+            for label[i] in root.options: Rectangle {
+                height: max((50px * S.k), (34px * root.type-scale));
+                border-radius: (10px * S.k);
+                background: root.selected == i ? #ffffff : ta.has-hover ? #ffffff14 : transparent;
+                HorizontalLayout {
+                    padding-left: (14px * S.k); padding-right: (14px * S.k); spacing: (12px * S.k);
+                    Text { text: label; font-size: (19px * root.type-scale); color: root.selected == i ? #0a0d18 : Theme.text2; vertical-alignment: center; }
+                    Rectangle { horizontal-stretch: 1; }
+                    if root.current == i: Image { source: Icons.check; width: (20px * S.k); height: (20px * S.k); colorize: root.selected == i ? Theme.accent : Theme.ok; }
+                }
+                ta := TouchArea { mouse-cursor: pointer; clicked => { root.choose(i); } }
+            }
+        }
+    }
+}

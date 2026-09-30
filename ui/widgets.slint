@@ -52,25 +52,31 @@ export component KeyCap inherits Rectangle {
     t := Text { text: root.text; font-size: (14px * S.k); font-weight: 700; color: root.fg; }
 }
 
-// "‹ Back  [Esc]": a visible way out of overlays, for mouse and keyboard users alike.
+// Quiet navigation, not another primary action. Shortcut appears on hover; no layout jump.
 export component BackButton inherits Rectangle {
     in property <bool> pad;
     callback clicked();
-    width: row.preferred-width;
+    width: (154px * S.k);
     height: (48px * S.k);
-    border-radius: (24px * S.k);
-    background: ta.has-hover ? #ffffff2e : #0b1020c8;
-    border-width: 1px;
-    border-color: #ffffff26;
+    border-radius: (12px * S.k);
+    background: ta.has-hover ? #ffffff16 : transparent;
     animate background { duration: 120ms; }
     row := HorizontalLayout {
-        padding-left: (12px * S.k);
-        padding-right: (10px * S.k);
-        spacing: (10px * S.k);
+        padding-left: (6px * S.k);
+        padding-right: (8px * S.k);
+        spacing: (12px * S.k);
         alignment: center;
-        Image { source: Icons.chevl; colorize: #ffffff; width: (26px * S.k); height: (26px * S.k); y: (11px * S.k); }
-        Text { text: "Back"; font-size: (19px * S.k); font-weight: 600; color: #ffffff; vertical-alignment: center; }
-        KeyCap { text: root.pad ? "○" : "Esc"; round: root.pad; fg: root.pad ? #ff8f9c : #ffffff; y: (9px * S.k); }
+        Rectangle {
+            width: (36px * S.k); height: (36px * S.k); y: (6px * S.k);
+            border-radius: (18px * S.k); background: ta.has-hover ? #ffffff24 : #ffffff12;
+            Image { source: Icons.chevl; colorize: Theme.text; width: (22px * S.k); height: (22px * S.k); x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+        }
+        Text { text: "Back"; font-size: (18px * S.k); font-weight: 500; color: Theme.text; vertical-alignment: center; }
+        Text {
+            text: root.pad ? "○" : "Esc"; font-size: (13px * S.k); color: root.pad ? #ff8f9c : Theme.text3;
+            vertical-alignment: center; opacity: root.pad || ta.has-hover ? 1 : 0;
+            animate opacity { duration: 120ms; }
+        }
     }
     ta := TouchArea {
         mouse-cursor: pointer;

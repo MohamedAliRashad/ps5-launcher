@@ -52,6 +52,7 @@ export global Icons {
     out property <image> power: @image-url("../assets/icons/power.svg");
     out property <image> chevl: @image-url("../assets/icons/chevl.svg");
     out property <image> chevr: @image-url("../assets/icons/chevr.svg");
+    out property <image> chevd: @image-url("../assets/icons/chevd.svg");
     out property <image> check: @image-url("../assets/icons/check.svg");
     out property <image> folder: @image-url("../assets/icons/folder.svg");
     out property <image> log: @image-url("../assets/icons/log.svg");
@@ -84,12 +85,23 @@ export global Zone {
     out property <int> desc: 10;
     out property <int> settings: 11;
     out property <int> menu: 12;
+    out property <int> downloads: 13;
+    out property <int> releases: 14;
+    out property <int> hub-details: 15;
+    out property <int> sort-picker: 16;
+    out property <int> density: 17;
 }
 
 // dot: KytyPS5 compatibility level (0 none, 1 in-game, 2 menus, 3 boots, 4 doesn't boot, 5 untested)
 // stars: star rating out of 5 drawn as five stars (0 = none)
 export struct ChipData { icon: string, text: string, gold: bool, dot: int, stars: float }
 export struct ActionData { id: string, label: string, icon: string, primary: bool, danger: bool, round: bool }
+export struct DownloadData {
+    key: string, title: string, state: string, progress: float, detail: string,
+    path: string, error: string, failed: bool, complete: bool,
+    primary: string, primary-action: string, secondary: string, secondary-action: string,
+    review: bool, files: string, file-summary: string,
+}
 
 export struct TileData {
     image: image,
@@ -116,6 +128,10 @@ export struct CardData {
     index: int,
     title: string,
     meta: string,
+    seeders: string,
+    leechers: string,
+    peer-snapshot: string,
+    releases: string,
     rating: string,
     badge: string,
     compat: string,
@@ -125,7 +141,7 @@ export struct CardData {
 }
 
 export struct CardRow { index: int, cards: [CardData] }
-export struct GenreChip { label: string, count: string, on: bool, x: length, w: length }
+export struct GenreChip { index: int, label: string, count: string, on: bool, x: length, w: length }
 export struct Fact { key: string, value: string }
 export struct FactRow { items: [Fact] }
 export struct Shot { image: image, loaded: bool }
@@ -145,6 +161,14 @@ export struct HubData {
     age-icon: image,
     actions: [ActionData],
     facts: [FactRow],
+    details: [FactRow],
+    subtitle: string,
+    peer-status: string,
+    seeders: string,
+    leechers: string,
+    peer-snapshot: string,
+    release-label: string,
+    release-count: int,
     shots: [Shot],
     about: [string],
 }

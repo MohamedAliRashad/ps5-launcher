@@ -3,7 +3,7 @@ name = "ps5-launcher"
 version = "1.9.0"
 edition = "2021"
 description = "A fast, native PS5-style game launcher for Linux"
-rust-version = "1.88"
+rust-version = "1.92"
 
 [dependencies]
 slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "unstable-winit-030"] }
@@ -20,6 +20,14 @@ libloading = "0.8"
 html-escape = "0.2"
 percent-encoding = "2"
 sha2 = "0.10"
+librqbit = { version = "=9.0.1", default-features = false, features = ["rust-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+anyhow = "1"
+url = "2"
+data-encoding = "2"
+
+[dev-dependencies]
+tempfile = "3"
 
 [build-dependencies]
 slint-build = "1.18"

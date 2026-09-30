@@ -9,6 +9,11 @@ use std::path::PathBuf;
 pub struct Config {
     pub emulator: String,
     pub game_dirs: Vec<String>,
+    pub download_dir: String,
+    pub install_dir: String,
+    /// Continue sharing completed downloads until stopped or the launcher exits.
+    pub seed_after_download: bool,
+    pub library_compact: bool,
     pub fullscreen: bool,
     pub width: u32,
     pub height: u32,
@@ -33,6 +38,10 @@ impl Default for Config {
         Config {
             emulator: String::new(),
             game_dirs: vec!["~/Games/PS5".into()],
+            download_dir: "~/Downloads/PS5".into(),
+            install_dir: "~/Games/PS5".into(),
+            seed_after_download: true,
+            library_compact: false,
             fullscreen: true,
             width: 1920,
             height: 1080,
@@ -100,6 +109,21 @@ impl Config {
 fn is_executable(m: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
     m.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seeding_defaults_on_for_old_configs_and_preserves_explicit_opt_out() {
+        let old: Config = serde_json::from_str(r#"{"sounds":false}"#).unwrap();
+        assert!(old.seed_after_download);
+        let opted_out: Config = serde_json::from_str(r#"{"seed_after_download":false}"#).unwrap();
+        assert!(!opted_out.seed_after_download);
+        let restored: Config = serde_json::from_slice(&serde_json::to_vec(&opted_out).unwrap()).unwrap();
+        assert!(!restored.seed_after_download);
+    }
 }
 
 /// Look for kyty_emulator in PATH and a few common build locations.

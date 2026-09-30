@@ -1,6 +1,6 @@
 # PS5 Launcher
 
-A fast, native PS5-style game launcher for Linux. It browses the PS5 games catalog with the
+A fast, native PS5-style game launcher for Linux. It browses a RuTracker PS5 release catalog with the
 official PlayStation artwork, and launches your installed games with the
 [KytyPS5](https://github.com/KytyPS5/KytyPS5) emulator.
 
@@ -77,7 +77,9 @@ It's almost always a missing build package. Install the one for your distro and 
 | Arch / Manjaro / SteamOS | `sudo pacman -S --needed base-devel fontconfig libxkbcommon` |
 | openSUSE | `sudo zypper install gcc pkg-config fontconfig-devel libxkbcommon-devel` |
 
-The launcher needs Rust 1.88 or newer. If yours is older, update it with `rustup update stable`.
+The declared compiler floor is Rust 1.92, matching the resolved Slint requirement.
+The full download implementation was built and tested with Rust 1.98.1; an exact
+Rust 1.92 build has not been certified. Use a current stable toolchain.
 
 ### Optional helpers
 
@@ -89,6 +91,7 @@ The launcher works without these, but each one turns on a feature:
 | `mpv` | Fullscreen trailers inside the launcher. Without it, trailers open in your browser |
 | `yt-dlp` | YouTube trailers in `mpv` |
 | `xrandr` | Picking the display and scaling the UI to fit it |
+| System `libarchive.so.13` (`libarchive13` on Ubuntu/Debian) | Background game installation from supported archives; no development package needed |
 
 On Ubuntu and Debian: `sudo apt install xdotool mpv yt-dlp x11-xserver-utils`
 
@@ -101,14 +104,15 @@ On Ubuntu and Debian: `sudo apt install xdotool mpv yt-dlp x11-xserver-utils`
 |---|---|
 | `--windowed` | Open in a window instead of fullscreen |
 | `--monitor DP-2` | Use a specific display (names come from `xrandr --listmonitors`) |
-| `--sync` | Re-download the game catalog on start |
+| `--sync` | Reload the local RuTracker JSON snapshot on start |
+| `--catalog <PATH>` | Use an English RuTracker PS5 JSON snapshot instead of the bundled catalog |
 | `--help`, `--version` | Show help or the version |
 
 **First launch:** a welcome screen gets everything ready before you're let in. Your library's
 covers drift behind it as they arrive, and a checklist shows each step as it happens:
 
-1. downloads the catalog (about 1 second);
-2. downloads the official artwork (about a minute for all 700+ games);
+1. loads the local RuTracker catalog (614 release topics in the bundled snapshot);
+2. downloads the official artwork for catalog titles not already cached;
 3. downloads the **latest KytyPS5 build**;
 4. downloads every Library cover, and the backgrounds, logos and icons of every game on the Home
    screen;
@@ -129,6 +133,195 @@ background.
 
 **Add your games:** point **Settings → Game folders** at the folder that holds your games. A
 game is any folder with a `sce_sys/param.json`.
+
+## RuTracker catalog
+
+The English snapshot is embedded in the binary, so catalog browsing works offline
+without Chrome or a source checkout. All release topics are retained, but the
+Library shows **one card per game**: matching title IDs, region aliases and normalized
+names group editions/versions together. Sequels and remasters with distinct identities
+remain separate. Use the **release selector in the Game Hub** to switch exact
+versions, regions, peer counts and download magnets. Search matches every release
+in a group without duplicating its card. Cards show download size, release count
+and **seeders/leechers from the snapshot**, with its date in the Library header.
+The Game Hub presents peers and snapshot date on one line, three key overview
+facts, and expandable **Technical details** for title ID, languages, firmware,
+release provenance and installation information.
+Missing counts are unknown, not zero. These are **not live tracker/client counts**.
+
+### Library layout and controls
+
+The **Home / Library** navigation keeps installed games separate from the catalog.
+Library cards reserve two title lines, show download size and a subtle grouped-release
+count, and use compact **↑ seeders / ↓ leechers** captions (green/red; unknown counts
+remain muted). Version/region details stay in the Game Hub. A single dated peer-snapshot
+caption applies to the catalog; differing observation dates are shown in each Game Hub.
+
+Use **Comfortable / Compact** to choose grid density. The choice is saved immediately;
+smaller windows reduce the column count and maintain readable caption text. Density
+changes retain the current scroll position's game rather than jumping back to the start.
+Artwork caching, visible-row virtualization and look-ahead prefetching are unchanged.
+
+**All / Installed / In-game on KytyPS5** filters are separate from the **GENRE** row,
+and can be combined with genres and search. Counts reflect those combinations without
+duplicating release variants. Genre-row arrows expose options beyond the viewport.
+Click the sort control or press Enter on it to open all seven sort choices; arrows select,
+Enter applies, and Escape cancels. Page Up/Down on the closed sort control cycles directly.
+Keyboard/controller navigation follows search/sort/density → status filters → genres → grid.
+
+The welcome screen and app assets use an original white/electric-blue **P5 chassis emblem**,
+not the former generic play-button icon. Source installation updates the matching desktop icon.
+
+**Settings → Reload RuTracker catalog** re-imports local JSON; it does not scrape
+the website or refresh peer counts over the network. Source precedence is:
+
+1. `--catalog <PATH>` or `PS5_LAUNCHER_CATALOG_PATH`;
+2. `$XDG_DATA_HOME/ps5-launcher/rutracker/ps5-topics.json` (normally under `~/.local/share`);
+3. the generated snapshot in a source checkout, if present;
+4. the embedded English snapshot in [assets/rutracker/ps5-topics.json](assets/rutracker/ps5-topics.json).
+
+The source-specific cache is independent of the old SuperPSX cache. Invalid,
+partial or untranslated imports do not overwrite a known-good catalog. Posting
+dates were not collected, so **Newest topics** sorts by topic ID; collection and
+game-release dates are not misrepresented as dates added to the site.
+
+To collect fresh metadata, use the separate [browser collector](scripts/rutracker-list/README.md),
+complete any normal verification yourself, then translate the JSON to English.
+The collector is not part of launcher startup. Firmware/test claims remain
+uploader-provided console notes, not KytyPS5 compatibility guarantees.
+
+### Dynamic metadata: recommended next layer
+
+JSON remains a useful offline baseline and cache format; it need not be the only
+source of discovery. A future explicit **Refresh peer counts** action should fetch
+website statistics for the selected release, store a separate topic-keyed observation
+with its check time, and keep previous data when refresh fails. New-release discovery
+is a separate catalog update, not a side effect of refreshing one game's counts.
+
+That live website action is **not implemented yet**: anonymous RuTracker access can
+be blocked by verification/login, and the current collector establishes peer counts
+from forum listings, not a reliable per-topic endpoint. Do not interpret local reload
+as an online refresh. Refreshing website metadata must never resolve a magnet or
+start a torrent just to count peers. Website snapshots and this client's connected
+peers should remain separately labeled; neither is a guaranteed live swarm total.
+
+## Background magnet downloads
+
+Use this feature only for content you are authorized to obtain and share.
+
+1. Open a release's **Game Hub → Download** (also available in Options).
+2. Choose the destination and **Look up metadata**. This contacts trackers,
+  DHT and peers and reveals your IP address, but downloads no payload files.
+3. Review the file count, names and total size, then choose **Start download**.
+  All files are downloaded; the first 100 names are shown for large torrents.
+4. Keep browsing or minimize the window. Open **Downloads** with the top-bar
+  disk icon, **Ctrl+D**, or **Settings → Manage downloads**. It shows a progress
+  bar, percentage, verified bytes, MiB/s, ETA and this client's connected peers.
+
+**Pause / Resume** preserve and recheck partial pieces. **Cancel** stops the job
+and keeps files. **Remove** clears inactive history and cached metadata, never
+the payload. **Open folder** opens the saved destination.
+
+**Completed downloads seed by default.** While the launcher remains open, their
+original files are shared with peers. Downloads shows **Complete · seeding**, upload
+speed and connected peers; **Install / Play** remains available. Use **Stop seeding**
+for one transfer, or disable **Settings → Seed completed downloads** to stop all
+current seeds and prevent future post-completion seeding. This preference is saved.
+Turning it back on affects future completions only; it never restarts stopped or
+restored jobs, and never downloads/rechecks old payloads automatically.
+
+The default destination is `~/Downloads/PS5`, editable in Settings or the setup
+dialog. Each torrent gets a private `torrent-<infohash>` subfolder, preventing
+unrelated releases from overwriting one another. Existing unowned folders,
+unsafe paths, symlinks and hardlinks are rejected. Free space is checked before
+starting, but filesystem quotas and concurrent filesystem changes can still fail
+a transfer. Payload pieces are checked against the torrent's hashes; this does
+not establish authenticity or safety of their contents.
+
+**The launcher must stay open.** Graceful quit/restart saves active transfers as
+paused; completed seeds remain Complete but stop sharing. Reopening never starts the torrent engine or resumes payload traffic
+automatically; choose Resume/Retry explicitly. Transfer history and metadata live
+under the XDG configuration directory in the launcher's transfers subfolder.
+Download completion does not extract, install, launch a game or rescan the library.
+Choose the separate **Install** action when ready.
+
+Transfers can upload pieces while downloading and, by default, after completion,
+with a session-wide **128 KiB/s** upload cap. Disabling completed-download seeding
+does not disable uploads during downloads. Magnet discovery happens before a
+private flag is known; once metadata is known, the engine honors that flag for
+payload discovery. A private tracker may require authorized tracker credentials.
+Catalog seeders/leechers remain dated website snapshots, not live swarm totals.
+
+The native backend is pinned to **librqbit 9.0.1** with rustls, on a dedicated
+Tokio worker. See the [backend notes](docs/rust-torrent-options.md) for APIs,
+network behavior and validation limits.
+
+## Download → Install → Play
+
+Once a download completes, choose **Install** in Downloads or its Game Hub.
+Confirm the installation destination (default `~/Games/PS5`, editable in Settings
+and the confirmation dialog). Extraction/copying runs in a separate background
+worker while browsing or minimizing the launcher. Downloads shows its current
+phase, progress, errors and **Cancel install**; closing that panel does not cancel it.
+
+The installer checks available space, stages output in a private hidden directory,
+and requires exactly one complete game with valid title metadata and a nonempty
+`eboot.bin`. Its title ID must match the selected release when known. Only after
+validation is the game atomically published without replacing an existing folder,
+the destination added to Game folders, and the library refreshed. The action then
+becomes **Play**. Original archives and downloaded folders are always retained;
+installation itself never executes their contents.
+
+Loose game folders are copied. RAR, ZIP, 7z and TAR-family decoding uses dynamically
+loaded system libarchive; no archive helper process is executed. Matching multipart
+RAR and split 7z volumes are ordered and checked for gaps, but decoder support varies
+with the installed libarchive version. Password-protected archives, PKG decryption,
+update/DLC merging, and archives containing multiple complete games are unsupported.
+An unsupported or malformed archive fails with an explanation instead of publishing
+a partial library entry. RAR4 stored, ZIP, 7z/split 7z and TAR generated fixtures were
+tested on libarchive 3.7.2; compressed/solid/multipart RAR variants are not certified.
+
+**Validation is not an authenticity, malware or universal checksum guarantee.**
+In particular, libarchive 3.7.2 accepted corrupted stored-RAR4 payload bytes despite
+their CRC in a probe; do not rely on it for full RAR integrity verification.
+
+Keep the launcher open until installation finishes. Graceful quit/restart cancels
+an active installation and cleans its owned staging directory; retry is explicit.
+Interrupted records restore as failed and never auto-extract. A forced crash can
+leave hidden staging files, which are not installed games or automatically reused.
+Installation records live in the launcher's XDG configuration installs subfolder.
+
+### Catalog validation
+
+`cargo test --offline` runs the launcher unit tests; this is a binary crate,
+so do not use `--lib`. After a release build, run
+`node scripts/test-catalog.mjs` for native Linux smoke tests. The test requires
+Node.js, `unshare`, `xvfb-run`, `xdotool` and `ffmpeg`, plus permission to create
+unprivileged user/network namespaces. It uses temporary XDG profiles with
+networking disabled and both auto-updaters off. There is no network-enabled
+fallback if isolation is unavailable.
+
+The smoke test checks complete metadata/magnet preservation, byte-for-byte
+retention of a good cache after invalid/missing imports, and zero versus unknown
+peer counts. It also opens the bundled fallback and writes Library/Game Hub
+screenshots for visual inspection, leaving the user's settings and cache untouched.
+
+`node scripts/test-library.mjs` exercises sort selection/cancellation, combined filters,
+search, actual responsive column counts, and persisted density at 1349×768 and 960×640.
+It uses authored poster art, an inert generated library fixture, private PID/network
+namespaces and temporary profiles; no real games, magnets or user settings are accessed.
+Add `--full-hd` for 1920×1080 evidence. Screenshots and logs are retained under a temporary
+artifact directory. `node scripts/test-downloads.mjs` additionally checks the explicit
+Download → Install → Play workflow with a generated archive without executing its payload.
+
+`cargo test --offline` also runs generated, tracker/DHT-disabled loopback transfers:
+metadata-only preparation, intermediate progress, pause/resume with corrupt-piece
+repair, paused recovery, shutdown and cancellation/removal that retain partial
+files. No catalog/game magnet is used. `node scripts/test-downloads.mjs` checks
+the native progress/metadata/consent UI, text editing and keep-files removal with
+fabricated local snapshots in a network-disabled namespace. In addition to the
+catalog test prerequisites, it requires Tesseract and ImageMagick. Screenshots
+are retained for visual inspection; these UI fixtures do not perform transfers.
 
 ## KytyPS5 updates
 
@@ -167,6 +360,7 @@ in `~/.local/share/ps5-launcher/kyty/`.
 | Page through the Library | L2 / R2 | Page Up / Page Down, Home / End | |
 | Switch between game and launcher | PS button | | |
 | Quit | | Ctrl+Q | |
+| Downloads | Settings → Manage downloads | Ctrl+D | Top-bar disk icon |
 
 The launcher reads controllers directly, so the PS button works even while a game is
 fullscreen. This needs your user to have access to `/dev/input`. Most distros give the logged-in
@@ -177,17 +371,19 @@ user that access; if yours doesn't, add yourself to the `input` group.
 - **PS5 Home screen:** your installed, ready-to-play games; the whole catalog is the Library
   tab. The selected tile grows and shows its name, the game's hub art fills the screen, and its
   official title logo is shown. Nothing on screen repeats what's already obvious.
-- **Official artwork and details:** for about 96% of games, looked up by title ID in Sony's
+- **Official artwork and details:** when available, looked up by title ID in Sony's
   public PlayStation catalog. That includes tile icons, clean covers, backgrounds, logos,
   screenshots, trailers, star ratings, age ratings and publishers.
 - **RAWG (optional):** add a RAWG API key in Settings to fill in the rest by name. The key is
   checked before it's saved and is never displayed again. If you don't like a game's artwork,
   **Options → Use RAWG artwork** switches that game to RAWG's background, screenshots and
   description (and back again).
-- **Library:** the whole catalog with instant search, genre filters, and sorting by date, name,
+- **Library:** the whole release catalog with instant search, genre filters, and sorting by topic ID, name,
   release, rating or size.
 - **Game Hub:** a details page for each game, with a fact grid, a screenshot viewer and an
   About section.
+- **Background downloads:** opt-in magnet metadata review, progress/speed/ETA,
+  pause/resume and keep-files cancellation; continues while browsing/minimized.
 - **Steam-style sessions:**
   - a running game shows a **Playing** badge, a live timer, and **Resume** / **Stop**;
   - **Stop** closes the game cleanly, like Alt+F4, so Kyty keeps its shader cache;
@@ -230,6 +426,7 @@ user that access; if yours doesn't, add yourself to the `input` group.
 | `~/.config/ps5-launcher/config.json` | Settings |
 | `~/.config/ps5-launcher/playtime.json` | Playtime per game |
 | `~/.cache/ps5-launcher/` | Catalog, artwork, decoded thumbnails, emulator logs (safe to delete) |
+| `~/.cache/ps5-launcher/catalog-rutracker.json` | Imported RuTracker release metadata and snapshot peer counts |
 | `~/.local/share/ps5-launcher/kyty/` | Managed KytyPS5 builds and their shared saves and caches (`data/`) |
 
 ## Performance
