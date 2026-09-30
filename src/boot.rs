@@ -400,7 +400,7 @@ impl App {
         crate::log!("home screen shown");
         let ui = self.ui();
         ui.set_overlay(0);
-        self.set_focus(Z_ROW, 0);
+        self.set_focus(self.home_zone(), 0);
         self.show_row_background(self.sel, true);
         self.prefetch_neighbors();
         ui.invoke_focus_root();

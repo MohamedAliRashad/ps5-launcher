@@ -42,8 +42,8 @@ impl Status {
     pub fn meaning(self) -> &'static str {
         match self {
             Status::InGame => "Reaches gameplay",
-            Status::MainMenu => "Reaches the main menu, not gameplay",
-            Status::Logo => "Shows the intro logos, then stops",
+            Status::MainMenu => "Main menu, not gameplay",
+            Status::Logo => "Intro logos, then stops",
             Status::DoesntBoot => "Doesn't start",
         }
     }

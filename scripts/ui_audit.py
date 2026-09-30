@@ -123,8 +123,12 @@ def audit(size: str, n: int, out: Path, binary: Path, game: Path | None):
     (home / "Games").mkdir()
     if game:
         (home / "Games" / game.name).symlink_to(game)
+    fake = work / "kyty_emulator"                     # never start a real game
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
     (home / ".config/ps5-launcher/config.json").write_text(json.dumps(
-        {"game_dirs": ["~/Games"], "sounds": False, "kyty_auto_update": False, "app_auto_update": False}))
+        {"game_dirs": ["~/Games"], "sounds": False, "kyty_auto_update": False, "app_auto_update": False,
+         "emulator": str(fake)}))
     stubs = work / "stubs"
     stubs.mkdir()
     for tool in ("xdg-open", "mpv", "vlc", "firefox"):

@@ -108,7 +108,13 @@ impl App {
 
     /// Show row item `i`'s background, with its cover standing in until it has downloaded.
     pub fn show_row_background(&mut self, i: usize, force: bool) {
-        let (bg, cover) = (self.hero_bg_url(i), self.row_cover_req(i));
+        // No installed games: the newest catalog game's art.
+        let i_bg = if self.row.is_empty() { None } else { Some(i) };
+        let (bg, cover) = match i_bg {
+            Some(i) => (self.hero_bg_url(i), self.row_cover_req(i)),
+            None => (self.games.iter().find(|g| g.info.as_ref().is_some_and(|x| !x.hub.is_empty()))
+                .and_then(|g| req_url(&g.info.as_ref()?.hub, 1920, 0.0)), None),
+        };
         self.want_background_or(bg, force, cover);
     }
 
@@ -172,7 +178,7 @@ impl App {
     fn tile_badge(&self, it: RowItem) -> &'static str {
         match it {
             RowItem::Local(l) if self.session_for_local(l).is_some() => "Playing",
-            RowItem::Local(_) => "Installed",
+            // Everything on the Games tab is installed, so only a running game gets a badge.
             _ => "",
         }
     }
@@ -184,16 +190,14 @@ impl App {
             Some(RowItem::Local(l)) => {
                 let lv = &self.locals[l];
                 let sub = if let Some(s) = self.session_for_local(l) {
-                    format!("Playing · {}", util::fmt_clock(util::now_secs() - s.since))
+                    let _ = s;
+                    "Playing now".to_string()
                 } else {
                     let pt = self.playtime(&lv.l);
-                    let status = self.target_compat(Target { game: lv.cat, local: Some(l) }).map(|e| e.status.label().to_lowercase());
                     if pt.last > 0.0 {
                         format!("Last played {}", util::fmt_last_played(pt.last).to_lowercase())
-                    } else if let Some(s) = status {
-                        format!("Installed · {s} on KytyPS5")
                     } else {
-                        "Installed · Ready to play".into()
+                        "Not played yet".into()
                     }
                 };
                 (lv.name.clone(), sub)
@@ -221,19 +225,17 @@ impl App {
         }
     }
 
-    fn kicker_for(&self, t: Target) -> (String, String, bool) {
+    /// The small line above a title. Only says things nothing else on screen already says:
+    /// a running session, total playtime (Home), or when a game was added to the catalog.
+    fn kicker_for(&self, t: Target, in_hub: bool) -> (String, String, bool) {
         if let Some(l) = t.local {
             if let Some(s) = self.session_for_local(l) {
                 return (util::fmt_clock(util::now_secs() - s.since), "● PLAYING".into(), true);
             }
-            let lv = &self.locals[l];
-            let pt = self.playtime(&lv.l);
-            let text = if pt.total > 0.0 {
-                format!("PLAYED {} · {}", util::fmt_duration(pt.total).to_uppercase(), util::fmt_last_played(pt.last).to_uppercase())
-            } else {
-                lv.l.title_id.clone()
-            };
-            return (text, "● INSTALLED".into(), false);
+            let pt = self.playtime(&self.locals[l].l);
+            // In the Game Hub, playtime is in the facts below.
+            let text = if pt.total > 0.0 && !in_hub { format!("PLAYED {}", util::fmt_duration_words(pt.total).to_uppercase()) } else { String::new() };
+            return (text, String::new(), false);
         }
         if let Some(g) = t.game {
             let gv = &self.games[g];
@@ -274,7 +276,7 @@ impl App {
         let mut h = if ui.get_hero_front_b() { ui.get_hero_b() } else { ui.get_hero() };
         if let Some(it) = self.row.get(self.sel).copied() {
             if it != RowItem::All {
-                let (k, a, live) = self.kicker_for(self.row_target(self.sel));
+                let (k, a, live) = self.kicker_for(self.row_target(self.sel), false);
                 h.kicker = k.into();
                 h.kicker_accent = a.into();
                 h.kicker_live = live;
@@ -289,9 +291,11 @@ impl App {
         self.hero_logo_key.clear();
         match it {
             None => {
-                h.title = if self.syncing { "Loading catalog…".into() } else { "No games yet".into() };
-                h.desc = "Open Settings to add game folders or refresh the catalog.".into();
-                self.hero_actions = Vec::new();
+                // No installed games: say how to add some, and offer the Library meanwhile.
+                let mk = |id, label: &str, icon, primary| ActionDef { id, label: label.into(), icon, primary, danger: false, round: false };
+                h.title = "No games installed yet".into();
+                h.desc = "Add the folder that holds your games and they'll appear here, ready to play.".into();
+                self.hero_actions = vec![mk("settings", "Add game folder", "folder", true)];
             }
             Some(RowItem::All) => {
                 let mk = |id, label: &str, icon, primary| ActionDef { id, label: label.into(), icon, primary, danger: false, round: false };
@@ -312,7 +316,7 @@ impl App {
             Some(_) => {
                 let t = self.row_target(self.sel);
                 let info = self.target_info(t);
-                let (k, a, live) = self.kicker_for(t);
+                let (k, a, live) = self.kicker_for(t, false);
                 h.kicker = k.into();
                 h.kicker_accent = a.into();
                 h.kicker_live = live;
@@ -345,12 +349,17 @@ impl App {
             }
         }
         h.actions = model(self.hero_actions.iter().map(action_data).collect());
+        // No tiles to select: selection lives on the buttons.
+        if self.row.is_empty() && self.zone == Z_ROW && self.overlay == Overlay::None && !self.hero_actions.is_empty() {
+            self.set_focus(Z_ACTIONS, 0);
+        }
         if self.zone == Z_ACTIONS && self.idx as usize >= self.hero_actions.len() {
             self.set_focus(Z_ACTIONS, self.hero_actions.len().saturating_sub(1) as i32);
         }
         // A new selection goes into the hidden layer, which then crossfades in; anything else
         // (a logo arriving, the play timer) updates the visible layer in place.
         let ui = self.ui();
+        ui.set_home_has_game(!self.row.is_empty());
         let front_b = ui.get_hero_front_b();
         if std::mem::take(&mut self.hero_flip) {
             if front_b { ui.set_hero(h) } else { ui.set_hero_b(h) }
@@ -712,9 +721,11 @@ impl App {
                 .or_else(|| g.g.genres.first().cloned()).unwrap_or_default();
             let region = g.g.version.split(['–', '-']).nth(1).map(|s| s.trim().to_string()).filter(|s| s.len() <= 5).unwrap_or_default();
             let meta = [genre, g.g.size.clone(), region].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
+            // ~2 lines at this card width (Inter 19 px averages ~11 px per character).
+            let per_line = (self.card_w / 11.0).max(8.0) as usize;
             cards.push(CardData {
                 index: k as i32,
-                title: g.name.clone().into(),
+                title: truncate(&g.name, per_line * 2 - per_line / 3).into(),
                 meta: meta.into(),
                 rating: g.info.as_ref().and_then(|i| i.rating.as_ref()).map(|r| format!("{:.1}", r.score)).unwrap_or_default().into(),
                 badge: if g.local.is_some() { "Installed".into() } else if g.is_new { "New".into() } else { "".into() },
@@ -767,13 +778,15 @@ impl App {
         let row = self.idx.max(0) as usize / self.cols.max(1);
         let top = row as f32 * self.row_h;
         let y = self.grid_scroll;
-        let new_y = if top < y + 10.0 {
-            (top - 10.0).max(0.0)
+        // Rows sit on a grid of row_h (plus a fixed top margin in the UI), so scrolling to a
+        // multiple of row_h leaves no part of the row above peeking out under the header.
+        let new_y = if top < y {
+            top
         } else if top + self.row_h > y + view_h {
-            // Snap to a row boundary so no half-row peeks out under the header.
             let min_y = top + self.row_h - view_h + 20.0;
-            let snapped = (min_y / self.row_h).ceil() * self.row_h - 10.0;
-            if snapped <= top - 10.0 { snapped } else { min_y }
+            let snapped = (min_y / self.row_h).ceil() * self.row_h;
+            // If the selected row doesn't fit below a whole row, put it at the top instead.
+            if snapped <= top { snapped } else { top }
         } else {
             return;
         };
@@ -813,7 +826,7 @@ impl App {
         let info = self.target_info(t);
         let mut keys = HashSet::new();
         let mut h = HubData::default();
-        let (k, a, live) = self.kicker_for(t);
+        let (k, a, live) = self.kicker_for(t, true);
         h.kicker = k.into();
         h.kicker_accent = a.into();
         h.kicker_live = live;
@@ -847,7 +860,8 @@ impl App {
             h.cover_loaded = true;
         }
 
-        let mut chips = vec![compat_chip(self.target_compat(t))];
+        // KytyPS5 status is in the facts grid below, so it isn't repeated as a chip here.
+        let mut chips: Vec<ChipData> = Vec::new();
         if let Some(r) = info.as_ref().and_then(|i| i.rating.as_ref()) {
             chips.push(ChipData { stars: r.score as f32, ..chip("", format!("{:.2} · {} ratings", r.score, thousands(r.total)), false) });
         }
@@ -869,15 +883,17 @@ impl App {
         let region = g.and_then(|g| g.version.split(['–', '-']).nth(1).map(|s| s.trim().to_string())).unwrap_or_default();
         let ce = self.target_compat(t).cloned();
         let mut facts: Vec<(&str, String)> = vec![
-            ("KYTYPS5", match &ce {
-                Some(e) => format!("{} · {}", e.status.meaning(), if e.reports == 1 { "1 report".into() } else { format!("{} reports", e.reports) }),
-                None => "No reports yet".into(),
+            ("ON KYTYPS5", match &ce {
+                Some(e) => e.status.meaning().to_string(),
+                None => "Not tested yet".into(),
             }),
+            // Short values only: a fact box fits ~28 characters.
             ("LAST TESTED", ce.as_ref().map(|e| {
                 let d = util::fmt_date(util::parse_iso_date(&e.tested_date()));
-                let p = e.platforms.join(", ");
-                [if d.is_empty() { e.tested_date() } else { d }, p].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ")
+                let r = if e.reports == 1 { "1 report".to_string() } else { format!("{} reports", e.reports) };
+                [if d.is_empty() { e.tested_date() } else { d }, r].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ")
             }).unwrap_or_default()),
+            ("TESTED ON", ce.as_ref().map(|e| e.platforms.join(", ")).unwrap_or_default()),
             ("ON LINUX", ce.as_ref().and_then(|e| e.linux).filter(|l| Some(*l) != ce.as_ref().map(|e| e.status)).map(|l| l.label().to_string()).unwrap_or_default()),
             ("PUBLISHER", info.as_ref().map(|i| i.publisher.clone()).unwrap_or_default()),
             ("RELEASE", g.map(|g| g.release.clone()).filter(|s| !s.is_empty()).or_else(|| info.as_ref().map(|i| util::fmt_date(util::parse_iso_date(&i.release)))).unwrap_or_default()),
@@ -886,7 +902,6 @@ impl App {
             ("TITLE ID", g.map(|g| g.title_id.clone()).filter(|s| !s.is_empty()).or_else(|| t.local.map(|l| self.locals[l].l.title_id.clone())).unwrap_or_default()),
             ("REGION", region),
             ("UPDATE", g.map(|g| g.update.clone()).unwrap_or_default()),
-            ("ADDED", g.map(|g| util::fmt_date(util::parse_iso_date(&g.date))).unwrap_or_default()),
         ];
         if let Some(l) = t.local {
             let lv = &self.locals[l];

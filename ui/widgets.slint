@@ -167,20 +167,14 @@ export component Btn inherits Rectangle {
     }
 }
 
-// "PS5 · ● Installed · PPSA02929"
+// Small caps line above a title: "● PLAYING 0:12", "NEW · ADDED SEP 22, 2026", "PLAYED 2 HR".
 export component Kicker inherits HorizontalLayout {
     in property <string> text;
     in property <string> accent;
     in property <bool> live;
     spacing: (12px * S.k);
     alignment: start;
-    Rectangle {
-        background: #ffffff24;
-        border-radius: (6px * S.k);
-        width: ps.preferred-width + (18px * S.k);
-        height: (30px * S.k);
-        ps := Text { text: "PS5"; font-size: (17px * S.k); font-weight: 700; color: #ffffff; }
-    }
+    height: (30px * S.k);
     if accent != "": Text {
         text: accent;
         font-size: (18px * S.k);

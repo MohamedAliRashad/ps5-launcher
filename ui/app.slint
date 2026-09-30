@@ -75,8 +75,8 @@ component HeroView inherits Rectangle {
     VerticalLayout {
         alignment: end;
         spacing: 0;
-        Kicker { text: data.kicker; accent: data.kicker-accent; live: data.kicker-live; }
-        Rectangle { height: (14px * S.k); }
+        if data.kicker != "" || data.kicker-accent != "": Kicker { text: data.kicker; accent: data.kicker-accent; live: data.kicker-live; }
+        if data.kicker != "" || data.kicker-accent != "": Rectangle { height: (14px * S.k); }
         if data.has-logo: Image {
             source: data.logo;
             width: data.logo-w;
@@ -177,6 +177,7 @@ export component AppWindow inherits Window {
 
     in property <HubData> hub;
     in property <bool> hub-open;
+    in property <bool> home-has-game: true;
     in-out property <length> hub-content-h;
     out property <length> hub-text-w: min((1060px * S.k), root.width - (540px * S.k) - (96px * S.k));
     in-out property <length> hub-col-h;
@@ -455,14 +456,20 @@ export component AppWindow inherits Window {
                         VerticalLayout {
                             y: root.card-w * 1.5 + (14px * S.k);
                             spacing: (4px * S.k);
-                            Text {
-                                text: c.title;
-                                font-size: (19px * S.k);
-                                font-weight: f ? 600 : 500;
-                                color: f ? #ffffff : Theme.text;
-                                wrap: word-wrap;
-                                overflow: elide;
-                                max-height: (48px * S.k);
+                            // Titles are pre-shortened to two lines; the box also crops at two lines,
+                            // because text drawn past its box would spill into the next row.
+                            Rectangle {
+                                height: min(title-t.preferred-height, (48px * S.k));
+                                clip: true;
+                                title-t := Text {
+                                    y: 0;
+                                    width: parent.width;
+                                    text: c.title;
+                                    font-size: (19px * S.k);
+                                    font-weight: f ? 600 : 500;
+                                    color: f ? #ffffff : Theme.text;
+                                    wrap: word-wrap;
+                                }
                             }
                             Text { text: c.meta; font-size: (16px * S.k); color: f ? Theme.text2 : Theme.text3; overflow: elide; }
                         }
@@ -674,16 +681,6 @@ export component AppWindow inherits Window {
                     Image { source: ic; colorize: f ? #0a0d18 : Theme.text2; width: (26px * S.k); height: (26px * S.k); }
                     ta := TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.top, i + 2); } }
                 }
-                Rectangle {
-                    width: (46px * S.k);
-                    height: (46px * S.k);
-                    y: (29px * S.k);
-                    border-radius: (23px * S.k);
-                    background: @linear-gradient(135deg, #0a6cff 0%, #8b5cf6 50%, #ec4899 100%);
-                    border-width: (2px * S.k);
-                    border-color: #ffffff59;
-                    Image { source: Icons.user; colorize: #ffffff; width: (25px * S.k); height: (25px * S.k); }
-                }
                 Text {
                     text: root.clock;
                     font-size: (26px * S.k);
@@ -737,9 +734,20 @@ export component AppWindow inherits Window {
                 padding-right: (22px * S.k);
                 spacing: (24px * S.k);
                 alignment: center;
-                for h in root.pad-hints
-                    ? [{k: "✕", l: "Select", c: #8fb6ff, r: true}, {k: "○", l: "Back", c: #ff8f9c, r: true}, {k: "□", l: "Trailer", c: #f5a3e6, r: true}, {k: "△", l: "Search", c: #6ee7c8, r: true}, {k: "☰", l: "Options", c: #ffffff, r: false}]
-                    : [{k: "Enter", l: "Select", c: #ffffff, r: false}, {k: "Esc", l: "Back", c: #ffffff, r: false}, {k: "T", l: "Trailer", c: #ffffff, r: false}, {k: "/", l: "Search", c: #ffffff, r: false}, {k: "O", l: "Options", c: #ffffff, r: false}]
+                // Only keys that do something on the current screen.
+                for h in root.overlay == 0 && !root.home-has-game
+                    ? (root.pad-hints ? [{k: "✕", l: "Select", c: #8fb6ff, r: true}] : [{k: "Enter", l: "Select", c: #ffffff, r: false}])
+                    : root.overlay == 0
+                    ? (root.pad-hints
+                        ? [{k: "✕", l: "Select", c: #8fb6ff, r: true}, {k: "□", l: "Trailer", c: #f5a3e6, r: true}, {k: "△", l: "Search", c: #6ee7c8, r: true}, {k: "☰", l: "Options", c: #ffffff, r: false}]
+                        : [{k: "Enter", l: "Select", c: #ffffff, r: false}, {k: "T", l: "Trailer", c: #ffffff, r: false}, {k: "/", l: "Search", c: #ffffff, r: false}, {k: "O", l: "Options", c: #ffffff, r: false}])
+                    : root.overlay == 1
+                    ? (root.pad-hints
+                        ? [{k: "✕", l: "Select", c: #8fb6ff, r: true}, {k: "○", l: "Back", c: #ff8f9c, r: true}, {k: "□", l: "Trailer", c: #f5a3e6, r: true}, {k: "☰", l: "Options", c: #ffffff, r: false}]
+                        : [{k: "Enter", l: "Select", c: #ffffff, r: false}, {k: "Esc", l: "Back", c: #ffffff, r: false}, {k: "T", l: "Trailer", c: #ffffff, r: false}, {k: "O", l: "Options", c: #ffffff, r: false}])
+                    : (root.pad-hints
+                        ? [{k: "✕", l: "Select", c: #8fb6ff, r: true}, {k: "○", l: "Back", c: #ff8f9c, r: true}]
+                        : [{k: "Enter", l: "Select", c: #ffffff, r: false}, {k: "Esc", l: "Back", c: #ffffff, r: false}])
                     : HorizontalLayout {
                         spacing: (10px * S.k);
                         KeyCap { text: h.k; round: h.r; fg: h.c; y: (10px * S.k); }
@@ -796,8 +804,8 @@ export component AppWindow inherits Window {
                     height: self.preferred-height;
                     padding-top: (130px * S.k);
                     spacing: 0;
-                    Kicker { text: root.hub.kicker; accent: root.hub.kicker-accent; live: root.hub.kicker-live; }
-                    Rectangle { height: (16px * S.k); }
+                    if root.hub.kicker != "" || root.hub.kicker-accent != "": Kicker { text: root.hub.kicker; accent: root.hub.kicker-accent; live: root.hub.kicker-live; }
+                    if root.hub.kicker != "" || root.hub.kicker-accent != "": Rectangle { height: (16px * S.k); }
                     if root.hub.has-logo: Image {
                         source: root.hub.logo;
                         width: root.hub.logo-w;

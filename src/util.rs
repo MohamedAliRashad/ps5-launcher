@@ -226,6 +226,18 @@ pub fn fmt_duration(secs: f64) -> String {
     if h > 0 { format!("{h}h {m}m") } else { format!("{m}m") }
 }
 
+/// "16 sec", "12 min", "2 hr 5 min" — for places written in capitals, where "16S" reads badly.
+pub fn fmt_duration_words(secs: f64) -> String {
+    let s = secs.max(0.0) as u64;
+    let (h, m) = (s / 3600, s / 60 % 60);
+    match (h, m) {
+        (0, 0) => format!("{s} sec"),
+        (0, m) => format!("{m} min"),
+        (h, 0) => format!("{h} hr"),
+        (h, m) => format!("{h} hr {m} min"),
+    }
+}
+
 pub fn fmt_clock(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
     let (h, m, x) = (s / 3600, s / 60 % 60, s % 60);

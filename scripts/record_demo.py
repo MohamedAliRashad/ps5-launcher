@@ -274,27 +274,26 @@ def scene_tour(s: Session, out: Path, has_game: bool):
 
 
 def scene_loop(s: Session, out: Path):
-    """A seamless loop: starts and ends on the first Home tile, from a fresh start."""
+    """A seamless loop from a fresh start: Home → Game Hub (screenshots) → Library → Home."""
     s.restart()
     s.record(out)
-    time.sleep(0.8)
-    s.key("Right", gap=0.95)
-    s.key("Right", gap=0.95)
-    s.key("Right", gap=1.1)
-    s.key("Down", gap=0.6)
+    time.sleep(1.2)
+    s.key("Down", gap=0.7)        # Play
+    s.key("Right", gap=0.7)       # Game Hub (never Play)
     s.key("Return", gap=2.0)
-    s.key("Down", gap=1.4)
-    s.key("Up", gap=0.5)
-    s.key("Escape", gap=0.9)
-    s.key("Up", gap=0.4)
-    s.key("Up", gap=0.4)
-    s.key("Right", gap=0.4)
-    s.key("Return", gap=1.5)
-    s.key("Down", gap=0.7)
-    s.key("Right", gap=0.7)
-    s.key("Down", gap=1.1)
+    s.key("Down", gap=1.0)        # screenshots
+    s.key("Right", gap=0.8)
+    s.key("Right", gap=1.0)
     s.key("Escape", gap=1.0)
-    s.key("Home", gap=1.6)
+    s.key("Up", gap=0.4)          # tile row
+    s.key("Up", gap=0.4)          # tabs
+    s.key("Right", gap=0.3)
+    s.key("Return", gap=1.6)      # Library
+    s.key("Down", gap=0.7)
+    s.key("Right", gap=0.6)
+    s.key("Right", gap=0.6)
+    s.key("Down", gap=1.2)
+    s.key("Escape", gap=1.8)      # back Home
     return s.stop()
 
 
@@ -415,7 +414,14 @@ def build(args, work: Path, clip1: Path, dur1: float, ev1, marks1, clip2: Path, 
     poster = out / "walkthrough-poster.jpg"
     make_poster(frame, poster)
 
-    # 5) The loop: smaller and lighter, for the top of the README.
+    encode_loop(loop, out)
+    for f in (full, small, poster):
+        log(f"{f.name}: {f.stat().st_size / 1e6:.1f} MB")
+
+
+def encode_loop(loop: Path, out: Path):
+    """The loop: smaller and lighter, for the top of the README."""
+    out.mkdir(parents=True, exist_ok=True)
     webp = out / "demo-loop.webp"
     for width, fps, q in ((1200, 24, 72), (1040, 20, 68), (960, 18, 62)):
         run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(loop), "-vf",
@@ -423,8 +429,7 @@ def build(args, work: Path, clip1: Path, dur1: float, ev1, marks1, clip2: Path, 
              "-quality", str(q), "-compression_level", "6", "-loop", "0", "-an", str(webp)])
         if webp.stat().st_size < 7 * 1024 * 1024:
             break
-    for f in (webp, full, small, poster):
-        log(f"{f.name}: {f.stat().st_size / 1e6:.1f} MB")
+    log(f"{webp.name}: {webp.stat().st_size / 1e6:.1f} MB")
 
 
 def main():
@@ -433,6 +438,8 @@ def main():
     ap.add_argument("--game", type=Path, help="an installed game folder (with sce_sys/param.json) to show as installed")
     ap.add_argument("--out", type=Path, default=ROOT / "dist" / "demo")
     ap.add_argument("--keep", action="store_true", help="keep the temporary work folder")
+    ap.add_argument("--loop-only", action="store_true",
+                    help="only record the README loop, reusing your downloaded catalog and artwork (fast)")
     args = ap.parse_args()
     for tool in ("Xvfb", "xdotool", "ffmpeg", "convert"):
         if not shutil.which(tool):
@@ -445,6 +452,31 @@ def main():
     work = Path(tempfile.mkdtemp(prefix="ps5-launcher-demo-"))
     log("work folder:", work)
     s = Session(args.binary, args.game, work)
+    if args.loop_only:
+        try:
+            real = Path.home() / ".cache/ps5-launcher"
+            shutil.copytree(real, s.home / ".cache/ps5-launcher", ignore=shutil.ignore_patterns("logs"))
+            fake = work / "kyty_emulator"                     # never start a real game
+            fake.write_text("#!/bin/sh\nexit 0\n")
+            fake.chmod(0o755)
+            cfg = s.home / ".config/ps5-launcher/config.json"
+            c = json.loads(cfg.read_text())
+            c.update({"emulator": str(fake), "kyty_auto_update": False, "app_auto_update": False})
+            cfg.write_text(json.dumps(c))
+            s.launch()
+            s.wait_log("home screen shown", 60)
+            time.sleep(1.5)
+            log("recording: loop")
+            loop = work / "loop.mkv"
+            scene_loop(s, loop)
+            s.close()
+            encode_loop(loop, args.out)
+            log("done:", args.out)
+        finally:
+            s.close()
+            if not args.keep:
+                shutil.rmtree(work, ignore_errors=True)
+        return
     try:
         log("recording: first launch (downloads catalog, artwork and KytyPS5)")
         c1 = work / "c1.mkv"

@@ -174,9 +174,9 @@ user that access; if yours doesn't, add yourself to the `input` group.
 
 ## Features
 
-- **PS5 Home screen:** your installed, ready-to-play games, with the whole catalog one tile away
-  in the Library. The selected tile grows and shows its name, the game's hub art fills the
-  screen, and its official title logo is shown.
+- **PS5 Home screen:** your installed, ready-to-play games; the whole catalog is the Library
+  tab. The selected tile grows and shows its name, the game's hub art fills the screen, and its
+  official title logo is shown. Nothing on screen repeats what's already obvious.
 - **Official artwork and details:** for about 96% of games, looked up by title ID in Sony's
   public PlayStation catalog. That includes tile icons, clean covers, backgrounds, logos,
   screenshots, trailers, star ratings, age ratings and publishers.

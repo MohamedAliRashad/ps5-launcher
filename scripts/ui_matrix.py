@@ -28,7 +28,7 @@ STEPS = [
     ("00-notification", []),
     ("01-home", ["sleep:9"]),
     ("02-home-new-game", ["Right", "Right"]),
-    ("03-hub", ["Down", "Return", "sleep:1.5"]),
+    ("03-hub", ["Down", "Right", "Return", "sleep:1.5"]),   # the "Game Hub" button (never Play)
     ("04-hub-scrolled", ["Down", "Down", "sleep:0.8"]),
     ("05-library", ["Escape", "Escape", "Up", "Up", "Right", "Return", "sleep:1.5"]),
     ("06-library-down", ["Down", "Down", "Down", "sleep:1"]),
@@ -59,8 +59,13 @@ def shoot(size: str, n: int, out: Path, binary: Path, game: Path | None):
     games.mkdir()
     if game:
         (games / game.name).symlink_to(game)
+    # A stand-in emulator that exits at once: screenshots must never start a real game.
+    fake = work / "kyty_emulator"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
     (home / ".config/ps5-launcher/config.json").write_text(json.dumps(
-        {"game_dirs": ["~/Games"], "sounds": False, "kyty_auto_update": False, "app_auto_update": False}))
+        {"game_dirs": ["~/Games"], "sounds": False, "kyty_auto_update": False, "app_auto_update": False,
+         "emulator": str(fake)}))
     # No browsers or players may pop up; pretend to be an old version so the update notification shows.
     stubs = work / "stubs"
     stubs.mkdir()

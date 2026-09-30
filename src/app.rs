@@ -571,9 +571,8 @@ impl App {
             let (pa, pb) = (self.playtime(&self.locals[*a].l).last, self.playtime(&self.locals[*b].l).last);
             pb.partial_cmp(&pa).unwrap_or(std::cmp::Ordering::Equal).then_with(|| self.locals[*a].name.cmp(&self.locals[*b].name))
         });
-        let mut row: Vec<RowItem> = locals.into_iter().map(RowItem::Local).collect();
-        // Games tab = your installed, ready-to-play games; the whole catalog lives in the Library.
-        row.push(RowItem::All);
+        let row: Vec<RowItem> = locals.into_iter().map(RowItem::Local).collect();
+        // Games tab = your installed games only; the whole catalog is the Library tab.
         self.row = row;
         self.sel = prev.and_then(|p| self.row.iter().position(|r| *r == p)).unwrap_or(self.sel.min(self.row.len().saturating_sub(1)));
     }
@@ -945,6 +944,10 @@ impl App {
                 self.toast_game(&format!("{} stopped unexpectedly", e.name),
                     &format!("KytyPS5 exited with code {code}. See Options → View emulator log."), 2, &e.game_id);
                 audio::play(Sound::Error);
+            } else if e.played < 5.0 && !e.stopped {
+                // Exited cleanly but almost at once: most likely it couldn't start.
+                self.toast_game(&format!("{} closed right after starting", e.name),
+                    "KytyPS5 may not support it yet. See Options → View emulator log.", 2, &e.game_id);
             } else {
                 self.toast_game(&e.name, &format!("Played for {played}"), 1, &e.game_id);
             }
@@ -1172,7 +1175,7 @@ impl App {
             if self.zone == Z_ROW && self.sel == idx as usize {
                 self.activate_row();
             } else {
-                self.set_focus(Z_ROW, 0);
+                self.set_focus(self.home_zone(), 0);
                 self.select_tile(idx as i64);
             }
             return;
@@ -1214,6 +1217,11 @@ impl App {
     }
 
     // ------------------------------------------------------------------ navigation
+
+    /// Where selection rests on the Home screen: the tile row, or its buttons when there are no tiles.
+    pub fn home_zone(&self) -> i32 {
+        if self.row.is_empty() { Z_ACTIONS } else { Z_ROW }
+    }
 
     pub fn set_focus(&mut self, zone: i32, idx: i32) {
         self.zone = zone;
@@ -1280,7 +1288,7 @@ impl App {
                 Act::Right if self.idx < 1 => self.move_focus(Z_TABS, self.idx + 1),
                 Act::Right => self.move_focus(Z_TOP, self.top_items()[0]),
                 Act::Down => {
-                    if self.view == 0 { self.move_focus(Z_ROW, 0) } else { self.move_focus(Z_SEARCH, 0) }
+                    if self.view == 0 { self.move_focus(self.home_zone(), 0) } else { self.move_focus(Z_SEARCH, 0) }
                 }
                 Act::Confirm => self.switch_view(self.idx, true),
                 _ => {}
@@ -1293,7 +1301,7 @@ impl App {
                     Act::Left => self.move_focus(Z_TABS, 1),
                     Act::Right if pos + 1 < items.len() => self.move_focus(Z_TOP, items[pos + 1]),
                     Act::Down => {
-                        if self.view == 0 { self.move_focus(Z_ROW, 0) } else { self.move_focus(Z_SEARCH, 0) }
+                        if self.view == 0 { self.move_focus(self.home_zone(), 0) } else { self.move_focus(Z_SEARCH, 0) }
                     }
                     Act::Confirm => match self.idx {
                         0 => self.resume_game(),
@@ -1317,7 +1325,8 @@ impl App {
             Z_ACTIONS => match a {
                 Act::Left if self.idx > 0 => self.move_focus(Z_ACTIONS, self.idx - 1),
                 Act::Right if (self.idx as usize) + 1 < self.hero_actions.len() => self.move_focus(Z_ACTIONS, self.idx + 1),
-                Act::Up => self.move_focus(Z_ROW, 0),
+                Act::Up if self.row.is_empty() => self.move_focus(Z_TABS, 0),
+                Act::Up => self.move_focus(self.home_zone(), 0),
                 Act::Confirm => {
                     if let Some(act) = self.hero_actions.get(self.idx as usize).map(|a| a.id) {
                         let t = self.row_target(self.sel);
@@ -1558,7 +1567,7 @@ impl App {
             return;
         }
         if self.zone != Z_ROW {
-            self.move_focus(Z_ROW, 0);
+            self.move_focus(self.home_zone(), 0);
         } else if self.sel != 0 {
             self.select_tile(0);
         }
@@ -1595,7 +1604,7 @@ impl App {
         } else {
             self.show_row_background(self.sel, true);
             if focus {
-                self.set_focus(Z_ROW, 0);
+                self.set_focus(self.home_zone(), 0);
             }
         }
     }
