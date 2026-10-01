@@ -5,6 +5,7 @@ mod audio;
 mod boot;
 mod catalog;
 mod compat;
+mod exfat;
 mod results;
 mod config;
 mod display;

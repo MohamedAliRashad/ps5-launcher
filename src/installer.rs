@@ -661,6 +661,50 @@ fn extract(api: &Api, source: &Source, paths: &[String], plan: &Plan, output: &D
     Ok(())
 }
 
+/// A release shipped as a single exFAT disk image (`.exfat`), which libarchive can't read.
+fn exfat_image(source: &Source) -> Result<Option<String>> {
+    let images: Vec<&Entry> = source.plan.entries.iter()
+        .filter(|e| !e.directory && e.path.to_ascii_lowercase().ends_with(".exfat")).collect();
+    ensure!(images.len() <= 1, "This download has {} disk images; install supports one game image at a time", images.len());
+    let Some(image) = images.first() else { return Ok(None) };
+    ensure!(crate::exfat::is_image(&source.file(&image.path)?), "{} is not an exFAT disk image", image.path);
+    Ok(Some(image.path.clone()))
+}
+
+fn inspect_image(volume: &crate::exfat::Volume, cancel: &AtomicBool) -> Result<(Vec<crate::exfat::Node>, Plan)> {
+    let nodes = volume.list(&|| check_cancel(cancel))?;
+    let mut plan = Plan::default();
+    for node in &nodes {
+        ensure!(normal_path(&node.path)? == node.path, "Unsafe path in disk image: {}", node.path);
+        plan.add(Entry { path: node.path.clone(), directory: node.directory, size: node.size })?;
+    }
+    ensure!(!plan.entries.is_empty(), "Disk image is empty");
+    Ok((nodes, plan))
+}
+
+fn extract_image(volume: &crate::exfat::Volume, nodes: &[crate::exfat::Node], plan: &Plan, output: &Dir, cancel: &AtomicBool, progress: Progress<'_>) -> Result<()> {
+    let mut done = 0u64;
+    for node in nodes {
+        check_cancel(cancel)?;
+        if node.directory { output.parent(&format!("{}/_", node.path), true)?; continue; }
+        let mut target = output.new_file(&node.path)?;
+        let mut count = 0u64;
+        volume.copy(node, &mut |chunk| {
+            check_cancel(cancel)?;
+            count += chunk.len() as u64;
+            done += chunk.len() as u64;
+            ensure!(count <= node.size && done <= plan.total, "Disk image output exceeds inspected size");
+            target.write_all(chunk)?;
+            progress(State::Extracting, done, plan.total);
+            Ok(())
+        })?;
+        ensure!(count == node.size, "Disk image file truncated: {}", node.path);
+        target.sync_all()?;
+    }
+    ensure!(done == plan.total, "Disk image total differs from inspected size");
+    Ok(())
+}
+
 fn game_root(output: &Dir, plan: &Plan, expected_ids: &[String], cancel: &AtomicBool) -> Result<(String, String)> {
     let mut games = Vec::new();
     let mut failures = Vec::new();
@@ -704,8 +748,12 @@ fn install(req: &Request, cancel: &AtomicBool, progress: Progress<'_>, commit: &
     let paths = volumes(&source.plan)?;
     let api = if paths.is_some() { Some(Api::load()?) } else { None };
     let archive_plan = if let Some(paths) = &paths { Some(inspect_archive(api.as_ref().unwrap(), &source, paths, cancel)?) } else { None };
-    let plan = archive_plan.as_ref().unwrap_or(&source.plan);
-    if paths.is_none() && plan.entries.iter().any(|e| e.path.to_ascii_lowercase().ends_with(".pkg")) {
+    let image = exfat_image(&source)?;
+    ensure!(image.is_none() || paths.is_none(), "This download has both an archive and a disk image; choose a single release folder");
+    let volume = match &image { Some(path) => Some(crate::exfat::Volume::open(source.file(path)?).context("Open exFAT disk image")?), None => None };
+    let image_plan = match &volume { Some(v) => Some(inspect_image(v, cancel)?), None => None };
+    let plan = archive_plan.as_ref().or(image_plan.as_ref().map(|(_, plan)| plan)).unwrap_or(&source.plan);
+    if paths.is_none() && image.is_none() && plan.entries.iter().any(|e| e.path.to_ascii_lowercase().ends_with(".pkg")) {
         bail!("Unsupported PKG package; provide an already extracted game");
     }
     check_cancel(cancel)?;
@@ -719,6 +767,10 @@ fn install(req: &Request, cancel: &AtomicBool, progress: Progress<'_>, commit: &
     let output = stage.payload()?;
     progress(State::Extracting, 0, plan.total);
     if let Some(paths) = &paths { extract(api.as_ref().unwrap(), &source, paths, plan, &output, cancel, progress)?; }
+    else if let (Some(v), Some((nodes, _)), Some(path)) = (&volume, &image_plan, &image) {
+        extract_image(v, nodes, plan, &output, cancel, progress)?;
+        let _ = source.file(path).context("Disk image changed while installing")?;
+    }
     else { copy_folder(&source, &output, cancel, progress)?; }
     check_cancel(cancel)?;
     progress(State::Validating, plan.total, plan.total);
@@ -1022,6 +1074,30 @@ mod tests {
         assert_eq!(fs::read(p.join("eboot.bin")).unwrap(), b"fixture binary bytes");
         assert_eq!(Sha256::digest(fs::read(&archive).unwrap()), digest);
         assert_eq!(crate::library::scan(&[req.destination.clone()]).len(), 1); clean(&req);
+    }
+
+    #[test]
+    fn exfat_image_release_installs_game_and_keeps_image() {
+        for scatter in [false, true] {
+            let (_t, req) = fixture();
+            let image = crate::exfat::build::image(&[("PPSA12345-app0/sce_sys/param.json", PARAM), ("PPSA12345-app0/eboot.bin", b"fixture binary bytes"), ("PPSA12345-app0/data", b"data")], scatter);
+            let path = req.source.join("PPSA12345.exfat");
+            fs::write(&path, &image).unwrap();
+            let p = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap();
+            assert_eq!(fs::read(p.join("sce_sys/param.json")).unwrap(), PARAM);
+            assert_eq!(fs::read(p.join("eboot.bin")).unwrap(), b"fixture binary bytes");
+            assert_eq!(fs::read(&path).unwrap(), image, "the downloaded image is kept unchanged");
+            assert_eq!(crate::library::scan(&[req.destination.clone()]).len(), 1); clean(&req);
+        }
+        // A .exfat file that isn't an image, and two images, are refused before anything is written.
+        let (_t, req) = fixture();
+        fs::write(req.source.join("game.exfat"), b"not a disk image").unwrap();
+        assert!(run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap_err().to_string().contains("not an exFAT"));
+        let image = crate::exfat::build::image(&[("eboot.bin", b"x")], false);
+        fs::write(req.source.join("game.exfat"), &image).unwrap();
+        fs::write(req.source.join("update.exfat"), &image).unwrap();
+        assert!(run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap_err().to_string().contains("2 disk images"));
+        unpublished(&req);
     }
 
     #[test]
