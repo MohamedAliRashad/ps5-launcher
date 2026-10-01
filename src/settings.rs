@@ -18,6 +18,7 @@ pub enum SId {
     InstallDir,
     SeedCompleted,
     Downloads,
+    Share,
     Resolution,
     Present,
     Fullscreen,
@@ -135,6 +136,15 @@ impl App {
         let mut r = row(4, "Manage downloads");
         r.hint = "Background while the launcher is open · paused on exit · Ctrl+D".into();
         rows.push((SId::Downloads, r));
+        let unshared = self.my_results.unshared().len();
+        let mut r = row(4, "Share your results with KytyPS5");
+        r.value = if unshared > 0 { format!("{unshared} to share") } else { "Nothing new".to_string() }.into();
+        r.hint = if self.my_results.games.is_empty() {
+            "Rate a game from its Options menu after playing it. Your results help everyone see what runs on Linux.".into()
+        } else {
+            format!("Opens a pre-filled report for each new result (up to {}) · needs a free GitHub account", crate::results::BATCH).into()
+        };
+        rows.push((SId::Share, r));
 
         // PS5 Launcher updates
         let cur = crate::update::current_version();
@@ -248,7 +258,7 @@ impl App {
         c.save();
     }
 
-    fn refresh_settings(&mut self) {
+    pub fn refresh_settings(&mut self) {
         self.build_settings();
         self.push_settings();
     }
@@ -397,6 +407,7 @@ impl App {
                 let _ = slint::quit_event_loop();
             }
             SId::Downloads => self.open_downloads(None),
+            SId::Share => self.share_results(),
             SId::Header => {}
         }
     }

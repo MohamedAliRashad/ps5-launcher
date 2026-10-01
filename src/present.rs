@@ -583,11 +583,12 @@ impl App {
 
     pub fn push_genres(&mut self) {
         let words: Vec<_> = util::norm(&self.query).split_whitespace().map(String::from).collect();
-        let mut status_counts = [0usize; 3];
+        const N: usize = crate::app::STATUS_FILTERS;
+        let mut status_counts = [0usize; N];
         let mut genre_counts = std::collections::HashMap::<&str, usize>::new();
         let mut genre_total = 0;
         for members in &self.groups.members {
-            let mut status = [false; 3];
+            let mut status = [false; N];
             let mut buckets = HashSet::new();
             let mut any = false;
             for &index in members {
@@ -596,7 +597,9 @@ impl App {
                 if self.genre == "All" || game.buckets.contains(&self.genre.as_str()) {
                     status[0] = true;
                     status[1] |= game.local.is_some();
-                    status[2] |= self.game_compat(game).is_some_and(|entry| entry.on_linux && entry.status == crate::compat::Status::InGame);
+                    let compat = self.game_compat(game);
+                    status[2] |= compat.is_some_and(|entry| entry.in_game_anywhere());
+                    status[3] |= compat.is_some_and(|entry| entry.on_linux && entry.status == crate::compat::Status::InGame);
                 }
                 if self.matches_status(index) { any = true; buckets.extend(game.buckets.iter().copied()); }
             }
@@ -610,16 +613,16 @@ impl App {
         let mut focus_x = 0.0;
         let typography = self.scale.max(0.75);
         for (i, (label, _)) in self.genre_list.iter().enumerate() {
-            if i == 3 { x = 0.0; }
-            let count = if i < 3 { status_counts[i] } else if i == 3 { genre_total } else { *genre_counts.get(label.as_str()).unwrap_or(&0) };
+            if i == N { x = 0.0; }
+            let count = if i < N { status_counts[i] } else if i == N { genre_total } else { *genre_counts.get(label.as_str()).unwrap_or(&0) };
             let c = count.to_string();
             let w = 32.0 * self.scale + (label.chars().count() as f32 * 9.5 + 6.0 + c.len() as f32 * 8.0) * typography;
-            if i >= 3 && ((self.zone == Z_CHIPS && i as i32 == self.idx) || ((self.zone != Z_CHIPS || self.idx < 3) && *label == self.genre)) {
+            if i >= N && ((self.zone == Z_CHIPS && i as i32 == self.idx) || ((self.zone != Z_CHIPS || self.idx < N as i32) && *label == self.genre)) {
                 focus_x = x;
             }
-            let on = if i < 3 { *label == self.status_filter } else { *label == self.genre || (i == 3 && self.genre == "All") };
+            let on = if i < N { *label == self.status_filter } else { *label == self.genre || (i == N && self.genre == "All") };
             let chip = GenreChip { index: i as i32, label: label.clone().into(), count: c.into(), on, x, w };
-            if i < 3 { statuses.push(chip); } else { chips.push(chip); }
+            if i < N { statuses.push(chip); } else { chips.push(chip); }
             x += w + 10.0 * self.scale;
         }
         let (win_w, _) = self.logical_size();
@@ -924,15 +927,13 @@ impl App {
         let region = g.map(|g| g.region.clone()).unwrap_or_default();
         let ce = self.target_compat(t).cloned();
         let mut facts: Vec<(&str, String)> = vec![
-            ("ON LINUX", match &ce {
-                Some(e) if e.on_linux => e.status.meaning().to_string(),
-                _ => "Not tested yet".into(),
-            }),
+            ("YOUR RESULT", ce.as_ref().filter(|e| e.mine).map(|e| e.status.meaning().to_string()).unwrap_or_default()),
+            ("ON LINUX", ce.as_ref().and_then(|e| e.linux).map(|l| l.meaning().to_string()).unwrap_or_else(|| "Not tested yet".into())),
             ("ON WINDOWS", ce.as_ref().and_then(|e| e.windows).map(|w| w.meaning().to_string()).unwrap_or_default()),
             // Short values only: a fact box fits ~28 characters.
             ("LAST TESTED", ce.as_ref().map(|e| {
                 let d = util::fmt_date(util::parse_iso_date(&e.tested_date()));
-                let r = if e.reports == 1 { "1 report".to_string() } else { format!("{} reports", e.reports) };
+                let r = match e.reports { 0 => String::new(), 1 => "1 report".to_string(), n => format!("{n} reports") };
                 [if d.is_empty() { e.tested_date() } else { d }, r].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ")
             }).unwrap_or_default()),
             ("TESTED ON", ce.as_ref().map(|e| e.platforms.join(", ")).unwrap_or_default()),
@@ -994,6 +995,7 @@ impl App {
         }
         let summary: Vec<Fact> = [
             match &ce {
+                Some(e) if e.mine => ("YOUR RESULT", e.status.meaning().to_string()),
                 Some(e) if e.on_linux => ("ON LINUX", e.status.meaning().to_string()),
                 Some(e) if e.windows.is_some() => ("ON WINDOWS · LINUX UNTESTED", e.status.meaning().to_string()),
                 Some(e) => ("ON KYTYPS5 · LINUX UNTESTED", e.status.meaning().to_string()),

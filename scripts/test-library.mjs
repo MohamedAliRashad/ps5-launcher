@@ -469,8 +469,8 @@ async function test() {
     assert.equal(JSON.parse(await readFile(configPath)).library_compact, false);
     pass('compact survives restart; density preserves a nonzero scroll anchor; original comfortable setting restored');
 
-    await key('Down', 'Down', 'Down', 'Home', 'Up'); // Density -> Grid -> All genres idx3.
-    await key('Right', 'Return'); // Action idx4 (four equal genre counts, alphabetical order).
+    await key('Down', 'Down', 'Down', 'Home', 'Up'); // Density -> Grid -> All genres idx4.
+    await key('Right', 'Return'); // Action idx5 (four equal genre counts, alphabetical order).
     counts(await shot('filter-action'), 6);
     await key('Up', 'Right', 'Return'); // Status All -> Installed; Action remains selected.
     counts(await shot('filter-installed-action'), 1);
@@ -478,7 +478,7 @@ async function test() {
     const empty = await shot('filter-installed-adventure-empty');
     counts(empty, 0);
     assert.match(empty.text, /No games match your search/i);
-    await key('Left', 'Return', 'Up', 'Right', 'Return'); // Action + In-game status.
+    await key('Left', 'Return', 'Up', 'Right', 'Return'); // Action + In-game (any OS) status.
     counts(await shot('filter-ingame-action'), 2);
     await key('Down', 'Left', 'Return'); // All genres; In-game still active.
     counts(await shot('filter-ingame-all-genres'), 3);

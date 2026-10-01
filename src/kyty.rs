@@ -108,6 +108,16 @@ pub fn latest_release() -> Result<Release, String> {
     })
 }
 
+/// The KytyPS5 build a game runs on: the managed build's tag, or a custom build's
+/// "2026-09-30 (b7a1fac)". Can take up to 3 s for a custom build: call it off the UI thread.
+pub fn version_for(emulator: &Path) -> String {
+    let installed = load_state().installed;
+    if is_managed(emulator) && !installed.is_empty() {
+        return installed;
+    }
+    binary_version(emulator).map(|(git, date)| format!("{date} ({git})").trim().to_string()).unwrap_or_default()
+}
+
 /// Version info of any emulator binary, from its `--help` banner ("git = 6799ecb, date = 2026.09.29").
 pub fn binary_version(emulator: &Path) -> Option<(String, String)> {
     // Never hang on an odd binary: give it 3 s to print its banner.

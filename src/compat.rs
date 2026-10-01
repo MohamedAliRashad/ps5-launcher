@@ -20,7 +20,7 @@ pub enum Status {
 }
 
 impl Status {
-    fn parse(s: &str) -> Option<Status> {
+    pub fn parse(s: &str) -> Option<Status> {
         Some(match s {
             "InGame" => Status::InGame,
             "MainMenu" => Status::MainMenu,
@@ -28,6 +28,26 @@ impl Status {
             "DoesntBoot" => Status::DoesntBoot,
             _ => return None,
         })
+    }
+
+    /// The community list's spelling, also used in results.json.
+    pub fn key(self) -> &'static str {
+        match self {
+            Status::InGame => "InGame",
+            Status::MainMenu => "MainMenu",
+            Status::Logo => "Logo",
+            Status::DoesntBoot => "DoesntBoot",
+        }
+    }
+
+    /// The option text in KytyPS5's report form.
+    fn form_label(self) -> &'static str {
+        match self {
+            Status::InGame => "In game",
+            Status::MainMenu => "Main menu",
+            Status::Logo => "Logo",
+            Status::DoesntBoot => "Doesn't boot",
+        }
     }
 
     /// Short label for badges and chips.
@@ -68,6 +88,10 @@ pub struct Entry {
     /// would let a Windows "In-game" hide a Linux "Doesn't boot".
     pub status: Status,
     pub on_linux: bool,
+    /// `status` is your own result from this PC (results.json), not the community's.
+    pub mine: bool,
+    /// The community's Linux result, when someone tested there.
+    pub linux: Option<Status>,
     /// Status on Windows, when someone tested there.
     pub windows: Option<Status>,
     pub reports: u64,
@@ -91,6 +115,11 @@ impl Entry {
         }
     }
 
+    /// Reaches gameplay in any report: Linux, Windows, another OS or your own.
+    pub fn in_game_anywhere(&self) -> bool {
+        [Some(self.status), self.linux, self.windows].contains(&Some(Status::InGame))
+    }
+
     /// Short tag for Library covers: "In-game", or "Win · In-game" for a result from elsewhere.
     pub fn tag(&self) -> String {
         match self.source() {
@@ -103,7 +132,9 @@ impl Entry {
 
     /// Chip text: "In-game on Linux", or "In-game on Windows · untested on Linux".
     pub fn chip_text(&self) -> String {
-        if self.on_linux {
+        if self.mine {
+            format!("{} on Linux · your result", self.status.label())
+        } else if self.on_linux {
             format!("{} on Linux", self.status.label())
         } else {
             format!("{} on {} · untested on Linux", self.status.label(), self.source())
@@ -155,6 +186,8 @@ fn parse(bytes: &[u8]) -> Option<Db> {
             Entry {
                 status: linux.unwrap_or(best),
                 on_linux: linux.is_some(),
+                mine: false,
+                linux,
                 windows: on("windows"),
                 reports: e["reports"].as_u64().unwrap_or(1),
                 version: plat
@@ -165,6 +198,27 @@ fn parse(bytes: &[u8]) -> Option<Db> {
         );
     }
     Some(db)
+}
+
+/// The community list with your own results on top: on this PC, what you saw wins.
+pub fn with_mine(mut db: Db, mine: &crate::results::Results) -> Db {
+    for (tid, r) in &mine.games {
+        let Some(status) = r.status() else { continue };
+        let e = db.entry(tid.clone()).or_insert_with(|| Entry {
+            status,
+            on_linux: true,
+            mine: true,
+            linux: None,
+            windows: None,
+            reports: 0,
+            version: String::new(),
+            platforms: Vec::new(),
+        });
+        e.status = status;
+        e.on_linux = true;
+        e.mine = true;
+    }
+    db
 }
 
 /// Cached copy (instant) and its age in seconds.
@@ -186,17 +240,22 @@ pub fn fetch() -> Result<Db, String> {
     Ok(db)
 }
 
-/// The report form, pre-filled with the game, this PC and the end of the emulator log. The
-/// player still picks the result and attaches the full log; nothing is sent until they submit.
-pub fn report_url(name: &str, title_id: &str, kyty_version: &str, log: &str) -> String {
+/// The report form, pre-filled with the game, your result, this PC and the end of the emulator
+/// log. Nothing is sent until the player reviews it and submits it on GitHub.
+pub fn report_url(name: &str, title_id: &str, kyty_version: &str, status: Status, log: &str) -> String {
     let q = crate::util::query_escape;
     let mut url = format!("{REPORT_FORM}&title={}", q(&format!("[GAME STATUS]: {name} (linux)")));
     let sys = system_info();
     let log = log_excerpt(log);
+    let details = format!("{} on Linux.", status.meaning());
     for (field, value) in [
         ("game-title", name),
         ("game-id", title_id),
         ("kyty-version", kyty_version),
+        ("compatibility-status", status.form_label()),
+        ("what-happened", &details),
+        ("steps-to-reproduce", "Start the game with KytyPS5."),
+        ("expected-behavior", "The game plays normally."),
         ("os", &sys.os),
         ("cpu", &sys.cpu),
         ("gpu", &sys.gpu),
@@ -297,16 +356,41 @@ mod tests {
     }
 
     #[test]
+    fn your_result_wins_on_this_pc() {
+        let json = br#"{"PPSA1":{"status":"InGame","platforms":{"windows":{"status":"InGame"}}}}"#;
+        let mut mine = crate::results::Results::default();
+        mine.rate("PPSA1", "One", Status::Logo, "b", 1.0);
+        mine.rate("PPSA9", "Nine", Status::InGame, "b", 1.0);
+        let db = with_mine(parse(json).unwrap(), &mine);
+        let e = &db["PPSA1"];
+        assert!(e.mine && e.on_linux);
+        assert_eq!(e.status, Status::Logo);
+        assert_eq!(e.windows, Some(Status::InGame), "the community's results stay visible");
+        assert_eq!(e.chip_text(), "Boots on Linux · your result");
+        assert_eq!(db["PPSA9"].tag(), "In-game");
+        assert!(e.in_game_anywhere(), "Windows says in-game, even though your result is Boots");
+    }
+
+    #[test]
+    fn in_game_anywhere_checks_every_os() {
+        let json = br#"{"A":{"status":"InGame","platforms":{"windows":{"status":"InGame"},"linux":{"status":"Logo"}}},"B":{"status":"MainMenu","platforms":{"linux":{"status":"MainMenu"}}},"C":{"status":"InGame"}}"#;
+        let db = parse(json).unwrap();
+        assert!(db["A"].in_game_anywhere() && db["A"].status == Status::Logo);
+        assert!(!db["B"].in_game_anywhere());
+        assert!(db["C"].in_game_anywhere());
+    }
+
+    #[test]
     fn report_url_prefills_the_form() {
-        let url = report_url("Dreaming Sarah", "PPSA02929", "KytyPS5-2026-09-30-b7a1fac", "boot\n\nCould not find suitable device\n");
+        let url = report_url("Dreaming Sarah", "PPSA02929", "KytyPS5-2026-09-30-b7a1fac", Status::DoesntBoot, "boot\n\nCould not find suitable device\n");
         assert!(url.starts_with(REPORT_FORM));
         assert!(url.contains("&game-id=PPSA02929"));
         assert!(url.contains("&game-title=Dreaming%20Sarah"));
         assert!(url.contains("&kyty-version=KytyPS5%2D2026%2D09%2D30%2Db7a1fac"));
-        assert!(!url.contains("compatibility-status"));
+        assert!(url.contains("&compatibility-status=Doesn%27t%20boot"));
         assert!(url.contains("&log-file="));
         assert!(url.contains("Could%20not%20find%20suitable%20device"));
-        assert!(report_url("A", "B", "C", "").find("log-file").is_none());
+        assert!(report_url("A", "B", "C", Status::InGame, "").find("log-file").is_none());
         let long = "x".repeat(200) + "\n";
         assert!(log_excerpt(&long.repeat(100)).len() < 2600);
     }

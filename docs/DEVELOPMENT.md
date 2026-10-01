@@ -110,7 +110,7 @@ smaller windows reduce the column count and maintain readable caption text. Dens
 changes retain the current scroll position's game rather than jumping back to the start.
 Artwork caching, visible-row virtualization and look-ahead prefetching are unchanged.
 
-**All / Installed / In-game on Linux** filters are separate from the **GENRE** row,
+**All / Installed / In-game / In-game on Linux** filters are separate from the **GENRE** row,
 and can be combined with genres and search. Counts reflect those combinations without
 duplicating release variants. Genre-row arrows expose options beyond the viewport.
 Click the sort control or press Enter on it to open all seven sort choices; arrows select,
@@ -300,6 +300,7 @@ in `~/.local/share/ps5-launcher/kyty/`.
 |---|---|
 | `~/.config/ps5-launcher/config.json` | Settings |
 | `~/.config/ps5-launcher/playtime.json` | Playtime per game |
+| `~/.config/ps5-launcher/results.json` | Your own KytyPS5 results per game, and which were shared |
 | `~/.cache/ps5-launcher/` | Catalog, artwork, decoded thumbnails, emulator logs (safe to delete) |
 | `~/.cache/ps5-launcher/catalog-rutracker.json` | Imported RuTracker release metadata and snapshot peer counts |
 | `~/.local/share/ps5-launcher/kyty/` | Managed KytyPS5 builds and their shared saves and caches (`data/`) |

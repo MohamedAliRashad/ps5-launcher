@@ -91,6 +91,10 @@ pub const GENRES: [(&str, &str); 16] = [
     ("VR", r"(?i)\bvr\b|virtual reality"),
 ];
 
+/// The Library's status filters come first in `genre_list`: All, Installed, In-game,
+/// In-game on Linux. Genres follow.
+pub const STATUS_FILTERS: usize = 4;
+
 pub const SORTS: [&str; 7] = ["Newest topics", "Name (A–Z)", "Release date", "Top rated", "Size (largest)", "Size (smallest)", "KytyPS5 compatibility"];
 
 /// A catalog game plus derived data.
@@ -233,6 +237,8 @@ pub struct App {
     pub upd: crate::update::AppUpdate,
     pub compat: crate::compat::Db,
     pub compat_checked: f64,
+    /// Your own results from this PC, shared with KytyPS5 in batches.
+    pub my_results: crate::results::Results,
 }
 
 thread_local! {
@@ -369,7 +375,8 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, target_monitor: Option<Monitor
         kyty: Default::default(),
         warming: false,
         upd: Default::default(),
-        compat: crate::compat::load().0,
+        compat: crate::compat::with_mine(crate::compat::load().0, &crate::results::load()),
+        my_results: crate::results::load(),
         compat_checked: 0.0,
     };
     ui.set_grid_rows(ModelRc::from(app.grid_model.clone()));
@@ -653,8 +660,10 @@ impl App {
         let mut list: Vec<(String, usize)> = vec![("All".into(), self.groups.members.len())];
         let installed = self.groups.members.iter().filter(|members| members.iter().any(|i| self.games[*i].local.is_some())).count();
         list.push(("Installed".into(), installed));
-        let in_game = self.groups.members.iter().filter(|members| members.iter().any(|i| self.game_compat(&self.games[*i]).is_some_and(|e| e.on_linux && e.status == crate::compat::Status::InGame))).count();
-        list.push(("In-game on Linux".into(), in_game));
+        let count = |f: &dyn Fn(&crate::compat::Entry) -> bool| self.groups.members.iter()
+            .filter(|members| members.iter().any(|i| self.game_compat(&self.games[*i]).is_some_and(f))).count();
+        list.push(("In-game".into(), count(&|e| e.in_game_anywhere())));
+        list.push(("In-game on Linux".into(), count(&|e| e.on_linux && e.status == crate::compat::Status::InGame)));
         list.push(("All genres".into(), self.groups.members.len()));
         let mut rest: Vec<(&str, usize)> = counts.into_iter().collect();
         rest.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
@@ -898,6 +907,8 @@ impl App {
 
     /// Refresh the community list in the background (at start and every 6 hours).
     pub fn compat_start(&mut self) {
+        // Now and then, remind about results that haven't been shared yet.
+        slint::Timer::single_shot(Duration::from_secs(20), || with_app(|app| app.remind_to_share()));
         let (_, age) = crate::compat::load();
         if age > crate::compat::REFRESH || self.compat.is_empty() {
             self.compat_fetch();
@@ -913,12 +924,135 @@ impl App {
         std::mem::forget(t);
     }
 
+    fn remind_to_share(&mut self) {
+        // Only results from earlier days: don't nag about a game rated a minute ago.
+        let day_ago = util::now_secs() - 24.0 * 3600.0;
+        let n = self.my_results.unshared().iter().filter(|(_, r)| r.rated < day_ago).count();
+        if n == 0 || self.boot.active || util::now_secs() - self.my_results.reminded < crate::results::REMIND_EVERY {
+            return;
+        }
+        self.my_results.reminded = util::now_secs();
+        self.my_results.save();
+        self.toast(&format!("You've rated {n} game{} on KytyPS5", if n == 1 { "" } else { "s" }),
+            "Share your results with the community: Settings → Share your results.", 0);
+    }
+
+    /// "How far did it get?": saves your result on this PC. `after_play` adds "Not now".
+    pub fn open_rating(&mut self, l: usize, after_play: bool) {
+        if self.locals[l].l.title_id.is_empty() {
+            self.toast("Can't rate this game", "Its folder has no title ID.", 2);
+            return;
+        }
+        let mk = |id: &'static str, label: &str, icon: &'static str| ActionDef { id, label: label.into(), icon, primary: false, danger: false, round: false };
+        let mut items = vec![
+            mk("rate_ingame", "In game: reaches gameplay", "play"),
+            mk("rate_menu", "Main menu, but not gameplay", "grid"),
+            mk("rate_logo", "Intro logos, then stops", "film"),
+            mk("rate_noboot", "Doesn't start", "stop"),
+        ];
+        if after_play {
+            items.push(mk("rate_skip", "Not now", ""));
+        }
+        let name = self.locals[l].name.clone();
+        self.menu_target = Some(Target { game: self.locals[l].cat, local: Some(l) });
+        self.menu_actions = items;
+        audio::play(Sound::Select);
+        self.push_overlay(Overlay::Menu, Z_MENU, 0);
+        self.push_menu(&format!("How far did {name} get?"));
+    }
+
+    /// Save a rating (`None`: skipped) with the KytyPS5 build it was played on.
+    fn rate(&mut self, l: usize, status: Option<crate::compat::Status>) {
+        let (tid, name) = (self.locals[l].l.title_id.clone(), self.locals[l].name.clone());
+        let emulator = self.cfg.lock().unwrap().emulator_path();
+        std::thread::spawn(move || {
+            let kyty = crate::kyty::version_for(&emulator);
+            post(move |app| {
+                let Some(status) = status else {
+                    app.my_results.skip(&tid, &kyty);
+                    app.my_results.save();
+                    return;
+                };
+                app.my_results.rate(&tid, &name, status, &kyty, util::now_secs());
+                app.my_results.save();
+                app.compat = crate::compat::with_mine(std::mem::take(&mut app.compat), &app.my_results);
+                app.build_genres();
+                app.apply_filter();
+                app.push_all();
+                if app.overlay == Overlay::Hub {
+                    app.push_hub();
+                }
+                app.toast(&format!("Saved: {} on Linux", status.label()),
+                    "It's shared with KytyPS5 the next time you choose Settings → Share your results.", 1);
+            });
+        });
+    }
+
+    /// After a game closes, ask how far it got, unless it was rated or skipped on this build.
+    fn ask_rating(&mut self, game_id: &str) {
+        let Some(l) = self.locals.iter().position(|g| g.l.id == game_id) else { return };
+        let tid = self.locals[l].l.title_id.clone();
+        let emulator = self.cfg.lock().unwrap().emulator_path();
+        let id = game_id.to_string();
+        std::thread::spawn(move || {
+            let kyty = crate::kyty::version_for(&emulator);
+            post(move |app| {
+                let free = matches!(app.overlay, Overlay::None | Overlay::Hub) && app.live.is_empty() && !app.boot.active;
+                if free && app.my_results.should_ask(&tid, &kyty) {
+                    if let Some(l) = app.locals.iter().position(|g| g.l.id == id) {
+                        app.open_rating(l, true);
+                    }
+                }
+            });
+        });
+    }
+
+    /// Open the pre-filled KytyPS5 report for every result not shared yet (up to a batch).
+    pub fn share_results(&mut self) {
+        let batch: Vec<(String, crate::results::MyResult)> = self.my_results.unshared().into_iter()
+            .take(crate::results::BATCH).map(|(k, v)| (k.clone(), v.clone())).collect();
+        if batch.is_empty() {
+            self.toast("Nothing new to share", "Rate a game from its Options menu after playing it.", 0);
+            return;
+        }
+        let now = util::now_secs();
+        let logs = util::cache_dir().join("logs");
+        let mut reports = Vec::new();
+        for (tid, r) in &batch {
+            let log = std::fs::read(logs.join(format!("{tid}.log"))).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+            if let (Some(status), Some(saved)) = (r.status(), self.my_results.games.get_mut(tid)) {
+                saved.shared = now;
+                reports.push((r.name.clone(), tid.clone(), r.kyty.clone(), status, log));
+            }
+        }
+        self.my_results.save();
+        // Building the links reads system details: do it, and open the tabs, off the UI thread.
+        std::thread::spawn(move || {
+            for (i, (name, tid, kyty, status, log)) in reports.iter().enumerate() {
+                if i > 0 {
+                    std::thread::sleep(Duration::from_millis(800));
+                }
+                open_url(&crate::compat::report_url(name, tid, kyty, *status, log));
+            }
+        });
+        if logs.is_dir() {
+            open_url(&logs.to_string_lossy());
+        }
+        let n = batch.len();
+        let left = self.my_results.unshared().len();
+        let more = if left > 0 { format!(" {left} more next time.") } else { String::new() };
+        self.toast(&format!("Opened {n} report{} in your browser", if n == 1 { "" } else { "s" }),
+            &format!("Check each one, drag in its log from the folder that opened, and submit.{more}"), 1);
+        self.refresh_settings();
+    }
+
     fn compat_fetch(&mut self) {
         self.compat_checked = util::now_secs();
         std::thread::spawn(|| {
             let res = crate::compat::fetch();
             post(move |app| match res {
                 Ok(db) => {
+                    let db = crate::compat::with_mine(db, &app.my_results);
                     let changed = db.len() != app.compat.len()
                         || db.iter().any(|(k, v)| app.compat.get(k).map(|o| o.status != v.status).unwrap_or(true));
                     app.compat = db;
@@ -1030,6 +1164,7 @@ impl App {
             } else {
                 self.toast_game(&e.name, &format!("Played for {played}"), 1, &e.game_id);
             }
+            self.ask_rating(&e.game_id);
         }
         if before != after {
             // Play ⇄ Resume/Stop changes the buttons; keep focus on the first one.
@@ -1466,18 +1601,18 @@ impl App {
                 Act::Confirm => self.set_library_density(self.idx == 1),
                 _ => {}
             },
-            Z_CHIPS => match a {
-                Act::Left if self.idx > if self.idx < 3 { 0 } else { 3 } => {
+            Z_CHIPS => { const N: i32 = STATUS_FILTERS as i32; match a {
+                Act::Left if self.idx > if self.idx < N { 0 } else { N } => {
                     self.move_focus(Z_CHIPS, self.idx - 1);
                     self.push_genres();
                 }
-                Act::Right if (self.idx as usize) + 1 < if self.idx < 3 { 3 } else { self.genre_list.len() } => {
+                Act::Right if (self.idx as usize) + 1 < if self.idx < N { N as usize } else { self.genre_list.len() } => {
                     self.move_focus(Z_CHIPS, self.idx + 1);
                     self.push_genres();
                 }
-                Act::Up if self.idx >= 3 => self.focus_status(),
+                Act::Up if self.idx >= N => self.focus_status(),
                 Act::Up => self.move_focus(Z_SEARCH, 0),
-                Act::Down if self.idx < 3 => self.focus_chip(),
+                Act::Down if self.idx < N => self.focus_chip(),
                 Act::Down if !self.filtered.is_empty() => {
                     let first = self.first_visible_card();
                     self.move_focus(Z_GRID, first as i32);
@@ -1485,7 +1620,7 @@ impl App {
                 }
                 Act::Confirm => {
                     if let Some((g, _)) = self.genre_list.get(self.idx as usize).cloned() {
-                        if self.idx < 3 { self.status_filter = g; }
+                        if self.idx < N { self.status_filter = g; }
                         else { self.genre = if g == "All genres" { "All".into() } else { g }; }
                         self.apply_filter();
                         self.set_grid_scroll(0.0, 0);
@@ -1494,20 +1629,20 @@ impl App {
                     }
                 }
                 _ => {}
-            },
+            }},
             Z_GRID => self.act_grid(a),
             _ => {}
         }
     }
 
     fn focus_chip(&mut self) {
-        let i = self.genre_list.iter().enumerate().skip(3).find(|(_, (g, _))| *g == self.genre).map(|(i, _)| i).unwrap_or(3);
+        let i = self.genre_list.iter().enumerate().skip(STATUS_FILTERS).find(|(_, (g, _))| *g == self.genre).map(|(i, _)| i).unwrap_or(STATUS_FILTERS);
         self.move_focus(Z_CHIPS, i as i32);
         self.push_genres();
     }
 
     fn focus_status(&mut self) {
-        let i = self.genre_list.iter().take(3).position(|(g, _)| *g == self.status_filter).unwrap_or(0);
+        let i = self.genre_list.iter().take(STATUS_FILTERS).position(|(g, _)| *g == self.status_filter).unwrap_or(0);
         self.move_focus(Z_CHIPS, i as i32);
         self.push_genres();
     }
@@ -1515,6 +1650,7 @@ impl App {
     pub fn matches_status(&self, index: usize) -> bool {
         let game = &self.games[index];
         self.status_filter == "All" || (self.status_filter == "Installed" && game.local.is_some())
+            || (self.status_filter == "In-game" && self.game_compat(game).is_some_and(|entry| entry.in_game_anywhere()))
             || (self.status_filter == "In-game on Linux" && self.game_compat(game).is_some_and(|entry| entry.on_linux && entry.status == crate::compat::Status::InGame))
     }
 
@@ -1553,8 +1689,8 @@ impl App {
 
     pub fn scroll_genres(&mut self, delta: i32) {
         if self.overlay != Overlay::None || self.view != 1 { return; }
-        let i = if self.zone == Z_CHIPS && self.idx >= 3 { self.idx } else {
-            self.genre_list.iter().enumerate().skip(3).find(|(_, (g, _))| *g == self.genre).map(|(i, _)| i).unwrap_or(3) as i32
+        let i = if self.zone == Z_CHIPS && self.idx >= STATUS_FILTERS as i32 { self.idx } else {
+            self.genre_list.iter().enumerate().skip(STATUS_FILTERS).find(|(_, (g, _))| *g == self.genre).map(|(i, _)| i).unwrap_or(STATUS_FILTERS) as i32
         };
         let last = self.genre_list.len().saturating_sub(1).max(3) as i32;
         self.set_focus(Z_CHIPS, (i + delta).clamp(3, last));
@@ -1985,30 +2121,22 @@ impl App {
                     self.toggle_rawg_art(g);
                 }
             }
-            "report" => {
+            "rate" => {
                 if let Some(l) = t.local {
-                    let lg = &self.locals[l].l;
-                    let (name, tid) = (self.locals[l].name.clone(), lg.title_id.clone());
-                    let emulator = self.cfg.lock().unwrap().emulator_path();
-                    let log_path = util::cache_dir().join("logs").join(format!("{}.log", if tid.is_empty() { &lg.id } else { &tid }));
-                    let log = std::fs::read(&log_path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
-                    // Reading the emulator's version can take a moment: build the link off the UI thread.
-                    std::thread::spawn(move || {
-                        let installed = crate::kyty::load_state().installed;
-                        let version = if crate::kyty::is_managed(&emulator) && !installed.is_empty() {
-                            installed
-                        } else {
-                            crate::kyty::binary_version(&emulator).map(|(git, date)| format!("{date} ({git})").trim().to_string()).unwrap_or_default()
-                        };
-                        open_url(&crate::compat::report_url(&name, &tid, &version, &log));
-                    });
-                    if log_path.is_file() {
-                        // Show the full log in the file manager, ready to drag into the form.
-                        open_url(&log_path.parent().unwrap_or(&log_path).to_string_lossy());
-                        self.toast("Opened in your browser", &format!("Choose how far the game got, drag {} into the log box, then submit.", log_path.file_name().unwrap_or_default().to_string_lossy()), 1);
-                    } else {
-                        self.toast("Opened in your browser", "Play the game once first, so there's a log to attach. Then choose how far it got and submit.", 0);
-                    }
+                    self.open_rating(l, false);
+                }
+            }
+            "rate_ingame" | "rate_menu" | "rate_logo" | "rate_noboot" | "rate_skip" => {
+                if let Some(l) = t.local {
+                    use crate::compat::Status;
+                    let status = match id {
+                        "rate_ingame" => Some(Status::InGame),
+                        "rate_menu" => Some(Status::MainMenu),
+                        "rate_logo" => Some(Status::Logo),
+                        "rate_noboot" => Some(Status::DoesntBoot),
+                        _ => None,
+                    };
+                    self.rate(l, status);
                 }
             }
             "compat" => {
@@ -2160,7 +2288,7 @@ impl App {
         if t.local.is_some() {
             items.push(mk("folder", "Open game folder", "folder"));
             items.push(mk("log", "View emulator log", "log"));
-            items.push(mk("report", "Report how it runs", "web"));
+            items.push(mk("rate", "Rate how it runs", "star"));
         }
         if let Some(g) = t.game {
             let on = self.cfg.lock().unwrap().rawg_art.contains(&self.games[g].g.id);
