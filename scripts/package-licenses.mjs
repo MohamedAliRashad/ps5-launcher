@@ -16,6 +16,9 @@ const FALLBACK_REPOS = new Set([
   'boinkor-net/governor', 'ikatson/rqbit', 'nical/lyon',
   'mondeja/rspolib', 'DioxusLabs/taffy',
 ]);
+// Reviewed repositories that moved since their crates were published. GitHub redirects the
+// old name, but requests never follow redirects, so ask the new location directly.
+const MOVED_REPOS = new Map([['brendanzab/gl-rs', 'rust-windowing/gl-rs']]);
 const DOCUMENT = /^(?:licen[cs]es?|notices?|copying|copyright|authors|ofl)(?:[._-]|$)/i;
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const key = p => `${p.name}@${p.version}`;
@@ -118,17 +121,20 @@ async function upstreamDocuments(pkg, allowUpstream, cache) {
   }
   const packagePath = vcs.path_in_vcs ?? '';
   if (packagePath) safeRelative(packagePath);
-  const base = `${repo}/${commit}`;
+  const location = MOVED_REPOS.get(repo) ?? repo;
+  const base = `${location}/${commit}`;
   async function request(url, json = false) {
     if (!cache.has(url)) cache.set(url, (async () => {
-      const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(30000),
-        headers: { Accept: json ? 'application/vnd.github+json' : 'text/plain' } });
+      const headers = { Accept: json ? 'application/vnd.github+json' : 'text/plain' };
+      // In CI, the workflow token avoids the shared anonymous API rate limit. Never logged.
+      if (json && process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+      const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(30000), headers });
       if (!response.ok) throw new Error(`Official dependency source returned HTTP ${response.status}`);
       return json ? response.json() : Buffer.from(await response.arrayBuffer());
     })());
     return cache.get(url);
   }
-  const treeUrl = `https://api.github.com/repos/${repo}/git/trees/${commit}?recursive=1`;
+  const treeUrl = `https://api.github.com/repos/${location}/git/trees/${commit}?recursive=1`;
   const listing = await request(treeUrl, true);
   if (listing.truncated || !Array.isArray(listing.tree)) throw new Error('Incomplete upstream notice listing');
   const entries = applicableUpstreamFiles(listing.tree, packagePath, pkg.license, repo);
