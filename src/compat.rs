@@ -309,6 +309,7 @@ struct SystemInfo {
     ram: String,
 }
 
+#[cfg(target_os = "linux")]
 fn system_info() -> SystemInfo {
     let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
     let field = |text: &str, key: &str| {
@@ -338,9 +339,59 @@ fn system_info() -> SystemInfo {
     SystemInfo { os, cpu: field(&read("/proc/cpuinfo"), "model name"), gpu, ram }
 }
 
+/// GPU names from `system_profiler SPDisplaysDataType` ("Chipset Model: Apple M2 Pro").
+/// Plain text so it can be tested anywhere.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn parse_chipsets(text: &str) -> String {
+    text.lines()
+        .filter_map(|l| l.trim().strip_prefix("Chipset Model:"))
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+#[cfg(target_os = "macos")]
+fn system_info() -> SystemInfo {
+    let run = |cmd: &str, args: &[&str]| {
+        std::process::Command::new(cmd)
+            .args(args)
+            .stderr(std::process::Stdio::null())
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    };
+    let version = run("sw_vers", &["-productVersion"]);
+    let kernel = run("sysctl", &["-n", "kern.osrelease"]);
+    let mut os = format!("macOS {version}").trim().to_string();
+    if !kernel.is_empty() {
+        os = format!("{os} (kernel {kernel})");
+    }
+    let ram = run("sysctl", &["-n", "hw.memsize"])
+        .parse::<f64>()
+        .map(|bytes| format!("{:.0} GB RAM", bytes / 1024.0 / 1024.0 / 1024.0))
+        .unwrap_or_default();
+    SystemInfo {
+        os,
+        cpu: run("sysctl", &["-n", "machdep.cpu.brand_string"]),
+        gpu: parse_chipsets(&run("system_profiler", &["SPDisplaysDataType"])),
+        ram,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
     use super::*;
+
+    #[test]
+    fn chipsets_from_system_profiler() {
+        let text = "Graphics/Displays:\n\n    Apple M2 Pro:\n\n      Chipset Model: Apple M2 Pro\n      Type: GPU\n      Bus: Built-In\n";
+        assert_eq!(parse_chipsets(text), "Apple M2 Pro");
+        let two = "      Chipset Model: Intel UHD Graphics 630\n      Chipset Model: AMD Radeon Pro 5500M\n";
+        assert_eq!(parse_chipsets(two), "Intel UHD Graphics 630; AMD Radeon Pro 5500M");
+        assert_eq!(parse_chipsets(""), "");
+    }
     #[test]
     fn parses_feed() {
         let json = br#"{"PPSA02929":{"status":"InGame","reports":2,"platforms":{"windows":{"status":"InGame","version":"0.2.2 (KytyPS5-2026-08-18-6bf6929)"},"linux":{"status":"MainMenu","version":"v0.3.0"}}},"PPSA1":{"status":"Weird"}}"#;

@@ -4,10 +4,13 @@
 
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
+// Only the tests touch the filesystem through `fs::` now; the platform helpers do the rest.
+#[cfg(test)]
+use std::fs;
 use std::{
     collections::{BTreeMap, HashSet},
     ffi::{CStr, CString},
-    fs::{self, File, Metadata},
+    fs::{File, Metadata},
     io::{Read, Write},
     os::{fd::{AsRawFd, FromRawFd}, unix::{ffi::OsStrExt, fs::MetadataExt}},
     path::{Component, Path, PathBuf},
@@ -256,9 +259,9 @@ impl Dir {
     }
     fn names(&self) -> Result<Vec<String>> {
         let mut names = Vec::new();
-        for entry in fs::read_dir(format!("/proc/self/fd/{}", self.0.as_raw_fd()))? {
+        for entry in crate::platform::dir_names(self.0.as_raw_fd())? {
             ensure!(names.len() < MAX_ENTRIES, "Too many source entries");
-            let name = entry?.file_name().into_string().map_err(|_| anyhow::anyhow!("Non-UTF-8 filenames are unsupported"))?;
+            let name = entry.into_string().map_err(|_| anyhow::anyhow!("Non-UTF-8 filenames are unsupported"))?;
             component(name.as_bytes())?;
             names.push(name);
         }
@@ -366,13 +369,13 @@ impl Source {
             if kind == libc::S_IFDIR {
                 self.plan.add(Entry { path: path.clone(), directory: true, size: 0 })?;
                 let child = dir.child(name.as_bytes(), false)?;
-                ensure!(child.0.metadata()?.ino() == st.st_ino && child.0.metadata()?.dev() == st.st_dev, "Source directory changed during inspection");
+                ensure!(child.0.metadata()?.ino() == st.st_ino && child.0.metadata()?.dev() == st.st_dev as u64, "Source directory changed during inspection");
                 self.walk(&child, &path, cancel)?;
             } else {
                 ensure!(kind == libc::S_IFREG && st.st_nlink == 1, "Symlinks, hardlinks and special source entries are forbidden: {path}");
                 let file = dir.read(&name)?;
                 let meta = file.metadata()?;
-                ensure!(meta.ino() == st.st_ino && meta.dev() == st.st_dev, "Source changed during inspection");
+                ensure!(meta.ino() == st.st_ino && meta.dev() == st.st_dev as u64, "Source changed during inspection");
                 self.plan.add(Entry { path: path.clone(), directory: false, size: meta.len() })?;
                 self.stamps.insert(path, Stamp::of(&meta));
             }
@@ -436,9 +439,10 @@ struct Api {
 }
 impl Api {
     fn load() -> Result<Self> {
-        let lib = unsafe { libloading::Library::new("libarchive.so.13") }
-            .or_else(|_| unsafe { libloading::Library::new("libarchive.so") })
-            .context("System libarchive missing; install your distribution's libarchive runtime (libarchive13 on Debian/Ubuntu). No external extraction fallback is used")?;
+        let lib = crate::platform::libarchive_candidates()
+            .iter()
+            .find_map(|name| unsafe { libloading::Library::new(name) }.ok())
+            .with_context(|| format!("System libarchive missing; install libarchive ({}). No external extraction fallback is used", crate::platform::libarchive_install_hint()))?;
         // Each signature follows libarchive's public C API. Library stays alive
         // longer than every function pointer and archive handle using it.
         unsafe {
@@ -461,7 +465,7 @@ struct Archive<'a> { api: &'a Api, handle: Handle, files: Vec<File>, _names: Vec
 impl<'a> Archive<'a> {
     fn open(api: &'a Api, source: &Source, volumes: &[String]) -> Result<Self> {
         let files: Vec<File> = volumes.iter().map(|p| source.file(p)).collect::<Result<_>>()?;
-        let names: Vec<CString> = files.iter().map(|f| CString::new(format!("/proc/self/fd/{}", f.as_raw_fd())).unwrap()).collect();
+        let names: Vec<CString> = files.iter().map(|f| CString::new(crate::platform::fd_open_path(f.as_raw_fd())).unwrap()).collect();
         let mut pointers: Vec<_> = names.iter().map(|n| n.as_ptr()).collect();
         pointers.push(std::ptr::null());
         let handle = unsafe { (api.new)() };
@@ -547,8 +551,8 @@ impl Stage {
             (Dir(self.dir.0.try_clone()?), component(b"payload")?)
         } else { payload.parent(root, false)? };
         let leaf = component(leaf.as_bytes())?;
-        let r = unsafe { libc::renameat2(parent.0.as_raw_fd(), name.as_ptr(), self.destination.0.as_raw_fd(), leaf.as_ptr(), libc::RENAME_NOREPLACE) };
-        ensure!(r == 0, "Atomic publication refused (existing destination is never overwritten): {}", std::io::Error::last_os_error());
+        crate::platform::rename_noreplace(parent.0.as_raw_fd(), &name, self.destination.0.as_raw_fd(), &leaf)
+            .map_err(|e| anyhow::anyhow!("Atomic publication refused (existing destination is never overwritten): {e}"))?;
         // rename already committed; failure to sync must not mark it unpublished.
         let _ = self.destination.0.sync_all();
         Ok(())
@@ -560,7 +564,7 @@ impl Drop for Stage {
         let cleanup = || -> Result<()> {
             let st = self.destination.metadata(&self.name)?;
             let meta = self.dir.0.metadata()?;
-            ensure!(st.st_ino == meta.ino() && st.st_dev == meta.dev() && st.st_mode & libc::S_IFMT == libc::S_IFDIR, "Stage replaced; refusing cleanup");
+            ensure!(st.st_ino == meta.ino() && st.st_dev as u64 == meta.dev() && st.st_mode & libc::S_IFMT == libc::S_IFDIR, "Stage replaced; refusing cleanup");
             ensure!(bounded_read(self.dir.read(STAGE_MARKER)?, 512)? == self.token.as_bytes(), "Stage ownership mismatch");
             remove_contents(&self.dir, 0)?;
             let name = component(self.name.as_bytes())?;
@@ -759,8 +763,8 @@ fn install(req: &Request, cancel: &AtomicBool, progress: Progress<'_>, commit: &
     check_cancel(cancel)?;
     let destination = Dir::absolute(&req.destination, true).context("Open explicit installation destination")?;
     // Prevent installing into the torrent tree or a parent of it; preserve originals.
-    let actual_dest = fs::canonicalize(format!("/proc/self/fd/{}", destination.0.as_raw_fd()))?;
-    let actual_source = fs::canonicalize(format!("/proc/self/fd/{}", source.dir.0.as_raw_fd()))?;
+    let actual_dest = crate::platform::fd_real_path(destination.0.as_raw_fd())?;
+    let actual_source = crate::platform::fd_real_path(source.dir.0.as_raw_fd())?;
     ensure!(!actual_dest.starts_with(&actual_source) && !actual_source.starts_with(&actual_dest), "Source and destination trees must be separate");
     disk_check(&destination, plan)?;
     let stage = Stage::new(destination, &req.key)?;
@@ -822,7 +826,7 @@ mod tests {
     const PARAM: &[u8] = br#"{"titleId":"PPSA12345","localizedParameters":{"en-US":{"titleName":"Generated fixture"}}}"#;
 
     fn fixture() -> (tempfile::TempDir, Request) {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::platform::real_tempdir();
         let source = t.path().join("torrent");
         fs::create_dir(&source).unwrap();
         fs::write(source.join(OWNED), KEY).unwrap();
@@ -1076,6 +1080,14 @@ mod tests {
         assert_eq!(crate::library::scan(&[req.destination.clone()]).len(), 1); clean(&req);
     }
 
+    /// Whichever 7-Zip CLI is installed: `7zz` (Homebrew sevenzip), `7z` or `7za` (p7zip).
+    fn seven_zip() -> &'static str {
+        ["7zz", "7z", "7za"]
+            .into_iter()
+            .find(|bin| std::process::Command::new(bin).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok())
+            .expect("a 7-Zip CLI (7zz, 7z or 7za) is needed for the archive fixtures")
+    }
+
     #[test]
     fn exfat_image_release_installs_game_and_keeps_image() {
         for scatter in [false, true] {
@@ -1105,14 +1117,25 @@ mod tests {
         for format in ["zip", "7z", "split"] {
             let (t, req) = fixture(); let input = t.path().join("generated"); game(&input);
             let archive = req.source.join(if format == "zip" { "fixture.zip" } else { "fixture.7z" });
-            let mut command = std::process::Command::new("/usr/bin/7z");
+            let mut command = std::process::Command::new(seven_zip());
             command.current_dir(&input).args(["a", "-bd", "-y"]);
             command.arg(if format == "zip" { "-tzip" } else { "-t7z" });
             if format == "split" { command.arg("-v128b"); }
             let result = command.arg(&archive).args(["sce_sys", "eboot.bin", "data"]).output().unwrap();
             assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
             let before: Vec<_> = fs::read_dir(&req.source).unwrap().map(|e| { let p=e.unwrap().path(); let d=Sha256::digest(fs::read(&p).unwrap()); (p,d) }).collect();
-            let p = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap();
+            let p = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap_or_else(|e| {
+                // Say which fixture and which 7-Zip made it: archive tools differ between systems.
+                let mut files: Vec<_> = fs::read_dir(&req.source).unwrap().map(|e| {
+                    let p = e.unwrap().path();
+                    (p.file_name().unwrap().to_string_lossy().into_owned(), fs::metadata(&p).map(|m| m.len()).unwrap_or(0))
+                }).collect();
+                files.sort();
+                let banner = std::process::Command::new(seven_zip()).output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).lines().find(|l| l.contains("7-Zip") || l.contains("p7zip")).unwrap_or("").trim().to_string())
+                    .unwrap_or_default();
+                panic!("{format} fixture failed to install: {e:#}\n7-Zip: {banner}\nsource files: {files:?}");
+            });
             assert_eq!(fs::read(p.join("sce_sys/param.json")).unwrap(), PARAM);
             assert_eq!(fs::read(p.join("data")).unwrap(), b"fixture contents");
             for (p,d) in before { assert_eq!(Sha256::digest(fs::read(p).unwrap()), d); } clean(&req);

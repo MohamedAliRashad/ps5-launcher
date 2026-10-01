@@ -32,7 +32,8 @@ impl App {
                 .filter(|id| crate::psn::valid_title_id(id)).collect()
         }).unwrap_or_default();
         let request = installer::Request { key: key.clone(), topic: job.topic, name: job.name,
-            source: job.folder, destination: util::expand_home(&destination), expected_ids: ids };
+            source: crate::platform::resolve_existing(&job.folder),
+            destination: crate::platform::resolve_existing(&util::expand_home(&destination)), expected_ids: ids };
         match self.installer.start(request) {
             Ok(()) => {
                 self.install_states.insert(key.clone(), installer::State::Inspecting);
