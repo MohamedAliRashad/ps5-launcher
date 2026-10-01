@@ -34,9 +34,11 @@ jobs:
         run: cargo build --release --locked
       - name: Package
         run: |
+          node --test scripts/package-licenses.test.mjs
           mkdir -p "dist/$NAME/assets"
           cp target/release/ps5-launcher install.sh README.md "dist/$NAME/"
           cp assets/ps5-launcher.svg "dist/$NAME/assets/"
+          node scripts/package-licenses.mjs "dist/$NAME" --allow-upstream
           tar -C dist -czf "dist/$NAME.tar.gz" "$NAME"
           (cd dist && sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
           ls -la dist
