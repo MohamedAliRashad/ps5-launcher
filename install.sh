@@ -123,7 +123,7 @@ if [ "$AUTOSTART" = 1 ]; then
     ok "Autostart   starts when you log in"
 fi
 command -v update-desktop-database >/dev/null && update-desktop-database "$APPS_DIR" 2>/dev/null || true
-command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q "$DATA_DIR/icons/hicolor" 2>/dev/null || true
+command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -f -t "$DATA_DIR/icons/hicolor" 2>/dev/null || true
 
 echo
 bold "Optional helpers"

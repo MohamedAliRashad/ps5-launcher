@@ -287,6 +287,7 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, target_monitor: Option<Monitor
     let art = psn::Store::load();
     let sessions = Sessions::start(library.clone(), cfg.clone(), || post(|app| app.on_sessions()));
     std::thread::spawn(images::trim_thumbs);
+    std::thread::spawn(crate::update::refresh_menu_icon);
     let pool = images::Pool::new(4, 16, Arc::new(|key, buf| post(move |app| app.on_image(key, buf))));
 
     let genre_res = GENRES.iter().map(|(n, re)| (*n, regex::Regex::new(re).unwrap())).collect();

@@ -25,6 +25,32 @@ pub struct Release {
 }
 
 /// Version of the running binary. `PS5_LAUNCHER_PRETEND_VERSION` exists for testing updates.
+/// Put the current menu icon in place of an older one. Automatic updates replace only the
+/// binary, so without this an updated launcher keeps the icon of the version first installed.
+/// Only an icon that install.sh put in the user's data folder is touched.
+pub fn refresh_menu_icon() {
+    const ICON: &[u8] = include_bytes!("../assets/ps5-launcher.svg");
+    let data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| crate::util::expand_home("~/.local/share"));
+    let hicolor = data.join("icons").join("hicolor");
+    let path = hicolor.join("scalable").join("apps").join(format!("{}.svg", crate::util::APP_NAME));
+    match std::fs::read(&path) {
+        Ok(old) if old != ICON => {}
+        _ => return,
+    }
+    if let Err(e) = crate::util::atomic_write(&path, ICON) {
+        crate::log!("menu icon update failed: {e}");
+        return;
+    }
+    crate::log!("menu icon updated");
+    // Desktops read icons through GTK's cache for that folder; rebuild it so the new one shows.
+    let _ = Command::new("gtk-update-icon-cache")
+        .args(["-q", "-f", "-t"])
+        .arg(&hicolor)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
 pub fn current_version() -> String {
     std::env::var("PS5_LAUNCHER_PRETEND_VERSION").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
 }

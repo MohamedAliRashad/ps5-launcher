@@ -32,8 +32,13 @@ To uninstall: `./ps5-launcher-linux-x86_64/install.sh --uninstall`
 
 ## Getting started
 
-1. Open **PS5 Launcher**. The first launch downloads artwork and KytyPS5, which takes about a
-   minute.
+1. Open **PS5 Launcher** from your app menu, or run this in a terminal:
+
+   ```bash
+   ps5-launcher
+   ```
+
+   The first launch downloads artwork and KytyPS5, which takes about a minute.
 2. Already have games? Add their folder in **Settings → Game folders**.
 3. To get a game, open it in the **Library**, choose **Download**, then **Install**, then
    **Play**. Keep the launcher open while it downloads.
