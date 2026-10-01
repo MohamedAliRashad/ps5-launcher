@@ -653,8 +653,8 @@ impl App {
         let mut list: Vec<(String, usize)> = vec![("All".into(), self.groups.members.len())];
         let installed = self.groups.members.iter().filter(|members| members.iter().any(|i| self.games[*i].local.is_some())).count();
         list.push(("Installed".into(), installed));
-        let in_game = self.groups.members.iter().filter(|members| members.iter().any(|i| self.game_compat(&self.games[*i]).is_some_and(|e| e.status == crate::compat::Status::InGame))).count();
-        list.push(("In-game on KytyPS5".into(), in_game));
+        let in_game = self.groups.members.iter().filter(|members| members.iter().any(|i| self.game_compat(&self.games[*i]).is_some_and(|e| e.on_linux && e.status == crate::compat::Status::InGame))).count();
+        list.push(("In-game on Linux".into(), in_game));
         list.push(("All genres".into(), self.groups.members.len()));
         let mut rest: Vec<(&str, usize)> = counts.into_iter().collect();
         rest.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
@@ -697,8 +697,8 @@ impl App {
             4 => list.sort_by(|a, b| gs[*b].g.size_gb.unwrap_or(-1.0).partial_cmp(&gs[*a].g.size_gb.unwrap_or(-1.0)).unwrap_or(std::cmp::Ordering::Equal)),
             5 => list.sort_by(|a, b| gs[*a].g.size_gb.unwrap_or(1e9).partial_cmp(&gs[*b].g.size_gb.unwrap_or(1e9)).unwrap_or(std::cmp::Ordering::Equal)),
             6 => {
-                // Best status first, untested last; ties by name.
-                let rank = |i: usize| self.game_compat(&gs[i]).map(|e| e.status as u8).unwrap_or(9);
+                // Linux results best first, then results from other OSes, untested last; ties by name.
+                let rank = |i: usize| self.game_compat(&gs[i]).map(|e| e.status as u8 + if e.on_linux { 0 } else { 4 }).unwrap_or(9);
                 list.sort_by(|a, b| rank(*a).cmp(&rank(*b)).then_with(|| gs[*a].name.to_lowercase().cmp(&gs[*b].name.to_lowercase())))
             }
             _ => {
@@ -1515,7 +1515,7 @@ impl App {
     pub fn matches_status(&self, index: usize) -> bool {
         let game = &self.games[index];
         self.status_filter == "All" || (self.status_filter == "Installed" && game.local.is_some())
-            || (self.status_filter == "In-game on KytyPS5" && self.game_compat(game).is_some_and(|entry| entry.status == crate::compat::Status::InGame))
+            || (self.status_filter == "In-game on Linux" && self.game_compat(game).is_some_and(|entry| entry.on_linux && entry.status == crate::compat::Status::InGame))
     }
 
     pub fn open_sort_picker(&mut self) {
@@ -1985,6 +1985,32 @@ impl App {
                     self.toggle_rawg_art(g);
                 }
             }
+            "report" => {
+                if let Some(l) = t.local {
+                    let lg = &self.locals[l].l;
+                    let (name, tid) = (self.locals[l].name.clone(), lg.title_id.clone());
+                    let emulator = self.cfg.lock().unwrap().emulator_path();
+                    let log_path = util::cache_dir().join("logs").join(format!("{}.log", if tid.is_empty() { &lg.id } else { &tid }));
+                    let log = std::fs::read(&log_path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+                    // Reading the emulator's version can take a moment: build the link off the UI thread.
+                    std::thread::spawn(move || {
+                        let installed = crate::kyty::load_state().installed;
+                        let version = if crate::kyty::is_managed(&emulator) && !installed.is_empty() {
+                            installed
+                        } else {
+                            crate::kyty::binary_version(&emulator).map(|(git, date)| format!("{date} ({git})").trim().to_string()).unwrap_or_default()
+                        };
+                        open_url(&crate::compat::report_url(&name, &tid, &version, &log));
+                    });
+                    if log_path.is_file() {
+                        // Show the full log in the file manager, ready to drag into the form.
+                        open_url(&log_path.parent().unwrap_or(&log_path).to_string_lossy());
+                        self.toast("Opened in your browser", &format!("Choose how far the game got, drag {} into the log box, then submit.", log_path.file_name().unwrap_or_default().to_string_lossy()), 1);
+                    } else {
+                        self.toast("Opened in your browser", "Play the game once first, so there's a log to attach. Then choose how far it got and submit.", 0);
+                    }
+                }
+            }
             "compat" => {
                 open_url(crate::compat::LIST_PAGE);
                 self.toast("Opened in your browser", "The KytyPS5 compatibility list is in your browser.", 1);
@@ -2134,6 +2160,7 @@ impl App {
         if t.local.is_some() {
             items.push(mk("folder", "Open game folder", "folder"));
             items.push(mk("log", "View emulator log", "log"));
+            items.push(mk("report", "Report how it runs", "web"));
         }
         if let Some(g) = t.game {
             let on = self.cfg.lock().unwrap().rawg_art.contains(&self.games[g].g.id);

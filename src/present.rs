@@ -34,10 +34,10 @@ fn chip(icon: &str, text: impl Into<SharedString>, gold: bool) -> ChipData {
     ChipData { icon: icon.into(), text: text.into(), gold, dot: 0, stars: 0.0 }
 }
 
-/// "● In-game on KytyPS5" / "● Untested on KytyPS5".
+/// "● In-game on Linux" / "● In-game on Windows · untested on Linux" / "● Untested on KytyPS5".
 fn compat_chip(e: Option<&crate::compat::Entry>) -> ChipData {
     match e {
-        Some(e) => ChipData { icon: "".into(), text: format!("{} on KytyPS5", e.status.label()).into(), gold: false, dot: e.status.level(), stars: 0.0 },
+        Some(e) => ChipData { icon: "".into(), text: e.chip_text().into(), gold: false, dot: e.status.level(), stars: 0.0 },
         None => ChipData { icon: "".into(), text: "Untested on KytyPS5".into(), gold: false, dot: 5, stars: 0.0 },
     }
 }
@@ -205,7 +205,7 @@ impl App {
             Some(RowItem::Cat(g)) => {
                 let gv = &self.games[g];
                 let genre = gv.info.as_ref().and_then(|i| i.genres.first().cloned()).or_else(|| gv.g.genres.first().cloned()).unwrap_or_default();
-                let status = self.game_compat(gv).map(|e| format!("{} on KytyPS5", e.status.label())).unwrap_or_default();
+                let status = self.game_compat(gv).map(|e| e.chip_text()).unwrap_or_default();
                 (gv.name.clone(), [genre, gv.g.size.clone(), status].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · "))
             }
         };
@@ -596,7 +596,7 @@ impl App {
                 if self.genre == "All" || game.buckets.contains(&self.genre.as_str()) {
                     status[0] = true;
                     status[1] |= game.local.is_some();
-                    status[2] |= self.game_compat(game).is_some_and(|entry| entry.status == crate::compat::Status::InGame);
+                    status[2] |= self.game_compat(game).is_some_and(|entry| entry.on_linux && entry.status == crate::compat::Status::InGame);
                 }
                 if self.matches_status(index) { any = true; buckets.extend(game.buckets.iter().copied()); }
             }
@@ -756,7 +756,7 @@ impl App {
             }
             let g = &self.games[gi];
             let ce = self.game_compat(g);
-            let (compat, compat_level) = ce.map(|e| (e.status.label(), e.status.level())).unwrap_or(("", 0));
+            let (compat, compat_level) = ce.map(|e| (e.tag(), e.status.level())).unwrap_or_default();
             // Size is always visible. Version/region details belong to the selected Hub release.
             let releases = self.groups.releases(gi).len();
             let meta = g.g.size_gb.map(|size| if size >= 1.0 { format!("{size:.1} GB") } else { format!("{:.1} MB", size * 1024.0) }).unwrap_or_else(|| "Size unknown".into());
@@ -924,10 +924,11 @@ impl App {
         let region = g.map(|g| g.region.clone()).unwrap_or_default();
         let ce = self.target_compat(t).cloned();
         let mut facts: Vec<(&str, String)> = vec![
-            ("ON KYTYPS5", match &ce {
-                Some(e) => e.status.meaning().to_string(),
-                None => "Not tested yet".into(),
+            ("ON LINUX", match &ce {
+                Some(e) if e.on_linux => e.status.meaning().to_string(),
+                _ => "Not tested yet".into(),
             }),
+            ("ON WINDOWS", ce.as_ref().and_then(|e| e.windows).map(|w| w.meaning().to_string()).unwrap_or_default()),
             // Short values only: a fact box fits ~28 characters.
             ("LAST TESTED", ce.as_ref().map(|e| {
                 let d = util::fmt_date(util::parse_iso_date(&e.tested_date()));
@@ -935,7 +936,6 @@ impl App {
                 [if d.is_empty() { e.tested_date() } else { d }, r].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ")
             }).unwrap_or_default()),
             ("TESTED ON", ce.as_ref().map(|e| e.platforms.join(", ")).unwrap_or_default()),
-            ("ON LINUX", ce.as_ref().and_then(|e| e.linux).filter(|l| Some(*l) != ce.as_ref().map(|e| e.status)).map(|l| l.label().to_string()).unwrap_or_default()),
             ("PUBLISHER", info.as_ref().map(|i| i.publisher.clone()).filter(|publisher| !publisher.is_empty()).unwrap_or_else(|| g.map(|g| g.detail("publisher")).unwrap_or_default())),
             ("RELEASE", g.map(|g| g.release.clone()).filter(|s| !s.is_empty()).or_else(|| info.as_ref().map(|i| util::fmt_date(util::parse_iso_date(&i.release)))).unwrap_or_default()),
             ("SIZE", g.map(|g| g.size.clone()).unwrap_or_default()),
@@ -993,7 +993,12 @@ impl App {
                 game.name, game.version, game.region, game.id).into();
         }
         let summary: Vec<Fact> = [
-            ("ON KYTYPS5", ce.as_ref().map(|e| e.status.meaning().to_string()).unwrap_or_else(|| "Not tested yet".into())),
+            match &ce {
+                Some(e) if e.on_linux => ("ON LINUX", e.status.meaning().to_string()),
+                Some(e) if e.windows.is_some() => ("ON WINDOWS · LINUX UNTESTED", e.status.meaning().to_string()),
+                Some(e) => ("ON KYTYPS5 · LINUX UNTESTED", e.status.meaning().to_string()),
+                None => ("ON KYTYPS5", "Not tested yet".to_string()),
+            },
             ("DOWNLOAD SIZE", g.map(|g| g.size.clone()).filter(|size| !size.is_empty()).unwrap_or_else(|| "Unknown".into())),
             if let Some(local) = t.local { ("INSTALLED VERSION", self.locals[local].l.version.clone()) }
             else { ("RELEASE VERSION", g.map(|g| g.version.clone()).unwrap_or_default()) },

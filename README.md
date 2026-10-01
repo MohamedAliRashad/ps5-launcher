@@ -6,6 +6,12 @@ all from one app you can use with a controller.
 
 ![PS5 Launcher: moving through the Home screen, a Game Hub and the Library](docs/demo/demo-loop.webp)
 
+**Narrated walkthrough:** [Watch the 9-minute practical tour](docs/demo/ps5-launcher-walkthrough.mp4)
+([smaller 720p copy](docs/demo/ps5-launcher-walkthrough-720p.mp4),
+[transcript](docs/demo/ps5-launcher-walkthrough-transcript.md)). Real launcher screens, calm
+English synthetic narration, optional captions and chapters — no music or promotional effects.
+Download and installation examples use clearly labeled sample data, not emulator gameplay.
+
 ## What it does
 
 - **Looks and feels like a PS5.** Your games sit on a Home screen with their official
@@ -100,7 +106,18 @@ Every game shows a tag from the community
 | 🔴 **Doesn't boot** | Doesn't start |
 | ⚪ **Untested** | Nobody has reported it yet |
 
-In the Library, the **In-game on KytyPS5** filter shows only games you can play.
+Tags show the **Linux** result whenever someone has tested the game on Linux. Results from
+Windows are marked, for example **Win · In-game** on a Library cover, because a game can behave
+differently on Linux. The Game Hub shows the Linux and Windows results separately. In the
+Library, the **In-game on Linux** filter shows only games confirmed to reach gameplay on Linux.
+
+The launcher downloads the latest list every 6 hours. The tags are only as up to date as the
+reports people send, and most games have no report yet, especially on Linux. After you play a
+game, you can help: open its **Options → Report how it runs**. Your browser opens KytyPS5's
+report form, already filled in with the game, your PC's details and the end of the emulator log,
+and the folder with the full log opens next to it. Choose how far the game got, drag the log
+file into the form, and submit (you need a free GitHub account). Once KytyPS5 adds your report
+to the list, every launcher shows the new tag within 6 hours.
 
 ## Updates
 
