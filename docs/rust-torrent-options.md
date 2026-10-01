@@ -134,7 +134,7 @@ entries, invalid game metadata/IDs, and atomic no-overwrite publication. System
 libarchive 3.7.2 was used; compressed/solid/multipart RAR variants are not certified.
 This runtime accepted corrupted stored-RAR4 payload data despite its CRC during a
 probe, so archive decoding is not a universal integrity guarantee. See the
-[installation workflow](../README.md#download--install--play) for supported inputs,
+[installation workflow](DEVELOPMENT.md#download--install--play-details) for supported inputs,
 explicit confirmation, recovery and runtime requirements.
 
 ## Licensing and sources

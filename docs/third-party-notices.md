@@ -63,6 +63,10 @@ describes the widget as displaying a **“Made with Slint”** badge. Use the wi
 or the [official badge linked by the license](https://github.com/slint-ui/slint/blob/master/logo/MadeWithSlint-logo-whitebg.png),
 not a reconstructed text-only credit. Verify one route before publishing.
 
+PS5 Launcher follows both routes: the `AboutSlint` widget is shown in the About
+section at the end of Settings, which opens from the top bar, and the official
+badge is shown on the project's README page, which links to the downloads.
+
 The desktop grant excludes embedded-system use and applications exposing Slint
 APIs. These notices do not establish eligibility for a different distribution
 model or a commercial agreement.

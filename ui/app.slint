@@ -2,6 +2,7 @@ import { S, Theme, Icons, Zone, DownloadData, BootStep, ChipData, ActionData, Ti
 import { FocusRing, Chip, Btn, Kicker, Badge, Switch, KeyCap, BackButton, Shimmer, Cover } from "widgets.slint";
 import { DownloadsSheet, DownloadConsent } from "downloads.slint";
 import { LibraryFilter, LibrarySortPicker } from "library.slint";
+import { AboutSlint, Palette } from "std-widgets.slint";
 
 export { S, Theme, Zone }
 
@@ -134,6 +135,8 @@ export component AppWindow inherits Window {
     // UI scale follows it (see App::fit_scale). A preferred size would fight every rescale.
     min-width: 640px;
     min-height: 360px;
+    // The UI is always dark: keep std widgets (AboutSlint's logo) on the dark variant.
+    init => { Palette.color-scheme = ColorScheme.dark; }
 
     // ---------------------------------------------------------------- state from Rust
     in property <int> view;          // 0 home, 1 library
@@ -141,6 +144,7 @@ export component AppWindow inherits Window {
     in property <int> zone;
     in property <int> idx;
     in property <string> clock;
+    in property <string> app-version;
     in property <RunningData> running;
     in property <[ToastData]> toasts;
     in property <string> status;
@@ -1162,6 +1166,17 @@ export component AppWindow inherits Window {
                                 font-size: (16px * S.k);
                                 wrap: word-wrap;
                                 color: s.hint-kind == 1 ? Theme.ok : s.hint-kind == 2 ? Theme.danger : Theme.text3;
+                            }
+                        }
+                        // About: required attribution for the Slint royalty-free license (section 2a).
+                        VerticalLayout {
+                            padding-top: (36px * S.k);
+                            spacing: (10px * S.k);
+                            Text { text: "ABOUT"; font-size: (16px * S.k); font-weight: 600; letter-spacing: (2px * S.k); color: Theme.text3; }
+                            Text { text: "PS5 Launcher " + root.app-version; font-size: (19px * S.k); color: Theme.text2; }
+                            HorizontalLayout {
+                                alignment: start;
+                                AboutSlint { width: (280px * S.k); }
                             }
                         }
                     }

@@ -232,8 +232,13 @@ impl App {
                 _ => 8.0 + 64.0 + 4.0,
             } + if r.hint.is_empty() { 0.0 } else { 26.0 };
         }
+        y += 36.0 + 22.0 + 10.0 + 26.0 + 10.0 + 170.0; // About block under the last row
         let (_, h) = self.logical_size();
         let max = (y + 120.0 - h).max(0.0);
+        // The last row reveals the About block, which is not focusable itself.
+        if self.idx == self.settings_rows.len() as i32 - 1 {
+            target = y;
+        }
         self.ui().set_settings_y(-(target - h * 0.4).clamp(0.0, max) * self.scale);
     }
 
