@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { access, copyFile, readFile, rename, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { englishCatalog, hasRussian, isProtected, prepareCatalog, protectTechnical, translationInputs } from './english.mjs';
+import { englishCatalog, hasRussian, isProtected, prepareCatalog, protectTechnical, translationInputs, transliterate, latinLookalikes } from './english.mjs';
 import { platformFrom } from './platforms.mjs';
 
 const platform = platformFrom(process.argv.slice(2));
@@ -18,6 +18,7 @@ try { cache = JSON.parse(await readFile(cachePath, 'utf8')); } catch (error) { i
 for (const text of inputs) {
   if (cache[text] && JSON.stringify(numericSignature(text)) !== JSON.stringify(numericSignature(cache[text]))) delete cache[text];
 }
+const transliterated = [];
 const pending = inputs.filter(text => !cache[text] || hasRussian(cache[text]));
 const total = pending.length;
 console.log(`${inputs.length} unique strings require translation; ${pending.length} not cached.`);
@@ -51,8 +52,13 @@ while (pending.length) {
     }
   }
   for (let index = 0; index < batch.length; index++) {
-    const value = translations[index];
-    if (!value || hasRussian(value)) throw new Error(`Translation incomplete: ${batch[index]}; source catalog unchanged`);
+    let value = translations[index];
+    if (!value || hasRussian(value)) {
+      // The translator returned it unchanged (a code, typo or name): spell it in Latin letters.
+      value = transliterate(value || batch[index]);
+      transliterated.push(batch[index]);
+      if (!value || hasRussian(value)) throw new Error(`Translation incomplete: ${batch[index]}; source catalog unchanged`);
+    }
     assert.deepEqual(numericSignature(value), numericSignature(batch[index]), 'Numeric/version/date tokens changed');
     cache[batch[index]] = value.replace(/\bsoftware (?=\d+(?:\.|x))/gi, 'firmware ')
       .replace(/\bChinese \(traditional\)/gi, 'Chinese (Traditional)')
@@ -66,12 +72,15 @@ while (pending.length) {
   if (pending.length) await new Promise(resolve => setTimeout(resolve, 400));
 }
 
+if (transliterated.length) console.log(`Transliterated ${transliterated.length} strings the translator left in Russian: ${transliterated.join(' | ')}`);
 const result = englishCatalog(prepared, cache);
 assert.equal(result.topics.length, original.topics.length);
 for (let index = 0; index < original.topics.length; index++) {
   const before = original.topics[index], after = result.topics[index];
   for (const key of ['id', 'url', 'magnet', 'author', 'size', 'seeders', 'leechers']) assert.deepEqual(after[key], before[key], key);
-  for (const key of ['source_url', 'image_urls', 'title_id']) assert.deepEqual(after.game_info[key], before.game_info[key], key);
+  // Title IDs are compared after look-alike normalization (prepareCatalog), the only change allowed.
+  for (const key of ['source_url', 'image_urls']) assert.deepEqual(after.game_info[key], before.game_info[key], key);
+  assert.deepEqual(after.game_info.title_id, latinLookalikes(before.game_info.title_id), 'title_id');
 }
 function validate(value, key = '') {
   if (typeof value === 'string' && !isProtected(key, value)) assert.equal(hasRussian(value), false, key);

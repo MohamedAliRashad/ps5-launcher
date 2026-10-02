@@ -90,6 +90,21 @@ export function knownEnglish(text) {
   return value;
 }
 
+const LOOKALIKES = { А: 'A', В: 'B', Е: 'E', К: 'K', М: 'M', Н: 'H', О: 'O', Р: 'P', С: 'C', Т: 'T', Х: 'X', У: 'Y',
+  а: 'a', е: 'e', о: 'o', р: 'p', с: 'c', у: 'y', х: 'x' };
+
+/** In words that are otherwise Latin letters and digits, Cyrillic look-alikes become Latin. */
+export function latinLookalikes(value) {
+  if (typeof value !== 'string') return value;
+  // Russian-layout typos between digits: "1ю00" is "1.00", "1б5" is "1,5".
+  value = value.replace(/(\d)ю(?=\d)/g, '$1.').replace(/(\d)б(?=\d)/g, '$1,');
+  return value.replace(/[\p{L}\d+]+/gu, word => {
+    const cyrillic = [...word].filter(ch => /\p{Script=Cyrillic}/u.test(ch));
+    if (!cyrillic.length || !/[A-Za-z\d]/.test(word) || !cyrillic.every(ch => LOOKALIKES[ch])) return word;
+    return [...word].map(ch => LOOKALIKES[ch] || ch).join('');
+  });
+}
+
 export function prepareCatalog(input) {
   const report = structuredClone(input);
   // Repair run-on extraction boundaries rather than translating appended advertising.
@@ -112,12 +127,9 @@ export function prepareCatalog(input) {
         info.fields['Минимальная версия прошивки'] = firmware;
       }
     }
-    // Title IDs typed with Cyrillic look-alike letters ("СUSA12345") are the Latin ID.
-    const latinIds = value => typeof value === 'string'
-      ? value.replace(/(?<![\p{L}\d])([CcСс][UuУу][SsЅ][AaАа]|[PpРр]{2}[SsЅ][AaАа])(\d{5})(?![\p{L}\d])/gu,
-        (_m, prefix, digits) => `${/^[PpРр]/.test(prefix) ? 'PPSA' : 'CUSA'}${digits}`) : value;
-    for (const [key, value] of Object.entries(info.fields || {})) info.fields[key] = latinIds(value);
-    if (typeof info.title_id === 'string') info.title_id = latinIds(info.title_id);
+    // Codes typed with Cyrillic look-alike letters ("СUSA12345", "Е10+") are the Latin code.
+    for (const [key, value] of Object.entries(info.fields || {})) info.fields[key] = latinLookalikes(value);
+    for (const [key, value] of Object.entries(info)) if (typeof value === 'string') info[key] = latinLookalikes(value);
     // Rebuilt from translated facts later; do not translate duplicated summaries.
     delete info.release_summary;
   }
@@ -182,4 +194,15 @@ export function englishCatalog(report, translations) {
       .filter(Boolean).join(' · ');
   }
   return result;
+}
+const TRANSLIT = { а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm',
+  н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'kh', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'shch', ъ: '', ы: 'y',
+  ь: '', э: 'e', ю: 'yu', я: 'ya' };
+
+/** Last resort for text the translator returned unchanged: Latin letters instead of Cyrillic. */
+export function transliterate(value) {
+  return value.replace(/\p{Script=Cyrillic}/gu, ch => {
+    const latin = TRANSLIT[ch.toLowerCase()] ?? '';
+    return ch === ch.toLowerCase() ? latin : latin.charAt(0).toUpperCase() + latin.slice(1);
+  });
 }
