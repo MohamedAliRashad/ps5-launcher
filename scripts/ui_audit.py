@@ -26,6 +26,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from ui_fixture import NO_UPDATES, install_game, seed_cache
+
 import numpy as np
 from PIL import Image
 from scipy import ndimage
@@ -103,9 +105,27 @@ def find_cuts(png: Path):
                 continue
             at_edge = (side == "left" and xs.start == 0) or (side == "right" and xs.stop == W) or \
                       (side == "top" and ys.start == 0) or (side == "bottom" and ys.stop == H)
-            if not at_edge:
+            if not at_edge and not _fades(a, sl, side):
                 cuts.append((xs.start, ys.start, w, h, side))
     return cuts
+
+
+def _fades(a, sl, side):
+    """A shape fading out (a scrolled row's edge gradient) stays mid-grey just past its
+    white edge; a shape that is sliced off drops straight to the dark background."""
+    ys, xs = sl
+    H, W = a.shape[:2]
+    if side in ("left", "right"):
+        x = xs.start - 3 if side == "left" else xs.stop + 2
+        if not 0 <= x < W:
+            return False
+        beyond = a[ys, x]
+    else:
+        y = ys.start - 3 if side == "top" else ys.stop + 2
+        if not 0 <= y < H:
+            return False
+        beyond = a[y, xs]
+    return beyond.mean() > 100
 
 
 def audit(size: str, n: int, out: Path, binary: Path, game: Path | None):
@@ -114,21 +134,13 @@ def audit(size: str, n: int, out: Path, binary: Path, game: Path | None):
     work = Path(tempfile.mkdtemp(prefix="ps5-audit-"))
     home = work / "home"
     (home / ".config/ps5-launcher").mkdir(parents=True)
-    real = Path.home() / ".cache/ps5-launcher"
-    (home / ".cache").mkdir()
-    for f in ("catalog.json", "psn.json", "compatibility.json"):
-        if (real / f).exists():
-            (home / ".cache/ps5-launcher").mkdir(exist_ok=True)
-            shutil.copy2(real / f, home / ".cache/ps5-launcher" / f)
-    (home / "Games").mkdir()
-    if game:
-        (home / "Games" / game.name).symlink_to(game)
+    seed_cache(home)
+    install_game(home / "Games", game)
     fake = work / "kyty_emulator"                     # never start a real game
     fake.write_text("#!/bin/sh\nexit 0\n")
     fake.chmod(0o755)
     (home / ".config/ps5-launcher/config.json").write_text(json.dumps(
-        {"game_dirs": ["~/Games"], "sounds": False, "kyty_auto_update": False, "app_auto_update": False,
-         "emulator": str(fake)}))
+        {"game_dirs": ["~/Games"], "sounds": False, **NO_UPDATES, "emulator": str(fake)}))
     stubs = work / "stubs"
     stubs.mkdir()
     for tool in ("xdg-open", "mpv", "vlc", "firefox"):

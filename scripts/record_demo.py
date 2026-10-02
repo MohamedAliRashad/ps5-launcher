@@ -27,6 +27,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from ui_fixture import CACHE_SKIP, install_game
 
 ROOT = Path(__file__).resolve().parent.parent
 FONTS = ROOT / "assets" / "fonts"
@@ -55,11 +56,9 @@ class Session:
         shutil.copy2(binary, self.binary)
         cfg = self.home / ".config" / "ps5-launcher"
         cfg.mkdir(parents=True)
-        (cfg / "config.json").write_text(json.dumps({"game_dirs": ["~/Games/PS5"], "sounds": False}))
-        games = self.home / "Games" / "PS5"
-        games.mkdir(parents=True)
-        if game:
-            (games / game.name).symlink_to(game.resolve())
+        # The first-launch scene shows KytyPS5 downloading; shadPS4 would join it, so it stays off.
+        (cfg / "config.json").write_text(json.dumps({"game_dirs": ["~/Games/PS5"], "sounds": False, "shad_auto_update": False}))
+        install_game(self.home / "Games" / "PS5", game)
         # Nothing outside the launcher may appear in a take: browsers, video players, etc.
         stubs = work / "stubs"
         stubs.mkdir()
@@ -455,13 +454,13 @@ def main():
     if args.loop_only:
         try:
             real = Path.home() / ".cache/ps5-launcher"
-            shutil.copytree(real, s.home / ".cache/ps5-launcher", ignore=shutil.ignore_patterns("logs"))
+            shutil.copytree(real, s.home / ".cache/ps5-launcher", ignore=shutil.ignore_patterns(*CACHE_SKIP))
             fake = work / "kyty_emulator"                     # never start a real game
             fake.write_text("#!/bin/sh\nexit 0\n")
             fake.chmod(0o755)
             cfg = s.home / ".config/ps5-launcher/config.json"
             c = json.loads(cfg.read_text())
-            c.update({"emulator": str(fake), "kyty_auto_update": False, "app_auto_update": False})
+            c.update({"emulator": str(fake), "kyty_auto_update": False, "app_auto_update": False, "shad_auto_update": False})
             cfg.write_text(json.dumps(c))
             s.launch()
             s.wait_log("home screen shown", 60)
@@ -491,7 +490,7 @@ def main():
             emu.chmod(0o755)
         log("recording: tour")
         c2 = work / "c2.mkv"
-        d2 = scene_tour(s, c2, has_game=args.game is not None)
+        d2 = scene_tour(s, c2, has_game=True)  # a stand-in game when --game isn't given
         ev2 = s.events
         log("recording: loop")
         c3 = work / "c3.mkv"

@@ -20,6 +20,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from ui_fixture import NO_UPDATES, install_game, seed_cache
+
 ROOT = Path(__file__).resolve().parent.parent
 SIZES = ["1280x720", "1366x768", "1920x1080", "1920x1200", "2560x1440", "3440x1440", "3840x2160", "1280x800"]
 
@@ -33,7 +35,7 @@ STEPS = [
     ("05-library", ["Escape", "Escape", "Up", "Up", "Right", "Return", "sleep:1.5"]),
     ("06-library-down", ["Down", "Down", "Down", "sleep:1"]),
     ("07-search", ["slash", "r", "e", "s", "i", "sleep:1"]),
-    ("08-menu", ["Escape", "Escape", "Down", "Down", "o", "sleep:0.6"]),
+    ("08-menu", ["Escape", "Escape", "sleep:0.5", "Escape", "sleep:0.8", "o", "sleep:0.6"]),
     ("09-settings", ["Escape", "Escape", "Escape", "sleep:0.5", "s", "sleep:0.8"]),
     ("10-settings-bottom", ["End"] + ["Down"] * 22 + ["sleep:0.8"]),
     ("11-toasts", ["Escape", "sleep:0.5", "Home", "Down", "Right", "Right", "Right", "Return", "sleep:0.4",
@@ -51,21 +53,14 @@ def shoot(size: str, n: int, out: Path, binary: Path, game: Path | None):
     work = Path(tempfile.mkdtemp(prefix="ps5-ui-"))
     home = work / "home"
     (home / ".config/ps5-launcher").mkdir(parents=True)
-    cache = home / ".cache/ps5-launcher"
-    real = Path.home() / ".cache/ps5-launcher"
-    if real.exists():
-        shutil.copytree(real, cache, ignore=shutil.ignore_patterns("logs"))
-    games = home / "Games"
-    games.mkdir()
-    if game:
-        (games / game.name).symlink_to(game)
+    seed_cache(home)
+    install_game(home / "Games", game)
     # A stand-in emulator that exits at once: screenshots must never start a real game.
     fake = work / "kyty_emulator"
     fake.write_text("#!/bin/sh\nexit 0\n")
     fake.chmod(0o755)
     (home / ".config/ps5-launcher/config.json").write_text(json.dumps(
-        {"game_dirs": ["~/Games"], "sounds": False, "kyty_auto_update": False, "app_auto_update": False,
-         "emulator": str(fake)}))
+        {"game_dirs": ["~/Games"], "sounds": False, **NO_UPDATES, "emulator": str(fake)}))
     # No browsers or players may pop up; pretend to be an old version so the update notification shows.
     stubs = work / "stubs"
     stubs.mkdir()
