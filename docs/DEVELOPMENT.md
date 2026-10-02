@@ -226,11 +226,29 @@ installation itself never executes their contents.
 Loose game folders are copied. RAR, ZIP, 7z and TAR-family decoding uses dynamically
 loaded system libarchive; no archive helper process is executed. Matching multipart
 RAR and split 7z volumes are ordered and checked for gaps, but decoder support varies
-with the installed libarchive version. Password-protected archives, PKG decryption,
-update/DLC merging, and archives containing multiple complete games are unsupported.
+with the installed libarchive version. Password-protected archives, retail PKG
+decryption, update/DLC merging, and archives containing multiple complete games are
+unsupported.
 An unsupported or malformed archive fails with an explanation instead of publishing
 a partial library entry. RAR4 stored, ZIP, 7z/split 7z and TAR generated fixtures were
 tested on libarchive 3.7.2; compressed/solid/multipart RAR variants are not certified.
+
+PS5 **debug packages** (`.pkg` files that start with `7F 46 49 48`, "FIH") are unpacked
+by `src/pkg.rs`, without a helper process and without any key. The package's outer file
+system is readable, `sce_sys` files come from its metadata block, and the game files are
+rebuilt block by block from `pfs_image.dat` using `naps_pkg_layout.dat`. Blocks are stored
+raw or as Oodle Kraken with the headers removed. The launcher puts the headers back and
+decodes them with the MIT-licensed `oozextract` crate. A release folder may hold several
+packages. The installer takes the one that holds a game (`sce_sys/param.json` and
+`eboot.bin`), preferring the package nearest the top of the folder, so a backport overlay
+or DLC pack beside the base game is ignored. Equal depth is refused. Retail packages
+(signed byte `0x80`) need a console key and are refused.
+
+The package format is not documented by its vendor. The reader follows layouts seen in
+other open tools, and generated packages cover the stored, entropy-only and error paths in
+the unit tests. The Kraken LZ path can only be checked against a real package. Run
+`PS5_TEST_PKG=/path/to/game.pkg cargo test --release real_package -- --ignored` to do so;
+that test lists the package, reads `param.json` and checks that `eboot.bin` is a SELF file.
 
 **Validation is not an authenticity, malware or universal checksum guarantee.**
 In particular, libarchive 3.7.2 accepted corrupted stored-RAR4 payload bytes despite
@@ -241,6 +259,48 @@ an active installation and cleans its owned staging directory; retry is explicit
 Interrupted records restore as failed and never auto-extract. A forced crash can
 leave hidden staging files, which are not installed games or automatically reused.
 Installation records live in the launcher's XDG configuration installs subfolder.
+
+## macOS port
+
+Linux is the primary platform. macOS is built and unit-tested in CI on
+`macos-14` (`.github/workflows/ci.yml`), and shipped as `ps5-launcher-macos-universal.zip`
+(`scripts/macos/bundle.sh`: a universal, ad-hoc-signed `PS5 Launcher.app`).
+
+Low-level OS differences live in `src/platform.rs` behind `cfg(target_os)`, with tests that run on
+both. Smaller OS checks sit next to the code they affect (`kyty.rs`, `update.rs`, `app.rs`), and
+`sessions.rs` (window control through AppleScript instead of `xdotool`),
+`compat.rs` (`sysctl` instead of `/proc`), `gamepad.rs` (gilrs instead of evdev), `audio.rs`
+(`afplay` instead of ALSA) and `update.rs` (swaps the whole `.app` bundle) have macOS branches.
+
+Not verified on real hardware, so check these first when something misbehaves on a Mac:
+
+- KytyPS5's macOS release asset names. `kyty.rs::asset_matches` accepts any `.tar.gz`, `.tgz`
+  or `.zip` whose name contains `macos`, `darwin` or `osx`, and expects `kyty_emulator` at the
+  top of the archive (or one folder down).
+- Window detection needs Accessibility permission; without it the launcher falls back to timeouts.
+- Split archives: libarchive reopens volumes, so `platform::fd_open_path` gives a path with a fresh
+  offset (`/dev/fd/N` on macOS shares the offset).
+- libarchive is loaded from Homebrew's paths (`platform::libarchive_candidates`).
+
+Forks can build with `PS5_LAUNCHER_REPO=owner/name` to follow their own releases (the release
+workflow sets it to the repository it runs in).
+
+## Releases
+
+Releases are automated with [Release Please](https://github.com/googleapis/release-please)
+(`.github/release-please-config.json`, `.github/release-please-manifest.json`, `.github/workflows/release.yml`, `package.yml`).
+
+1. Write commit messages (or squash-merge titles) as [Conventional Commits](https://www.conventionalcommits.org):
+   `fix:` bumps the patch version, `feat:` the minor, and `feat!:` or a `BREAKING CHANGE:` footer the major.
+2. Release Please keeps a release pull request open on `main` with the new version in
+   `Cargo.toml` / `Cargo.lock` and the `CHANGELOG.md` entry.
+3. Merging it creates a draft release and tag. The same workflow builds the Linux tarball and the
+   universal macOS app, attaches them with their `.sha256` files, and then publishes the release.
+   The launcher's updater only ever sees published releases, so they always have their binaries.
+
+One-time repository setting: *Settings → Actions → General → Allow GitHub Actions to create and
+approve pull requests*. Checks don't run on the release pull request itself (GitHub doesn't start
+workflows from the workflow token's events); the release workflow runs the tests before it builds.
 
 ## Tests
 

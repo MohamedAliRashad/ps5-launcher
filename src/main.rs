@@ -6,6 +6,7 @@ mod boot;
 mod catalog;
 mod compat;
 mod exfat;
+mod pkg;
 mod results;
 mod trailer;
 mod config;
@@ -22,6 +23,7 @@ mod kyty_ui;
 mod update;
 mod library;
 mod library_layout;
+mod platform;
 mod present;
 mod psn;
 mod sessions;
@@ -46,6 +48,8 @@ OPTIONS:
 ";
 
 fn main() {
+    // Torrent downloads hold every file of the torrent open; the default limit on macOS is 256.
+    platform::raise_open_file_limit();
     let mut windowed = false;
     let mut monitor: Option<String> = None;
     let mut force_sync = false;

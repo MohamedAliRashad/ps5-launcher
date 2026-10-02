@@ -4,10 +4,13 @@
 
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
+// Only the tests touch the filesystem through `fs::` now; the platform helpers do the rest.
+#[cfg(test)]
+use std::fs;
 use std::{
     collections::{BTreeMap, HashSet},
     ffi::{CStr, CString},
-    fs::{self, File, Metadata},
+    fs::{File, Metadata},
     io::{Read, Write},
     os::{fd::{AsRawFd, FromRawFd}, unix::{ffi::OsStrExt, fs::MetadataExt}},
     path::{Component, Path, PathBuf},
@@ -18,6 +21,7 @@ use std::{
 const OWNED: &str = ".ps5-launcher-owned";
 const STAGE_MARKER: &str = ".ps5-launcher-install-stage";
 const MAX_ENTRIES: usize = 100_000;
+const MAX_PACKAGE_ENTRIES: usize = 1_000_000;
 const MAX_PATH: usize = 4096;
 const MAX_DEPTH: usize = 128;
 const MAX_PARAM: u64 = 1024 * 1024;
@@ -256,9 +260,9 @@ impl Dir {
     }
     fn names(&self) -> Result<Vec<String>> {
         let mut names = Vec::new();
-        for entry in fs::read_dir(format!("/proc/self/fd/{}", self.0.as_raw_fd()))? {
+        for entry in crate::platform::dir_names(self.0.as_raw_fd())? {
             ensure!(names.len() < MAX_ENTRIES, "Too many source entries");
-            let name = entry?.file_name().into_string().map_err(|_| anyhow::anyhow!("Non-UTF-8 filenames are unsupported"))?;
+            let name = entry.into_string().map_err(|_| anyhow::anyhow!("Non-UTF-8 filenames are unsupported"))?;
             component(name.as_bytes())?;
             names.push(name);
         }
@@ -307,11 +311,18 @@ fn normal_path(raw: &str) -> Result<String> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Entry { path: String, directory: bool, size: u64 }
-#[derive(Default)]
-struct Plan { entries: Vec<Entry>, paths: BTreeMap<String, bool>, explicit: HashSet<String>, total: u64 }
+struct Plan { entries: Vec<Entry>, paths: BTreeMap<String, bool>, explicit: HashSet<String>, total: u64, limit: usize }
+impl Default for Plan {
+    fn default() -> Self { Self::limited(MAX_ENTRIES) }
+}
 impl Plan {
+    /// A plan that accepts up to `limit` entries. A game package lists more files than an archive.
+    fn limited(limit: usize) -> Self {
+        Self { entries: Vec::new(), paths: BTreeMap::new(), explicit: HashSet::new(), total: 0, limit }
+    }
     fn add(&mut self, entry: Entry) -> Result<()> {
-        ensure!(self.entries.len() < MAX_ENTRIES, "Archive/source exceeds {MAX_ENTRIES} entries");
+        let limit = self.limit;
+        ensure!(self.entries.len() < limit, "Archive/source exceeds {limit} entries");
         ensure!(entry.size <= MAX_FILE, "File exceeds 1 TiB safety limit");
         if entry.path.ends_with("sce_sys/param.json") { ensure!(entry.size <= MAX_PARAM, "param.json exceeds 1 MiB limit"); }
         ensure!(self.explicit.insert(entry.path.clone()), "Duplicate archive entry: {}", entry.path);
@@ -327,7 +338,7 @@ impl Plan {
             self.paths.insert(prefix.clone(), true);
         }
         self.paths.insert(entry.path.clone(), entry.directory);
-        ensure!(self.paths.len() <= MAX_ENTRIES, "Too many implicit directories");
+        ensure!(self.paths.len() <= limit, "Too many implicit directories");
         self.total = self.total.checked_add(entry.size).context("Output size overflow")?;
         ensure!(self.total <= MAX_TOTAL, "Output exceeds 2 TiB safety limit");
         self.entries.push(entry);
@@ -366,13 +377,13 @@ impl Source {
             if kind == libc::S_IFDIR {
                 self.plan.add(Entry { path: path.clone(), directory: true, size: 0 })?;
                 let child = dir.child(name.as_bytes(), false)?;
-                ensure!(child.0.metadata()?.ino() == st.st_ino && child.0.metadata()?.dev() == st.st_dev, "Source directory changed during inspection");
+                ensure!(child.0.metadata()?.ino() == st.st_ino && child.0.metadata()?.dev() == st.st_dev as u64, "Source directory changed during inspection");
                 self.walk(&child, &path, cancel)?;
             } else {
                 ensure!(kind == libc::S_IFREG && st.st_nlink == 1, "Symlinks, hardlinks and special source entries are forbidden: {path}");
                 let file = dir.read(&name)?;
                 let meta = file.metadata()?;
-                ensure!(meta.ino() == st.st_ino && meta.dev() == st.st_dev, "Source changed during inspection");
+                ensure!(meta.ino() == st.st_ino && meta.dev() == st.st_dev as u64, "Source changed during inspection");
                 self.plan.add(Entry { path: path.clone(), directory: false, size: meta.len() })?;
                 self.stamps.insert(path, Stamp::of(&meta));
             }
@@ -389,6 +400,13 @@ impl Source {
 // Identify exactly one archive family. The ordered paths are passed as pinned fds
 // to libarchive's multi-volume reader (also concatenates split .7z.001 streams).
 fn volumes(plan: &Plan) -> Result<Option<Vec<String>>> {
+    let mut families = volume_groups(plan)?;
+    ensure!(families.len() <= 1, "Multiple independent archives found; choose a single release folder");
+    Ok(families.pop())
+}
+
+// Every complete archive family in the source, each as its ordered volume list.
+fn volume_groups(plan: &Plan) -> Result<Vec<Vec<String>>> {
     let part = regex::Regex::new(r"(?i)^(.*)\.part(\d+)\.rar$").unwrap();
     let split = regex::Regex::new(r"(?i)^(.*\.7z)\.(\d{3})$").unwrap();
     let old = regex::Regex::new(r"(?i)^(.*)\.r(\d{2})$").unwrap();
@@ -410,14 +428,42 @@ fn volumes(plan: &Plan) -> Result<Option<Vec<String>>> {
         ensure!(n > 0 && n <= MAX_ENTRIES as u32, "Invalid multipart volume number");
         ensure!(groups.entry(family).or_default().insert(n, p.clone()).is_none(), "Duplicate multipart volume number");
     }
-    ensure!(groups.len() <= 1, "Multiple independent archives found; choose a single release folder");
-    let Some((_, group)) = groups.into_iter().next() else { return Ok(None); };
-    let mut out = Vec::new();
-    for (i, (n, path)) in group.into_iter().enumerate() {
-        ensure!(n == i as u32 + 1, "Missing multipart volume {}; all volumes must be complete", i + 1);
-        out.push(path);
+    let mut families = Vec::new();
+    for (_, group) in groups {
+        let mut out = Vec::new();
+        for (i, (n, path)) in group.into_iter().enumerate() {
+            ensure!(n == i as u32 + 1, "Missing multipart volume {}; all volumes must be complete", i + 1);
+            out.push(path);
+        }
+        families.push(out);
     }
-    Ok(Some(out))
+    Ok(families)
+}
+
+// A release folder can ship extras next to the game, such as a firmware backport overlay.
+// An archive holds a game when it has a sce_sys/param.json; the launcher installs the one
+// archive that does, and refuses to guess when zero or several do.
+fn holds_game(plan: &Plan) -> bool {
+    plan.entries.iter().any(|e| !e.directory && (e.path == "sce_sys/param.json" || e.path.ends_with("/sce_sys/param.json")))
+}
+
+fn pick_game<T>(candidates: Vec<(Vec<String>, T, bool)>) -> Result<(Vec<String>, T)> {
+    let names = |hits: &[&(Vec<String>, T, bool)]| hits.iter().map(|c| c.0[0].clone()).collect::<Vec<_>>().join(", ");
+    let games: Vec<_> = candidates.iter().filter(|c| c.2).collect();
+    ensure!(!games.is_empty(), "Multiple independent archives found and none holds a game (sce_sys/param.json); choose a single release folder");
+    ensure!(games.len() == 1, "Multiple archives hold a game ({}); choose a single release folder", names(&games));
+    let (paths, plan, _) = candidates.into_iter().find(|c| c.2).unwrap();
+    Ok((paths, plan))
+}
+
+fn select_archive(api: &Api, source: &Source, families: Vec<Vec<String>>, cancel: &AtomicBool) -> Result<(Vec<String>, Plan)> {
+    let mut candidates = Vec::new();
+    for paths in families {
+        let plan = inspect_archive(api, source, &paths, cancel)?;
+        let game = holds_game(&plan);
+        candidates.push((paths, plan, game));
+    }
+    pick_game(candidates)
 }
 
 type Handle = *mut libc::c_void;
@@ -428,7 +474,7 @@ struct Api {
     new: unsafe extern "C" fn() -> Handle, formats: Unary, filters: Unary,
     open: unsafe extern "C" fn(Handle, *const *const libc::c_char, usize) -> libc::c_int,
     next: unsafe extern "C" fn(Handle, *mut Handle) -> libc::c_int,
-    data: unsafe extern "C" fn(Handle, *mut libc::c_void, usize) -> isize,
+    data_block: unsafe extern "C" fn(Handle, *mut *const libc::c_void, *mut usize, *mut i64) -> libc::c_int,
     skip: Unary, free: Unary, error: Text, pathname: Text, hardlink: Text, symlink: Text,
     size: unsafe extern "C" fn(Handle) -> i64, size_set: Unary,
     kind: unsafe extern "C" fn(Handle) -> libc::mode_t, encrypted: Unary,
@@ -436,16 +482,17 @@ struct Api {
 }
 impl Api {
     fn load() -> Result<Self> {
-        let lib = unsafe { libloading::Library::new("libarchive.so.13") }
-            .or_else(|_| unsafe { libloading::Library::new("libarchive.so") })
-            .context("System libarchive missing; install your distribution's libarchive runtime (libarchive13 on Debian/Ubuntu). No external extraction fallback is used")?;
+        let lib = crate::platform::libarchive_candidates()
+            .iter()
+            .find_map(|name| unsafe { libloading::Library::new(name) }.ok())
+            .with_context(|| format!("System libarchive missing; install libarchive ({}). No external extraction fallback is used", crate::platform::libarchive_install_hint()))?;
         // Each signature follows libarchive's public C API. Library stays alive
         // longer than every function pointer and archive handle using it.
         unsafe {
             macro_rules! sym { ($name:literal) => { *lib.get(concat!($name, "\0").as_bytes()).context(concat!("Missing libarchive symbol ", $name))? }; }
             Ok(Self { new: sym!("archive_read_new"), formats: sym!("archive_read_support_format_all"),
                 filters: sym!("archive_read_support_filter_all"), open: sym!("archive_read_open_filenames"),
-                next: sym!("archive_read_next_header"), data: sym!("archive_read_data"),
+                next: sym!("archive_read_next_header"), data_block: sym!("archive_read_data_block"),
                 skip: sym!("archive_read_data_skip"), free: sym!("archive_read_free"),
                 error: sym!("archive_error_string"), pathname: sym!("archive_entry_pathname"),
                 hardlink: sym!("archive_entry_hardlink"), symlink: sym!("archive_entry_symlink"),
@@ -461,7 +508,7 @@ struct Archive<'a> { api: &'a Api, handle: Handle, files: Vec<File>, _names: Vec
 impl<'a> Archive<'a> {
     fn open(api: &'a Api, source: &Source, volumes: &[String]) -> Result<Self> {
         let files: Vec<File> = volumes.iter().map(|p| source.file(p)).collect::<Result<_>>()?;
-        let names: Vec<CString> = files.iter().map(|f| CString::new(format!("/proc/self/fd/{}", f.as_raw_fd())).unwrap()).collect();
+        let names: Vec<CString> = files.iter().map(|f| CString::new(crate::platform::fd_open_path(f.as_raw_fd())).unwrap()).collect();
         let mut pointers: Vec<_> = names.iter().map(|n| n.as_ptr()).collect();
         pointers.push(std::ptr::null());
         let handle = unsafe { (api.new)() };
@@ -500,6 +547,21 @@ impl<'a> Archive<'a> {
             ensure!(size >= 0 && (!directory || size == 0), "Invalid declared archive size");
             Ok(Some(Entry { path, directory, size: size as u64 }))
         }
+    }
+    // Next block of the current entry's data, or None at its end. Reads with
+    // archive_read_data_block because archive_read_data can fail with a bogus
+    // "Block checksum error" at the end of some RAR5 files (libarchive #3352, fixed in #3361).
+    // The slice is valid until the next call. Blocks must follow each other without gaps.
+    fn block(&self, expected_offset: u64) -> Result<Option<&[u8]>> {
+        let mut data: *const libc::c_void = std::ptr::null();
+        let (mut size, mut offset) = (0usize, 0i64);
+        let code = unsafe { (self.api.data_block)(self.handle, &mut data, &mut size, &mut offset) };
+        if code == 1 { return Ok(None); } // ARCHIVE_EOF
+        self.status(code, "Extract archive data (corruption, password, or missing volume)")?;
+        ensure!(offset >= 0 && offset as u64 == expected_offset, "Archive entry has sparse or out-of-order data; refusing to install");
+        if size == 0 { return Ok(Some(&[])); }
+        ensure!(!data.is_null(), "libarchive returned a null data block");
+        Ok(Some(unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) }))
     }
     fn verify_sources(&self, source: &Source, volumes: &[String]) -> Result<()> {
         for (file, path) in self.files.iter().zip(volumes) {
@@ -547,8 +609,8 @@ impl Stage {
             (Dir(self.dir.0.try_clone()?), component(b"payload")?)
         } else { payload.parent(root, false)? };
         let leaf = component(leaf.as_bytes())?;
-        let r = unsafe { libc::renameat2(parent.0.as_raw_fd(), name.as_ptr(), self.destination.0.as_raw_fd(), leaf.as_ptr(), libc::RENAME_NOREPLACE) };
-        ensure!(r == 0, "Atomic publication refused (existing destination is never overwritten): {}", std::io::Error::last_os_error());
+        crate::platform::rename_noreplace(parent.0.as_raw_fd(), &name, self.destination.0.as_raw_fd(), &leaf)
+            .map_err(|e| anyhow::anyhow!("Atomic publication refused (existing destination is never overwritten): {e}"))?;
         // rename already committed; failure to sync must not mark it unpublished.
         let _ = self.destination.0.sync_all();
         Ok(())
@@ -560,7 +622,7 @@ impl Drop for Stage {
         let cleanup = || -> Result<()> {
             let st = self.destination.metadata(&self.name)?;
             let meta = self.dir.0.metadata()?;
-            ensure!(st.st_ino == meta.ino() && st.st_dev == meta.dev() && st.st_mode & libc::S_IFMT == libc::S_IFDIR, "Stage replaced; refusing cleanup");
+            ensure!(st.st_ino == meta.ino() && st.st_dev as u64 == meta.dev() && st.st_mode & libc::S_IFMT == libc::S_IFDIR, "Stage replaced; refusing cleanup");
             ensure!(bounded_read(self.dir.read(STAGE_MARKER)?, 512)? == self.token.as_bytes(), "Stage ownership mismatch");
             remove_contents(&self.dir, 0)?;
             let name = component(self.name.as_bytes())?;
@@ -628,7 +690,6 @@ fn copy_folder(source: &Source, output: &Dir, cancel: &AtomicBool, progress: Pro
 fn extract(api: &Api, source: &Source, paths: &[String], plan: &Plan, output: &Dir, cancel: &AtomicBool, progress: Progress<'_>) -> Result<()> {
     let archive = Archive::open(api, source, paths)?;
     let mut done = 0u64;
-    let mut buf = vec![0u8; 256 * 1024];
     for expected in &plan.entries {
         check_cancel(cancel)?;
         let entry = archive.header()?.context("Archive truncated since inspection")?;
@@ -640,14 +701,11 @@ fn extract(api: &Api, source: &Source, paths: &[String], plan: &Plan, output: &D
             let mut count = 0u64;
             loop {
                 check_cancel(cancel)?;
-                let n = unsafe { (api.data)(archive.handle, buf.as_mut_ptr().cast(), buf.len()) };
-                if n < 0 { archive.status(n as i32, "Extract archive data (corruption, password, or missing volume)")?; }
-                if n == 0 { break; }
-                ensure!(n as usize <= buf.len(), "Invalid libarchive read length");
-                count = count.checked_add(n as u64).context("Output size overflow")?;
-                done = done.checked_add(n as u64).context("Total output overflow")?;
+                let Some(chunk) = archive.block(count)? else { break; };
+                count = count.checked_add(chunk.len() as u64).context("Output size overflow")?;
+                done = done.checked_add(chunk.len() as u64).context("Total output overflow")?;
                 ensure!(count <= entry.size && done <= plan.total, "Archive output exceeds inspected header size");
-                target.write_all(&buf[..n as usize])?;
+                target.write_all(chunk)?;
                 progress(State::Extracting, done, plan.total);
             }
             ensure!(count == entry.size, "Archive entry truncated: {}", entry.path);
@@ -705,6 +763,79 @@ fn extract_image(volume: &crate::exfat::Volume, nodes: &[crate::exfat::Node], pl
     Ok(())
 }
 
+const PKG_UNSUPPORTED: &str = "Unsupported PKG package: the launcher unpacks only PS5 debug packages that hold a game. Install other .pkg files on the console, or provide an already extracted game with sce_sys/param.json and eboot.bin";
+
+/// A game package opened and listed, ready to install.
+struct Chosen { package: crate::pkg::Package, nodes: Vec<crate::pkg::Node>, plan: Plan }
+
+// Debug `.pkg` files in the release. Each one that opens is listed; the one that holds a game wins.
+// A game has a sce_sys/param.json and an eboot.bin. DLC packs and update-only packages hold neither,
+// so they are skipped. A backport overlay does hold a game, so when several do, the package nearest
+// the top of the release is the base game. Equal depth is never guessed. A package that fails to open
+// at or above the winner's depth might be the base game, so that failure stops the install.
+fn select_package(source: &Source, cancel: &AtomicBool) -> Result<Option<Chosen>> {
+    let depth = |path: &str| path.matches('/').count();
+    let mut best: Option<(usize, Vec<String>, Chosen)> = None;
+    let mut failure: Option<(usize, anyhow::Error)> = None;
+    for entry in source.plan.entries.iter().filter(|e| !e.directory && e.path.to_ascii_lowercase().ends_with(".pkg")) {
+        check_cancel(cancel)?;
+        let file = source.file(&entry.path)?;
+        if !crate::pkg::is_package(&file) { continue; }
+        let level = depth(&entry.path);
+        match open_package(file, cancel) {
+            Ok(chosen) if holds_game(&chosen.plan) && chosen.plan.explicit.contains("eboot.bin") => match &mut best {
+                Some((top, names, _)) if level == *top => names.push(entry.path.clone()),
+                Some((top, ..)) if level > *top => (),
+                _ => best = Some((level, vec![entry.path.clone()], chosen)),
+            },
+            Ok(_) => (),
+            Err(e) if cancel.load(Ordering::Acquire) => return Err(e),
+            Err(e) => if failure.as_ref().is_none_or(|f| level < f.0) { failure = Some((level, e.context(format!("Open {}", entry.path)))); },
+        }
+    }
+    if let Some((level, e)) = failure {
+        if best.as_ref().is_none_or(|b| level <= b.0) { return Err(e); }
+    }
+    let Some((_, names, chosen)) = best else { return Ok(None) };
+    ensure!(names.len() == 1, "Several packages hold a game ({}); choose a single release folder", names.join(", "));
+    Ok(Some(chosen))
+}
+
+fn open_package(file: File, cancel: &AtomicBool) -> Result<Chosen> {
+    let mut package = crate::pkg::Package::open(file, &|| check_cancel(cancel))?;
+    let nodes = package.list(&|| check_cancel(cancel))?;
+    let mut plan = Plan::limited(MAX_PACKAGE_ENTRIES);
+    for node in &nodes {
+        ensure!(normal_path(&node.path)? == node.path, "Unsafe path in package: {}", node.path);
+        plan.add(Entry { path: node.path.clone(), directory: node.directory, size: node.size })?;
+    }
+    Ok(Chosen { package, nodes, plan })
+}
+
+fn extract_package(package: &mut crate::pkg::Package, nodes: &[crate::pkg::Node], plan: &Plan, output: &Dir, cancel: &AtomicBool, progress: Progress<'_>) -> Result<()> {
+    let total = plan.total;
+    let mut done = 0u64;
+    for node in nodes {
+        check_cancel(cancel)?;
+        if node.directory { output.parent(&format!("{}/_", node.path), true)?; continue; }
+        let mut target = output.new_file(&node.path)?;
+        let mut count = 0u64;
+        package.copy(node, &mut |chunk| {
+            check_cancel(cancel)?;
+            count += chunk.len() as u64;
+            done += chunk.len() as u64;
+            ensure!(count <= node.size && done <= total, "Package output exceeds inspected size");
+            target.write_all(chunk)?;
+            progress(State::Extracting, done, total);
+            Ok(())
+        })?;
+        ensure!(count == node.size, "Package file truncated: {}", node.path);
+        target.sync_all()?;
+    }
+    ensure!(done == total, "Package total differs from inspected size");
+    Ok(())
+}
+
 fn game_root(output: &Dir, plan: &Plan, expected_ids: &[String], cancel: &AtomicBool) -> Result<(String, String)> {
     let mut games = Vec::new();
     let mut failures = Vec::new();
@@ -732,7 +863,7 @@ fn game_root(output: &Dir, plan: &Plan, expected_ids: &[String], cancel: &Atomic
     ensure!(games.len() <= 1, "Multiple valid game roots found; install one complete game at a time");
     let Some((root, tid)) = games.pop() else {
         if plan.entries.iter().any(|e| e.path.to_ascii_lowercase().ends_with(".pkg")) {
-            bail!("Unsupported PKG package; provide an already extracted game with sce_sys/param.json and eboot.bin");
+            bail!(PKG_UNSUPPORTED);
         }
         bail!("No valid extracted game found; require bounded sce_sys/param.json with titleId and nonempty eboot.bin. {}", failures.join("; "));
     };
@@ -745,22 +876,38 @@ fn install(req: &Request, cancel: &AtomicBool, progress: Progress<'_>, commit: &
     check_cancel(cancel)?;
     progress(State::Inspecting, 0, 0);
     let source = Source::inspect(req, cancel)?;
-    let paths = volumes(&source.plan)?;
-    let api = if paths.is_some() { Some(Api::load()?) } else { None };
-    let archive_plan = if let Some(paths) = &paths { Some(inspect_archive(api.as_ref().unwrap(), &source, paths, cancel)?) } else { None };
+    let mut families = volume_groups(&source.plan)?;
+    let api = if families.is_empty() { None } else { Some(Api::load()?) };
+    let (paths, archive_plan) = match families.len() {
+        0 => (None, None),
+        1 => {
+            let paths = families.pop().unwrap();
+            let plan = inspect_archive(api.as_ref().unwrap(), &source, &paths, cancel)?;
+            (Some(paths), Some(plan))
+        }
+        _ => {
+            let (paths, plan) = select_archive(api.as_ref().unwrap(), &source, families, cancel)?;
+            (Some(paths), Some(plan))
+        }
+    };
     let image = exfat_image(&source)?;
     ensure!(image.is_none() || paths.is_none(), "This download has both an archive and a disk image; choose a single release folder");
     let volume = match &image { Some(path) => Some(crate::exfat::Volume::open(source.file(path)?).context("Open exFAT disk image")?), None => None };
     let image_plan = match &volume { Some(v) => Some(inspect_image(v, cancel)?), None => None };
-    let plan = archive_plan.as_ref().or(image_plan.as_ref().map(|(_, plan)| plan)).unwrap_or(&source.plan);
-    if paths.is_none() && image.is_none() && plan.entries.iter().any(|e| e.path.to_ascii_lowercase().ends_with(".pkg")) {
-        bail!("Unsupported PKG package; provide an already extracted game");
+    let wants_package = paths.is_none() && image.is_none();
+    let (mut package, package_plan) = match if wants_package { select_package(&source, cancel)? } else { None } {
+        Some(Chosen { package, nodes, plan }) => (Some((package, nodes)), Some(plan)),
+        None => (None, None),
+    };
+    let plan = archive_plan.as_ref().or(image_plan.as_ref().map(|(_, plan)| plan)).or(package_plan.as_ref()).unwrap_or(&source.plan);
+    if paths.is_none() && image.is_none() && package.is_none() && plan.entries.iter().any(|e| e.path.to_ascii_lowercase().ends_with(".pkg")) {
+        bail!(PKG_UNSUPPORTED);
     }
     check_cancel(cancel)?;
     let destination = Dir::absolute(&req.destination, true).context("Open explicit installation destination")?;
     // Prevent installing into the torrent tree or a parent of it; preserve originals.
-    let actual_dest = fs::canonicalize(format!("/proc/self/fd/{}", destination.0.as_raw_fd()))?;
-    let actual_source = fs::canonicalize(format!("/proc/self/fd/{}", source.dir.0.as_raw_fd()))?;
+    let actual_dest = crate::platform::fd_real_path(destination.0.as_raw_fd())?;
+    let actual_source = crate::platform::fd_real_path(source.dir.0.as_raw_fd())?;
     ensure!(!actual_dest.starts_with(&actual_source) && !actual_source.starts_with(&actual_dest), "Source and destination trees must be separate");
     disk_check(&destination, plan)?;
     let stage = Stage::new(destination, &req.key)?;
@@ -771,6 +918,7 @@ fn install(req: &Request, cancel: &AtomicBool, progress: Progress<'_>, commit: &
         extract_image(v, nodes, plan, &output, cancel, progress)?;
         let _ = source.file(path).context("Disk image changed while installing")?;
     }
+    else if let Some((package, nodes)) = &mut package { extract_package(package, nodes, plan, &output, cancel, progress)?; }
     else { copy_folder(&source, &output, cancel, progress)?; }
     check_cancel(cancel)?;
     progress(State::Validating, plan.total, plan.total);
@@ -822,7 +970,7 @@ mod tests {
     const PARAM: &[u8] = br#"{"titleId":"PPSA12345","localizedParameters":{"en-US":{"titleName":"Generated fixture"}}}"#;
 
     fn fixture() -> (tempfile::TempDir, Request) {
-        let t = tempfile::tempdir().unwrap();
+        let t = crate::platform::real_tempdir();
         let source = t.path().join("torrent");
         fs::create_dir(&source).unwrap();
         fs::write(source.join(OWNED), KEY).unwrap();
@@ -1076,6 +1224,14 @@ mod tests {
         assert_eq!(crate::library::scan(&[req.destination.clone()]).len(), 1); clean(&req);
     }
 
+    /// Whichever 7-Zip CLI is installed: `7zz` (Homebrew sevenzip), `7z` or `7za` (p7zip).
+    fn seven_zip() -> &'static str {
+        ["7zz", "7z", "7za"]
+            .into_iter()
+            .find(|bin| std::process::Command::new(bin).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok())
+            .expect("a 7-Zip CLI (7zz, 7z or 7za) is needed for the archive fixtures")
+    }
+
     #[test]
     fn exfat_image_release_installs_game_and_keeps_image() {
         for scatter in [false, true] {
@@ -1100,23 +1256,161 @@ mod tests {
         unpublished(&req);
     }
 
+    fn pkg_files() -> [(&'static str, &'static [u8]); 3] { [("eboot.bin", b"fixture binary bytes"), ("data", b"data"), ("sce_module/a.prx", b"module")] }
+
+    #[test]
+    fn debug_pkg_release_installs_game_and_keeps_package() {
+        for entropy in [false, true] {
+            let (_t, req) = fixture();
+            let bytes = crate::pkg::build::package(&crate::pkg::build::Spec { files: &pkg_files(), entropy, ..Default::default() });
+            let path = req.source.join("PPSA12345.pkg");
+            fs::write(&path, &bytes).unwrap();
+            let seen = Mutex::new(Vec::new());
+            let p = run(&req, &AtomicBool::new(false), &|s, d, t| seen.lock().unwrap().push((s, d, t))).unwrap();
+            assert_eq!(fs::read(p.join("sce_sys/param.json")).unwrap(), PARAM, "param.json comes from the package metadata");
+            assert_eq!(fs::read(p.join("eboot.bin")).unwrap(), b"fixture binary bytes");
+            assert_eq!(fs::read(p.join("sce_module/a.prx")).unwrap(), b"module");
+            assert_eq!(fs::read(&path).unwrap(), bytes, "the downloaded package is kept unchanged");
+            let seen = seen.into_inner().unwrap();
+            let last = seen.iter().rfind(|s| s.0 == State::Extracting).unwrap();
+            assert_eq!(last.1, last.2, "progress reaches the total");
+            assert_eq!(crate::library::scan(&[req.destination.clone()]).len(), 1); clean(&req);
+        }
+    }
+
+    #[test]
+    fn pkg_release_picks_the_base_game_and_refuses_ambiguity() {
+        let build = |files: &[(&str, &[u8])]| crate::pkg::build::package(&crate::pkg::build::Spec { files, ..Default::default() });
+        let (_t, req) = fixture();
+        // The base game sits at the top; a backport overlay beside a DLC pack sits in sub-folders.
+        fs::write(req.source.join("game.pkg"), build(&[("eboot.bin", b"base game"), ("data", b"d")])).unwrap();
+        fs::create_dir(req.source.join("Backport")).unwrap();
+        fs::write(req.source.join("Backport/game_bp.pkg"), build(&[("eboot.bin", b"backport overlay")])).unwrap();
+        fs::create_dir(req.source.join("DLC")).unwrap();
+        fs::write(req.source.join("DLC/dlc.pkg"), build(&[("dlc/pak", b"content")])).unwrap();
+        let p = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap();
+        assert_eq!(fs::read(p.join("eboot.bin")).unwrap(), b"base game");
+        clean(&req);
+
+        // Two games at the same depth are never guessed between.
+        let (_t, req) = fixture();
+        fs::write(req.source.join("one.pkg"), build(&[("eboot.bin", b"1")])).unwrap();
+        fs::write(req.source.join("two.pkg"), build(&[("eboot.bin", b"2")])).unwrap();
+        let err = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap_err().to_string();
+        assert!(err.contains("one.pkg") && err.contains("two.pkg"), "{err}");
+        unpublished(&req);
+
+        // Packages that hold no game are not installable.
+        let (_t, req) = fixture();
+        fs::write(req.source.join("dlc.pkg"), build(&[("dlc/pak", b"content")])).unwrap();
+        assert!(run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap_err().to_string().contains("Unsupported PKG"));
+        unpublished(&req);
+    }
+
+    #[test]
+    fn retail_and_damaged_pkg_are_refused_before_anything_is_written() {
+        let (_t, req) = fixture();
+        let retail = crate::pkg::build::package(&crate::pkg::build::Spec { files: &pkg_files(), retail: true, ..Default::default() });
+        fs::write(req.source.join("game.pkg"), &retail).unwrap();
+        assert!(format!("{:#}", run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap_err()).contains("retail"));
+        unpublished(&req);
+        let good = crate::pkg::build::package(&crate::pkg::build::Spec { files: &pkg_files(), ..Default::default() });
+        fs::write(req.source.join("game.pkg"), &good[..good.len() - 40]).unwrap();
+        assert!(format!("{:#}", run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap_err()).contains("download"));
+        unpublished(&req);
+    }
+
+    #[test]
+    fn a_broken_base_package_never_lets_the_overlay_install() {
+        let (_t, req) = fixture();
+        let build = |files: &[(&str, &[u8])]| crate::pkg::build::package(&crate::pkg::build::Spec { files, ..Default::default() });
+        let base = build(&[("eboot.bin", b"base game")]);
+        fs::write(req.source.join("game.pkg"), &base[..base.len() - 40]).unwrap();
+        fs::create_dir(req.source.join("Backport")).unwrap();
+        fs::write(req.source.join("Backport/bp.pkg"), build(&[("eboot.bin", b"overlay")])).unwrap();
+        assert!(format!("{:#}", run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap_err()).contains("game.pkg"));
+        unpublished(&req);
+    }
+
+    #[test]
+    fn cancelling_a_pkg_install_cleans_up_and_keeps_the_package() {
+        let (_t, req) = fixture();
+        let bytes = crate::pkg::build::package(&crate::pkg::build::Spec { files: &pkg_files(), ..Default::default() });
+        fs::write(req.source.join("game.pkg"), &bytes).unwrap();
+        let cancel = AtomicBool::new(false);
+        let err = run(&req, &cancel, &|s, d, _| { if s == State::Extracting && d > 0 { cancel.store(true, Ordering::Release); } }).unwrap_err();
+        assert!(err.to_string().contains("Cancelled"), "{err:#}");
+        assert_eq!(fs::read(req.source.join("game.pkg")).unwrap(), bytes);
+        unpublished(&req);
+    }
+
     #[test]
     fn zip_and_7z_generated_fixtures_and_split_7z() {
         for format in ["zip", "7z", "split"] {
             let (t, req) = fixture(); let input = t.path().join("generated"); game(&input);
             let archive = req.source.join(if format == "zip" { "fixture.zip" } else { "fixture.7z" });
-            let mut command = std::process::Command::new("/usr/bin/7z");
+            let mut command = std::process::Command::new(seven_zip());
             command.current_dir(&input).args(["a", "-bd", "-y"]);
             command.arg(if format == "zip" { "-tzip" } else { "-t7z" });
             if format == "split" { command.arg("-v128b"); }
             let result = command.arg(&archive).args(["sce_sys", "eboot.bin", "data"]).output().unwrap();
             assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
             let before: Vec<_> = fs::read_dir(&req.source).unwrap().map(|e| { let p=e.unwrap().path(); let d=Sha256::digest(fs::read(&p).unwrap()); (p,d) }).collect();
-            let p = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap();
+            let p = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap_or_else(|e| {
+                // Say which fixture and which 7-Zip made it: archive tools differ between systems.
+                let mut files: Vec<_> = fs::read_dir(&req.source).unwrap().map(|e| {
+                    let p = e.unwrap().path();
+                    (p.file_name().unwrap().to_string_lossy().into_owned(), fs::metadata(&p).map(|m| m.len()).unwrap_or(0))
+                }).collect();
+                files.sort();
+                let banner = std::process::Command::new(seven_zip()).output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).lines().find(|l| l.contains("7-Zip") || l.contains("p7zip")).unwrap_or("").trim().to_string())
+                    .unwrap_or_default();
+                panic!("{format} fixture failed to install: {e:#}\n7-Zip: {banner}\nsource files: {files:?}");
+            });
             assert_eq!(fs::read(p.join("sce_sys/param.json")).unwrap(), PARAM);
             assert_eq!(fs::read(p.join("data")).unwrap(), b"fixture contents");
             for (p,d) in before { assert_eq!(Sha256::digest(fs::read(p).unwrap()), d); } clean(&req);
         }
+    }
+
+    // The Minecraft release ships the game next to a firmware backport overlay. Install the game
+    // and leave both archives in the torrent folder untouched.
+    #[test]
+    fn install_picks_the_game_archive_and_ignores_the_overlay_archive() {
+        let (t, req) = fixture(); let input = t.path().join("generated"); game(&input);
+        let overlay = t.path().join("overlay");
+        fs::create_dir_all(overlay.join("fakelib")).unwrap();
+        fs::write(overlay.join("eboot.bin"), b"backport eboot").unwrap();
+        fs::write(overlay.join("fakelib/libSceAgc.sprx"), b"fake").unwrap();
+        let pack = |dir: &Path, name: &str, items: &[&str]| {
+            let result = std::process::Command::new(seven_zip()).current_dir(dir)
+                .args(["a", "-bd", "-y", "-tzip"]).arg(req.source.join(name)).args(items).output().unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        };
+        pack(&input, "PPSA12345-app.zip", &["sce_sys", "eboot.bin", "data"]);
+        pack(&overlay, "Backport PPSA12345 4.00.zip", &["eboot.bin", "fakelib"]);
+        fs::write(req.source.join("ps5-backport.elf"), b"loose file").unwrap();
+        let before: Vec<_> = fs::read_dir(&req.source).unwrap().map(|e| { let p=e.unwrap().path(); let d=Sha256::digest(fs::read(&p).unwrap()); (p,d) }).collect();
+        let p = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap();
+        assert_eq!(fs::read(p.join("sce_sys/param.json")).unwrap(), PARAM);
+        assert_eq!(fs::read(p.join("eboot.bin")).unwrap(), b"not an executable; generated bytes\0\xff");
+        assert!(!p.join("fakelib").exists(), "the overlay must not be installed");
+        for (path, digest) in before { assert_eq!(Sha256::digest(fs::read(path).unwrap()), digest); }
+        clean(&req);
+    }
+
+    #[test]
+    fn two_game_archives_are_still_refused() {
+        let (t, req) = fixture(); let input = t.path().join("generated"); game(&input);
+        for name in ["one.zip", "two.zip"] {
+            let result = std::process::Command::new(seven_zip()).current_dir(&input)
+                .args(["a", "-bd", "-y", "-tzip"]).arg(req.source.join(name)).args(["sce_sys", "eboot.bin", "data"]).output().unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        }
+        let error = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap_err();
+        assert!(format!("{error:#}").contains("Multiple archives hold a game"), "{error:#}");
+        assert!(!req.destination.exists() || fs::read_dir(&req.destination).unwrap().next().is_none());
     }
 
     #[test]
@@ -1195,6 +1489,35 @@ mod tests {
         }
         assert_eq!(volumes(&plan(&["x.part02.rar", "x.part01.rar"])).unwrap().unwrap(), ["x.part01.rar", "x.part02.rar"]);
         assert_eq!(volumes(&plan(&["x.r01", "x.rar", "x.r00"])).unwrap().unwrap(), ["x.rar", "x.r00", "x.r01"]);
+    }
+
+    #[test]
+    fn release_folder_with_overlay_installs_only_the_archive_that_holds_the_game() {
+        let plan = |entries: &[&str]| {
+            let mut p = Plan::default();
+            for e in entries { p.add(Entry { path: (*e).into(), size: 1, directory: false }).unwrap(); } p
+        };
+        // The Minecraft release: the game archive, a firmware backport overlay and a loose ELF.
+        let source = plan(&["PPSA17221-app.rar", "Backpork PPSA17221 4.00.rar", "ps5-backpork.elf"]);
+        assert_eq!(volume_groups(&source).unwrap().len(), 2);
+        assert!(volumes(&source).is_err(), "volumes() still refuses several families");
+        let game = plan(&["PPSA17221-app/eboot.bin", "PPSA17221-app/sce_sys/param.json"]);
+        let overlay = plan(&["Backpork 4.00/eboot.bin", "Backpork 4.00/fakelib/libSceAgc.sprx"]);
+        assert!(holds_game(&game));
+        assert!(!holds_game(&overlay));
+        assert!(holds_game(&plan(&["sce_sys/param.json", "eboot.bin"])), "game at the archive root");
+        let (paths, kept) = pick_game(vec![
+            (vec!["Backpork PPSA17221 4.00.rar".into()], overlay, false),
+            (vec!["PPSA17221-app.rar".into()], game, true),
+        ]).unwrap();
+        assert_eq!(paths, ["PPSA17221-app.rar"]);
+        assert!(holds_game(&kept));
+        // Zero or several games: refuse and name the problem.
+        let none = pick_game(vec![(vec!["a.rar".into()], (), false), (vec!["b.rar".into()], (), false)]).unwrap_err();
+        assert!(format!("{none:#}").contains("none holds a game"));
+        let many = pick_game(vec![(vec!["a.rar".into()], (), true), (vec!["b.rar".into()], (), true)]).unwrap_err();
+        let message = format!("{many:#}");
+        assert!(message.contains("a.rar") && message.contains("b.rar"), "{message}");
     }
 
     #[test]
