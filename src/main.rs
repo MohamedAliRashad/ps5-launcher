@@ -6,6 +6,7 @@ mod boot;
 mod catalog;
 mod compat;
 mod exfat;
+mod pkg;
 mod results;
 mod trailer;
 mod config;
