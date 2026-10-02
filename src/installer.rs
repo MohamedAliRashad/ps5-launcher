@@ -795,10 +795,47 @@ fn install(req: &Request, cancel: &AtomicBool, progress: Progress<'_>, commit: &
     check_cancel(cancel)?;
     progress(State::Validating, plan.total, plan.total);
     let (root, tid) = game_root(&output, plan, &req.expected_ids, cancel)?;
+    let update = update_root(&output, plan, &tid);
     let leaf = format!("{tid}-{}", &req.key[..12]);
     check_cancel(cancel)?;
     commit(&stage, &root, &leaf, &tid)?;
+    if let Some(update) = update { place_update(&stage, &req.destination, &root, &update, &leaf); }
     Ok(())
+}
+
+/// The PS4 update (param.sfo category `gp`) for `tid` shipped with a game, if there is exactly one.
+fn update_root(output: &Dir, plan: &Plan, tid: &str) -> Option<String> {
+    let roots: Vec<String> = plan.entries.iter().filter(|e| !e.directory).filter_map(|e| {
+        let root = e.path.strip_suffix("/sce_sys/param.sfo")?;
+        let sfo = output.read(&e.path).ok().and_then(|f| bounded_read(f, MAX_PARAM).ok()).and_then(|b| crate::sfo::parse(&b))?;
+        let is_update = sfo.get("CATEGORY").is_some_and(|c| c.text().starts_with("gp"));
+        let same_game = sfo.get("TITLE_ID").is_some_and(|t| t.text() == tid);
+        (is_update && same_game).then(|| root.to_string())
+    }).collect();
+    if roots.len() > 1 { crate::log!("{} updates for {tid} in one release; none installed", roots.len()); }
+    (roots.len() == 1).then(|| roots[0].clone())
+}
+
+/// Put a game's update next to it as `<leaf>-patch`, where shadPS4 looks for updates. Runs after
+/// the game is published: a failure leaves the game playable without its update.
+fn place_update(stage: &Stage, destination: &Path, game_root: &str, update: &str, leaf: &str) {
+    let patch = format!("{leaf}-patch");
+    let inside = if game_root.is_empty() { Some(update) } else { update.strip_prefix(&format!("{game_root}/")) };
+    let result = match inside {
+        // Shipped inside the game's folder, so it moved with it: move it out beside the game.
+        Some(rel) => (|| -> Result<()> {
+            let from = std::ffi::CString::new(destination.join(leaf).join(rel).into_os_string().into_encoded_bytes())?;
+            let to = std::ffi::CString::new(destination.join(&patch).into_os_string().into_encoded_bytes())?;
+            let r = unsafe { libc::renameat2(libc::AT_FDCWD, from.as_ptr(), libc::AT_FDCWD, to.as_ptr(), libc::RENAME_NOREPLACE) };
+            ensure!(r == 0, "{}", std::io::Error::last_os_error());
+            Ok(())
+        })(),
+        None => stage.publish(update, &patch),
+    };
+    match result {
+        Ok(()) => crate::log!("Installed the update as {patch}"),
+        Err(e) => crate::log!("Installed {leaf}, but its update could not be placed: {e:#}"),
+    }
 }
 
 /// A PS4 release shipped as PKG packages: the game, its updates and DLC. The game and its
@@ -828,19 +865,30 @@ fn install_pkgs(req: &Request, source: &Source, pkgs: &[String], cancel: &Atomic
     let actual_source = fs::canonicalize(format!("/proc/self/fd/{}", source.dir.0.as_raw_fd()))?;
     ensure!(!actual_dest.starts_with(&actual_source) && !actual_source.starts_with(&actual_dest), "Source and destination trees must be separate");
     let staged: Vec<&String> = games.iter().chain(&updates).collect();
-    let total: u64 = staged.iter().map(|p| size(p)).sum::<u64>() + dlc.iter().map(size).sum::<u64>();
-    disk_check(&destination, &Plan { total, ..Plan::default() })?;
+    let game_bytes: u64 = staged.iter().map(|p| size(p)).sum();
+    let dlc_bytes: u64 = dlc.iter().map(size).sum();
+    let total = game_bytes + dlc_bytes;
+    disk_check(&destination, &Plan { total: game_bytes, ..Plan::default() })?;
     let stage = Stage::new(destination, &req.key)?;
     let output = stage.payload()?;
-    let output_path = fs::read_link(format!("/proc/self/fd/{}", output.0.as_raw_fd())).context("Locate staging folder")?;
+    // DLC is staged inside shadPS4's add-on folder (same disk) and only moved into place once the
+    // game is installed; the stage, and anything left in it, is removed on any failure.
+    let dlc_stage = if dlc.is_empty() { None } else {
+        let addons = pkgx::addons_dir();
+        fs::create_dir_all(&addons).context("Create shadPS4 add-on folder")?;
+        let dir = Dir::absolute(&addons, false).context("Open shadPS4 add-on folder")?;
+        disk_check(&dir, &Plan { total: dlc_bytes, ..Plan::default() })?;
+        Some(Stage::new(dir, &req.key)?)
+    };
+    let fd_path = |dir: &Dir| fs::read_link(format!("/proc/self/fd/{}", dir.0.as_raw_fd())).context("Locate staging folder");
+    let output_path = fd_path(&output)?;
+    let dlc_path = match &dlc_stage { Some(s) => Some(fd_path(&s.payload()?)?), None => None };
     progress(State::Extracting, 0, total);
     let mut done = 0u64;
-    let addons = pkgx::addons_dir();
     for path in staged.iter().copied().chain(&dlc) {
         check_cancel(cancel)?;
         let bytes = size(path);
-        let into = if dlc.contains(path) { &addons } else { &output_path };
-        if dlc.contains(path) { fs::create_dir_all(into).context("Create shadPS4 add-on folder")?; }
+        let into = if dlc.contains(path) { dlc_path.as_ref().unwrap() } else { &output_path };
         pkgx::extract(&tool, &req.source.join(path), into, cancel, &|file, files| {
             progress(State::Extracting, done + bytes * file / files.max(1), total);
         }).map_err(|e| if e == "Cancelled" { anyhow::anyhow!("Cancelled") } else { anyhow::anyhow!("{path}: {e}") })?;
@@ -850,25 +898,50 @@ fn install_pkgs(req: &Request, source: &Source, pkgs: &[String], cancel: &Atomic
     check_cancel(cancel)?;
     progress(State::Validating, total, total);
     // Validate exactly what the extractor wrote (no links or special files), then find the game.
-    let mut tree = Source { dir: Dir(output.0.try_clone()?), plan: Plan::default(), stamps: BTreeMap::new() };
-    tree.walk(&Dir(output.0.try_clone()?), "", cancel)?;
-    let (root, tid) = game_root(&output, &tree.plan, &req.expected_ids, cancel)?;
-    let leaf = format!("{tid}-{}", &req.key[..12]);
-    let patch = format!("{root}-patch");
-    let has_patch = !updates.is_empty() && output.metadata(&patch).is_ok();
-    if !updates.is_empty() && !has_patch {
-        crate::log!("PKG update for another title than {tid}: not installed");
-    }
-    commit(&stage, &root, &leaf, &tid)?;
-    if has_patch {
-        // The game is published; a failure here leaves it playable without the update.
-        if let Err(e) = stage.publish(&patch, &format!("{leaf}-patch")) {
-            crate::log!("Installed {tid}, but its update could not be placed: {e:#}");
+    let walk = |dir: &Dir| -> Result<Plan> {
+        let mut tree = Source { dir: Dir(dir.0.try_clone()?), plan: Plan::default(), stamps: BTreeMap::new() };
+        tree.walk(&Dir(dir.0.try_clone()?), "", cancel)?;
+        Ok(tree.plan)
+    };
+    let plan = walk(&output)?;
+    let (root, tid) = game_root(&output, &plan, &req.expected_ids, cancel)?;
+    let update = update_root(&output, &plan, &tid);
+    if !updates.is_empty() && update.is_none() { crate::log!("The update PKG isn't for {tid}: not installed"); }
+    let dlc_items: Vec<String> = match &dlc_stage {
+        Some(s) => {
+            let payload = s.payload()?;
+            walk(&payload)?;
+            match payload.child(tid.as_bytes(), false) {
+                Ok(dir) => dir.names()?,
+                Err(_) => { crate::log!("The DLC PKGs aren't for {tid}: not installed"); Vec::new() }
+            }
         }
-    }
+        None => Vec::new(),
+    };
+    let leaf = format!("{tid}-{}", &req.key[..12]);
+    check_cancel(cancel)?;
+    commit(&stage, &root, &leaf, &tid)?;
+    if let Some(update) = update { place_update(&stage, &req.destination, &root, &update, &leaf); }
+    if let Some(s) = &dlc_stage { place_dlc(s, &tid, &dlc_items); }
     Ok(())
 }
 
+/// Move staged DLC (`<stage>/payload/<tid>/<label>`) to `<add-on folder>/<tid>/<label>`. Add-ons
+/// already there are never replaced.
+fn place_dlc(stage: &Stage, tid: &str, items: &[String]) {
+    let result = (|| -> Result<()> {
+        let from = stage.payload()?.child(tid.as_bytes(), false)?;
+        let to = stage.destination.child(tid.as_bytes(), true)?;
+        for item in items {
+            let name = component(item.as_bytes())?;
+            let r = unsafe { libc::renameat2(from.0.as_raw_fd(), name.as_ptr(), to.0.as_raw_fd(), name.as_ptr(), libc::RENAME_NOREPLACE) };
+            if r == 0 { crate::log!("Installed DLC {tid}/{item}"); }
+            else { crate::log!("DLC {tid}/{item} not installed (an add-on with that name is kept): {}", std::io::Error::last_os_error()); }
+        }
+        Ok(())
+    })();
+    if let Err(e) = result { crate::log!("DLC for {tid} could not be placed: {e:#}"); }
+}
 #[derive(Serialize, Deserialize)]
 struct Saved { version: u32, jobs: Vec<Record> }
 fn load_records(store: &Path) -> Result<Vec<Record>> {
@@ -1178,10 +1251,105 @@ mod tests {
         }
         let p = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap();
         assert!(p.file_name().unwrap().to_string_lossy().starts_with("CUSA04118-"));
+        let patch = PathBuf::from(format!("{}-patch", p.display()));
+        assert!(patch.join("sce_sys/param.sfo").is_file(), "the update is kept beside the game, where shadPS4 looks");
         let found = crate::library::scan(&[req.destination.clone()]);
-        assert_eq!(found.len(), 1);
+        assert_eq!(found.len(), 1, "the update is not listed as a second game");
         assert_eq!(found[0].platform, crate::platform::Platform::Ps4);
         clean(&req);
+    }
+
+    #[test]
+    fn ps4_update_inside_the_game_folder_moves_beside_it() {
+        use crate::sfo::{build, Value};
+        let (_t, mut req) = fixture();
+        req.expected_ids = vec!["CUSA04118".into()];
+        let sfo = |cat: &str| build(&[("CATEGORY", Value::Text(cat.into())), ("TITLE_ID", Value::Text("CUSA04118".into()))]);
+        for (dir, cat) in [("", "gd"), ("Update", "gp")] {
+            let d = req.source.join(dir);
+            fs::create_dir_all(d.join("sce_sys")).unwrap();
+            fs::write(d.join("sce_sys/param.sfo"), sfo(cat)).unwrap();
+            fs::write(d.join("eboot.bin"), b"generated bytes").unwrap();
+        }
+        let p = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap();
+        assert!(!p.join("Update").exists());
+        assert!(PathBuf::from(format!("{}-patch", p.display())).join("sce_sys/param.sfo").is_file());
+        clean(&req);
+    }
+
+    /// A stand-in for the PKG extractor, run in the same sandbox: each fixture `.pkg` is a shell
+    /// snippet setting KIND (101 game, 102 update, 103 DLC) and an `extract DEST` function.
+    fn fake_pkgs(t: &Path) -> PathBuf {
+        use crate::sfo::{build, Value};
+        for cat in ["gd", "gp", "ac"] {
+            fs::write(t.join(format!("{cat}.sfo")), build(&[("CATEGORY", Value::Text(cat.into())), ("TITLE_ID", Value::Text("CUSA12345".into()))])).unwrap();
+        }
+        let tool = t.join("fake-extractor");
+        fs::write(&tool, "#!/bin/sh\nset -e\nKIND=0\n. \"$1\"\n[ \"$2\" = --check-type ] && exit $KIND\nextract \"$2\"\nprintf 'Extracting file 1 of 1\\nTHE END %s\\n' \"$1\"\n").unwrap();
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::pkgx::TEST_TOOL.with(|c| *c.borrow_mut() = Some(tool.clone()));
+        crate::pkgx::TEST_ADDONS.with(|c| *c.borrow_mut() = Some(t.join("addcont")));
+        tool
+    }
+    fn pkg(req: &Request, t: &Path, name: &str, kind: u32, body: &str) {
+        let s = t.display();
+        let body = body.replace("$SFO", &s.to_string());
+        fs::write(req.source.join(name), format!("KIND={kind}\nextract() {{ {body}; }}\n")).unwrap();
+    }
+    const GAME: &str = "mkdir -p \"$1/CUSA12345/sce_sys\"; cp $SFO/gd.sfo \"$1/CUSA12345/sce_sys/param.sfo\"; echo game > \"$1/CUSA12345/eboot.bin\"";
+    const UPDATE: &str = "mkdir -p \"$1/CUSA12345-patch/sce_sys\"; cp $SFO/gp.sfo \"$1/CUSA12345-patch/sce_sys/param.sfo\"; echo patch > \"$1/CUSA12345-patch/eboot.bin\"";
+    const DLC: &str = "mkdir -p \"$1/CUSA12345/SEASONPASS/sce_sys\"; cp $SFO/ac.sfo \"$1/CUSA12345/SEASONPASS/sce_sys/param.sfo\"; echo new > \"$1/CUSA12345/SEASONPASS/data\"";
+
+    #[test]
+    fn pkg_game_update_and_dlc_install_without_replacing_existing_addons() {
+        if !crate::sandbox::available() { return; }
+        let (t, mut req) = fixture();
+        req.expected_ids = vec!["CUSA12345".into()];
+        fake_pkgs(t.path());
+        pkg(&req, t.path(), "game.pkg", 101, GAME);
+        pkg(&req, t.path(), "update.pkg", 102, UPDATE);
+        pkg(&req, t.path(), "dlc.pkg", 103, &format!("{DLC}; mkdir -p \"$1/CUSA12345/EXTRA\"; echo extra > \"$1/CUSA12345/EXTRA/data\""));
+        let addons = t.path().join("addcont/CUSA12345");
+        fs::create_dir_all(addons.join("SEASONPASS")).unwrap();
+        fs::write(addons.join("SEASONPASS/data"), b"mine").unwrap();
+        let p = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap();
+        assert_eq!(fs::read(p.join("eboot.bin")).unwrap(), b"game\n");
+        assert_eq!(fs::read(format!("{}-patch/eboot.bin", p.display())).unwrap(), b"patch\n");
+        assert_eq!(fs::read(addons.join("SEASONPASS/data")).unwrap(), b"mine", "an existing add-on is never replaced");
+        assert_eq!(fs::read(addons.join("EXTRA/data")).unwrap(), b"extra\n", "a new add-on is installed");
+        let leftovers: Vec<_> = fs::read_dir(t.path().join("addcont")).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(leftovers, vec![std::ffi::OsString::from("CUSA12345")], "no staging folder is left behind");
+        assert!(req.source.join("game.pkg").is_file());
+        clean(&req);
+    }
+
+    #[test]
+    fn pkg_failure_or_crash_leaves_game_folder_and_addons_untouched() {
+        if !crate::sandbox::available() { return; }
+        for case in ["dlc crash", "game crash", "escape"] {
+            let (t, mut req) = fixture();
+            req.expected_ids = vec!["CUSA12345".into()];
+            fake_pkgs(t.path());
+            let addons = t.path().join("addcont/CUSA12345");
+            fs::create_dir_all(addons.join("SEASONPASS")).unwrap();
+            fs::write(addons.join("SEASONPASS/data"), b"mine").unwrap();
+            match case {
+                "dlc crash" => {
+                    pkg(&req, t.path(), "game.pkg", 101, GAME);
+                    pkg(&req, t.path(), "dlc.pkg", 103, &format!("{}; exit 42", DLC.replace("SEASONPASS", "OTHER")));
+                }
+                // Metadata and a nonempty eboot are written, then the extractor dies.
+                "game crash" => pkg(&req, t.path(), "game.pkg", 101, &format!("{GAME}; exit 42")),
+                _ => pkg(&req, t.path(), "game.pkg", 101, &format!("{GAME}; echo pwned > \"$1/../../../escaped\"")),
+            }
+            let err = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap_err().to_string();
+            assert!(err.contains("stopped before finishing"), "{case}: {err}");
+            assert!(!t.path().join("escaped").exists() && !t.path().join("games/escaped").exists(), "{case}: nothing written outside");
+            assert_eq!(fs::read_dir(&req.destination).unwrap().count(), 0, "{case}: nothing published, stage removed");
+            assert_eq!(fs::read(addons.join("SEASONPASS/data")).unwrap(), b"mine", "{case}");
+            assert_eq!(fs::read_dir(t.path().join("addcont")).map(|d| d.count()).unwrap_or(1), 1, "{case}: add-on folder unchanged");
+            assert_eq!(fs::read_dir(&addons).unwrap().count(), 1, "{case}");
+        }
     }
 
     /// End to end with a real PS4 PKG and the extractor (not in the repo):

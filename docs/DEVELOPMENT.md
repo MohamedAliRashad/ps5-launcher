@@ -319,10 +319,24 @@ A `Platform` (PS5 or PS4) travels with each installed game and catalog release
   `~/.local/share/ps5-launcher/pkg-extractor` ([src/pkgx.rs](../src/pkgx.rs)). Each PKG is
   classified (`--check-type`: game, update, DLC); the game and its update are extracted into
   the installer's stage, validated like a folder release, and published as `<game>` and
-  `<game>-patch` (where shadPS4 looks for updates). DLC goes to `~/.local/share/shadPS4/addcont`.
-  The torrent's PKGs are kept for seeding. `PS5_LAUNCHER_PKG_EXTRACTOR` points at another
-  extractor; with it and `PKG_FIXTURE`/`PKG_TITLE_ID`, `cargo test -- --ignored pkg_` runs the
-  end-to-end tests against a real PKG.
+  `<game>-patch` (where shadPS4 looks for updates). DLC is extracted into a stage inside
+  `~/.local/share/shadPS4/addcont` and moved into place only after the game is published,
+  never over an add-on that's already there; any failure removes both stages.
+  - **Containment:** the extractor builds output paths from names inside the package, so it runs
+    under Landlock ([src/sandbox.rs](../src/sandbox.rs), Linux 5.13+): it may write only in the
+    stage it extracts into and a throwaway working folder (its `user` folder, which keeps
+    shadPS4's start-up code out of the real shadPS4 folder), and has no TCP. Without Landlock,
+    PKG installs are refused.
+  - **Completion:** the tool exits 0 even on errors and a crash can leave plausible files, so an
+    extraction counts only with a clean exit, its closing `THE END` line and the last
+    `Extracting file N of N`.
+  - **Tests:** a fake extractor (a shell script run in the same sandbox) covers game + update +
+    DLC, crashes, and a package writing outside its folder. `PS5_LAUNCHER_PKG_EXTRACTOR` points at
+    a real extractor; with it and `PKG_FIXTURE`/`PKG_TITLE_ID`, `cargo test -- --ignored pkg_`
+    runs the end-to-end tests against a real PKG.
+- **Updates in folder and archive releases:** a PS4 update shipped with the game (param.sfo
+  category `gp`, same title ID; beside it or inside its folder) is placed beside the game as
+  `<game>-patch`, the same as from a PKG. It is never listed as a game.
 - **Compatibility:** shadPS4's published `compatibility_data.json` (per-OS results) is merged
   with KytyPS5's list (title IDs never collide: CUSA vs PPSA). playable/ingame → In-game,
   menus → Menus, boots → Boots, nothing → Doesn't boot. PS4 ratings go to the
@@ -407,3 +421,9 @@ scripts/record_demo.py --game /path/to/an/installed/game   # writes dist/demo/
 
 It runs the real launcher on a hidden virtual display with a throwaway home folder, drives it
 with key presses and captions each step, so nothing personal appears in the recording.
+
+All three share [scripts/ui_fixture.py](../scripts/ui_fixture.py): the throwaway home gets your
+cached catalogs and artwork (not logs or the collector's browser profiles), automatic updates
+stay off, and without `--game`/`DEMO_GAME` an inert stand-in game (generated metadata, an
+`eboot.bin` that isn't a program) is installed, since an empty Library opens on "No games
+installed yet". A rounded shape fading out at a scrolled row's edge isn't reported as cut.

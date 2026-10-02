@@ -31,6 +31,10 @@ fn tool() -> PathBuf {
 
 /// The extractor, downloaded and unpacked on first use.
 pub fn ensure() -> Result<PathBuf, String> {
+    #[cfg(test)]
+    if let Some(tool) = TEST_TOOL.with(|t| t.borrow().clone()) {
+        return Ok(tool);
+    }
     if let Some(path) = std::env::var_os("PS5_LAUNCHER_PKG_EXTRACTOR").filter(|p| !p.is_empty()) {
         return Ok(PathBuf::from(path));
     }
@@ -77,16 +81,48 @@ fn install() -> Result<PathBuf, String> {
     Ok(tool)
 }
 
+/// A throwaway working folder for one run. The extractor carries shadPS4's start-up code, which
+/// sets up a user folder (a `user` folder in the working directory wins): this keeps that out of
+/// the real shadPS4 folder and inside what the sandbox lets it write. Removed afterwards.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new() -> Result<Self, String> {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!("ps5-launcher-pkg-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        std::fs::create_dir_all(dir.join("user")).map_err(|e| format!("{}: {e}", dir.display()))?;
+        Ok(Self(dir))
+    }
+
+    /// The extractor command, confined to writing in this folder and `writable`.
+    fn command(&self, tool: &Path, writable: Option<&Path>) -> Result<(Command, crate::sandbox::Confinement), String> {
+        let mut cmd = Command::new(tool);
+        cmd.current_dir(&self.0).stdin(Stdio::null()).stderr(Stdio::null());
+        let mut dirs = vec![self.0.as_path()];
+        dirs.extend(writable);
+        let guard = crate::sandbox::confine(&mut cmd, &dirs)?;
+        Ok((cmd, guard))
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// It prints its banner for any input; a missing file is reported, not extracted.
 fn runs(tool: &Path) -> bool {
-    Command::new(tool).arg(root().join("no-such.pkg")).arg("--check-type").stdin(Stdio::null()).stderr(Stdio::null())
-        .output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("THE END"))
+    let Ok(scratch) = Scratch::new() else { return false };
+    let Ok((mut cmd, _guard)) = scratch.command(tool, None) else { return false };
+    cmd.arg(root().join("no-such.pkg")).arg("--check-type").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("THE END"))
 }
 
 /// Base game, update or DLC (the tool's exit code: 101, 102, 103).
 pub fn kind(tool: &Path, pkg: &Path) -> Result<Kind, String> {
-    let out = Command::new(tool).arg(pkg).arg("--check-type").stdin(Stdio::null()).stderr(Stdio::null())
-        .output().map_err(|e| format!("could not run the PKG extractor: {e}"))?;
+    let scratch = Scratch::new()?;
+    let (mut cmd, _guard) = scratch.command(tool, None)?;
+    let out = cmd.arg(pkg).arg("--check-type").output().map_err(|e| format!("could not run the PKG extractor: {e}"))?;
     match out.status.code() {
         Some(101) => Ok(Kind::Game),
         Some(102) => Ok(Kind::Update),
@@ -95,18 +131,22 @@ pub fn kind(tool: &Path, pkg: &Path) -> Result<Kind, String> {
     }
 }
 
-/// The tool always exits 0; failures are only in what it prints.
+/// Problems the tool reports (it exits 0 even then).
 fn problem(output: &str) -> Option<String> {
     output.split(['\r', '\n']).map(str::trim)
         .find(|l| l.starts_with("Cannot") || l.starts_with("Could not") || l.contains("doesn't appear to be a valid PKG"))
         .map(|l| l.replace("doesn't appear to be a valid PKG file", "is not a PS4 PKG package"))
 }
 
-/// Extract `pkg` into `dest` (the game lands in `dest/<TITLE_ID>`, an update in
-/// `dest/<TITLE_ID>-patch`, DLC in `dest/<TITLE_ID>/<label>`). `progress(files done, files)`.
+/// Extract `pkg` into the existing folder `dest` (the game lands in `dest/<TITLE_ID>`, an update
+/// in `dest/<TITLE_ID>-patch`, DLC in `dest/<TITLE_ID>/<label>`). The extractor can write only
+/// inside `dest`. Succeeds only if it ran to the end: a clean exit, its closing line, and every
+/// file of the package written. `progress(files done, files)`.
 pub fn extract(tool: &Path, pkg: &Path, dest: &Path, cancel: &AtomicBool, progress: &dyn Fn(u64, u64)) -> Result<(), String> {
-    let mut child = Command::new(tool).arg(pkg).arg(dest).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null())
-        .spawn().map_err(|e| format!("could not run the PKG extractor: {e}"))?;
+    let scratch = Scratch::new()?;
+    let (mut cmd, guard) = scratch.command(tool, Some(dest))?;
+    let mut child = cmd.arg(pkg).arg(dest).stdout(Stdio::piped()).spawn().map_err(|e| format!("could not run the PKG extractor: {e}"))?;
+    drop(guard);
     let mut stdout = child.stdout.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     let reader = std::thread::spawn(move || {
@@ -133,7 +173,7 @@ pub fn extract(tool: &Path, pkg: &Path, dest: &Path, cancel: &AtomicBool, progre
         all
     });
     let files = regex::Regex::new(r"Extracting file (\d+) of (\d+)").unwrap();
-    loop {
+    let status = loop {
         if cancel.load(Ordering::Acquire) {
             let _ = child.kill();
             let _ = child.wait();
@@ -144,27 +184,67 @@ pub fn extract(tool: &Path, pkg: &Path, dest: &Path, cancel: &AtomicBool, progre
                 progress(c[1].parse().unwrap_or(0), c[2].parse().unwrap_or(1));
             }
         }
-        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
-            break;
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            break status;
         }
         std::thread::sleep(Duration::from_millis(200));
-    }
+    };
     let output = reader.join().unwrap_or_default();
-    match problem(&output) {
-        Some(p) => Err(p),
-        None => Ok(()),
+    finished(status, &output)
+}
+
+/// Whether an extraction ran to the end (see `extract`).
+fn finished(status: std::process::ExitStatus, output: &str) -> Result<(), String> {
+    if let Some(p) = problem(output) {
+        return Err(p);
+    }
+    if !status.success() {
+        return Err(format!("the PKG extractor stopped before finishing ({status})"));
+    }
+    let last = regex::Regex::new(r"Extracting file (\d+) of (\d+)").unwrap().captures_iter(output).last()
+        .map(|c| (c[1].parse::<u64>().unwrap_or(0), c[2].parse::<u64>().unwrap_or(0)));
+    match last {
+        Some((done, files)) if files > 0 && done == files && output.contains("THE END") => Ok(()),
+        Some((done, files)) => Err(format!("the PKG extractor stopped after {done} of {files} files")),
+        None => Err("the PKG extractor wrote no files".into()),
     }
 }
 
 /// Where shadPS4 looks for DLC by default (its user folder's `addcont`).
 pub fn addons_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(dir) = TEST_ADDONS.with(|t| t.borrow().clone()) {
+        return dir;
+    }
     std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| crate::util::expand_home("~/.local/share"))
         .join("shadPS4").join("addcont")
 }
 
 #[cfg(test)]
+thread_local! {
+    /// A stand-in extractor and add-on folder for the installer's tests (this thread only).
+    pub static TEST_TOOL: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    pub static TEST_ADDONS: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn only_a_complete_clean_run_counts_as_extracted() {
+        let ok = std::process::ExitStatus::from_raw(0);
+        let full = "Extracting pkg to x\n\r      Extracting file 1 of 2\r      Extracting file 2 of 2\nTHE END x\n";
+        assert!(finished(ok, full).is_ok());
+        // Crashed or killed (exit 42, SIGSEGV), stopped early, never started, or reported a problem.
+        assert!(finished(std::process::ExitStatus::from_raw(42 << 8), full).unwrap_err().contains("stopped before finishing"));
+        assert!(finished(std::process::ExitStatus::from_raw(libc::SIGSEGV), full).is_err());
+        assert!(finished(ok, "\r      Extracting file 1 of 2\nTHE END x").unwrap_err().contains("1 of 2"));
+        assert!(finished(ok, "Extracting file 2 of 2").is_err(), "no closing line");
+        assert!(finished(ok, "THE END x").is_err());
+        assert!(finished(ok, "Cannot extract PKG file : bad\nTHE END").unwrap_err().contains("Cannot extract"));
+    }
 
     /// Downloads the real extractor (network): cargo test -- --ignored pkg_extractor_downloads
     #[test]

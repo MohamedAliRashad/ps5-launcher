@@ -82,7 +82,8 @@ becomes its tag on your PC. Every so often, choose **Settings → Share your gam
 your results to the community lists (needs a free GitHub account).
 
 PS4 releases shipped as **PKG packages** install like any other: the launcher unpacks the game,
-its update and its DLC for shadPS4 (it fetches a small PKG extractor the first time). PS5 PKG
+its update and its DLC for shadPS4 (it fetches a small PKG extractor the first time, and needs
+Linux 5.13 or newer). PS5 PKG
 releases can't be installed; pick a release that is a folder, an archive or an exFAT image.
 
 ## Help
