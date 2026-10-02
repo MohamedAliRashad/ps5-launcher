@@ -271,8 +271,10 @@ fn load(job: &Job) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
     let t1 = std::time::Instant::now();
     let mut img = image::load_from_memory(&bytes).ok()?.into_rgba8();
     let t_decode = ms(t1);
-    if job.crop_top > 0.0 {
-        let cut = (img.height() as f32 * job.crop_top) as u32;
+    // A negative crop means "find it": the blue PS4 band printed across PS4 box art.
+    let crop_top = if job.crop_top < 0.0 { ps4_band(&img) } else { job.crop_top };
+    if crop_top > 0.0 {
+        let cut = (img.height() as f32 * crop_top) as u32;
         img = image::imageops::crop_imm(&img, 0, cut, img.width(), img.height() - cut).to_image();
     }
     let t2 = std::time::Instant::now();
@@ -389,5 +391,61 @@ impl Store {
 
     pub fn clear_failures(&mut self) {
         self.failed.clear();
+    }
+}
+
+/// Ask for this crop to remove the blue "PS4" band from PS4 box art, when it has one.
+pub const CROP_PS4_BAND: f32 = -1.0;
+
+/// Height (as a fraction) of the blue "PS4" band across the top of PS4 box art, or 0 when
+/// there is none: rows of mostly PlayStation blue, with the white "PS4" lettering.
+pub fn ps4_band(img: &image::RgbaImage) -> f32 {
+    let (w, h) = img.dimensions();
+    if w < 32 || h < w {
+        return 0.0; // only portrait box art has the band
+    }
+    let mut rows = 0;
+    for y in 0..h / 5 {
+        let (mut blue, mut white, mut n) = (0u32, 0u32, 0u32);
+        for x in (0..w).step_by(2) {
+            let [r, g, b, _] = img.get_pixel(x, y).0;
+            let (r, g, b) = (r as i32, g as i32, b as i32);
+            if b > r + 60 && b > 100 {
+                blue += 1;
+            } else if r > 200 && g > 200 && b > 200 {
+                white += 1;
+            }
+            n += 1;
+        }
+        if blue * 2 >= n && (blue + white) * 100 >= n * 85 {
+            rows = y + 1;
+        } else if rows > 0 || y as f32 > h as f32 * 0.02 {
+            break; // the band ended, or there is none at the very top
+        }
+    }
+    let fraction = rows as f32 / h as f32;
+    if (0.04..=0.16).contains(&fraction) { fraction + 0.004 } else { 0.0 }
+}
+
+#[cfg(test)]
+mod ps4_band_tests {
+    use super::*;
+    #[test]
+    fn finds_the_band_only_on_ps4_box_art() {
+        // 100x160 box art: 16 rows of PlayStation blue with a white "logo", then artwork.
+        let mut boxart = image::RgbaImage::from_pixel(100, 160, image::Rgba([180, 60, 40, 255]));
+        for y in 0..16 {
+            for x in 0..100 {
+                let logo = (10..30).contains(&x) && (5..11).contains(&y);
+                boxart.put_pixel(x, y, if logo { image::Rgba([255, 255, 255, 255]) } else { image::Rgba([10, 80, 190, 255]) });
+            }
+        }
+        assert!((ps4_band(&boxart) - (16.0 / 160.0 + 0.004)).abs() < 1e-4);
+        // A blue sky that fills the whole top is not a band: it doesn't end in time.
+        let sky = image::RgbaImage::from_pixel(100, 160, image::Rgba([20, 90, 200, 255]));
+        assert_eq!(ps4_band(&sky), 0.0);
+        // Square store art and landscape logos are left alone.
+        assert_eq!(ps4_band(&image::RgbaImage::from_pixel(100, 100, image::Rgba([10, 80, 190, 255]))), 0.0);
+        assert_eq!(ps4_band(&image::RgbaImage::from_pixel(160, 100, image::Rgba([10, 80, 190, 255]))), 0.0);
     }
 }

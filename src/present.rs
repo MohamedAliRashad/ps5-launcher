@@ -63,6 +63,11 @@ impl App {
 
     // ------------------------------------------------------------------ artwork choices
 
+    /// RuTracker covers: PS4 box art loses its blue "PS4" band, so cards stay clean like PS5's.
+    fn cover_crop(&self, t: Target) -> f32 {
+        if self.target_platform(t) == crate::platform::Platform::Ps4 { crate::images::CROP_PS4_BAND } else { COVER_CROP }
+    }
+
     pub fn tile_req(&self, item: RowItem) -> Option<ImgReq> {
         let (info, local, cover) = match item {
             RowItem::Local(l) => (self.locals[l].info.as_ref(), Some(&self.locals[l].l), self.locals[l].cat.map(|c| self.games[c].g.cover.clone())),
@@ -75,7 +80,8 @@ impl App {
         if let Some(p) = local.and_then(|l| l.icon0.as_ref()) {
             return Some(req_file(p, 256));
         }
-        if let Some(r) = cover.and_then(|c| req_url(&c, 256, COVER_CROP)) {
+        let crop = self.cover_crop(match item { RowItem::Local(l) => Target { game: self.locals[l].cat, local: Some(l) }, RowItem::Cat(g) => Target { game: Some(g), local: None }, RowItem::All => Target { game: None, local: None } });
+        if let Some(r) = cover.and_then(|c| req_url(&c, 256, crop)) {
             return Some(r);
         }
         info.and_then(|i| req_url(&i.hub, 512, 0.0))
@@ -90,7 +96,7 @@ impl App {
             return Some(req_file(&p, 1920));
         }
         let g = t.game.map(|g| &self.games[g].g)?;
-        yt_art(&g.trailer).or_else(|| req_url(&g.cover, 1280, COVER_CROP))
+        yt_art(&g.trailer).or_else(|| req_url(&g.cover, 1280, self.cover_crop(t)))
     }
 
     /// The small cover shown while a big background downloads (usually already on disk).
@@ -137,7 +143,7 @@ impl App {
         let info = g.info.as_ref();
         info.and_then(|i| req_url(&i.portrait, 440, 0.0))
             .or_else(|| info.and_then(|i| req_url(&i.master, 440, 0.0)))
-            .or_else(|| req_url(&g.g.cover, 440, COVER_CROP))
+            .or_else(|| req_url(&g.g.cover, 440, if g.g.platform == crate::platform::Platform::Ps4 { crate::images::CROP_PS4_BAND } else { COVER_CROP }))
             .or_else(|| info.and_then(|i| req_url(&i.hub, 640, 0.0)))
     }
 
