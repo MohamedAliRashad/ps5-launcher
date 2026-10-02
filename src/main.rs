@@ -5,6 +5,8 @@ mod audio;
 mod boot;
 mod catalog;
 mod compat;
+mod platform;
+mod sfo;
 mod exfat;
 mod results;
 mod trailer;

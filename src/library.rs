@@ -1,5 +1,6 @@
-//! Installed games: folders containing sce_sys/param.json.
+//! Installed games: folders containing sce_sys/param.json (PS5) or sce_sys/param.sfo (PS4).
 
+use crate::platform::Platform;
 use crate::util::sha1_hex;
 use std::path::{Path, PathBuf};
 
@@ -13,11 +14,12 @@ pub struct LocalGame {
     pub path: PathBuf,
     pub icon0: Option<PathBuf>,
     pub pic0: Option<PathBuf>,
+    pub platform: Platform,
 }
 
 pub fn read_param(dir: &Path) -> Option<LocalGame> {
     let sce = dir.join("sce_sys");
-    let bytes = std::fs::read(sce.join("param.json")).ok()?;
+    let Ok(bytes) = std::fs::read(sce.join("param.json")) else { return read_sfo(dir) };
     let p: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     let lp = &p["localizedParameters"];
     let lang = lp["defaultLanguage"].as_str().unwrap_or("en-US");
@@ -37,6 +39,37 @@ pub fn read_param(dir: &Path) -> Option<LocalGame> {
         path: dir.to_path_buf(),
         icon0: file("icon0.png"),
         pic0: file("pic0.png"),
+        platform: Platform::Ps5,
+    })
+}
+
+/// A PS4 game folder. Only full games ("gd" category): updates and add-ons have their own
+/// param.sfo but aren't games to list or launch.
+fn read_sfo(dir: &Path) -> Option<LocalGame> {
+    let sce = dir.join("sce_sys");
+    let bytes = std::fs::read(sce.join("param.sfo")).ok()?;
+    if bytes.len() > 1024 * 1024 {
+        return None;
+    }
+    let p = crate::sfo::parse(&bytes)?;
+    let get = |k: &str| p.get(k).map(|v| v.text().to_string()).unwrap_or_default();
+    if !get("CATEGORY").starts_with("gd") {
+        return None;
+    }
+    let tid = get("TITLE_ID");
+    let name = Some(get("TITLE")).filter(|t| !t.is_empty())
+        .unwrap_or_else(|| if tid.is_empty() { dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() } else { tid.clone() });
+    let file = |n: &str| Some(sce.join(n)).filter(|p| p.is_file());
+    Some(LocalGame {
+        id: sha1_hex(&dir.to_string_lossy())[..12].to_string(),
+        name,
+        title_id: tid,
+        content_id: get("CONTENT_ID"),
+        version: get("APP_VER"),
+        path: dir.to_path_buf(),
+        icon0: file("icon0.png"),
+        pic0: file("pic1.png").or_else(|| file("pic0.png")),
+        platform: Platform::Ps4,
     })
 }
 
@@ -74,4 +107,30 @@ pub fn scan(dirs: &[PathBuf]) -> Vec<LocalGame> {
     }
     found.sort_by_key(|g| g.name.to_lowercase());
     found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sfo::{build, Value};
+
+    fn ps4(dir: &Path, category: &str) {
+        std::fs::create_dir_all(dir.join("sce_sys")).unwrap();
+        std::fs::write(dir.join("sce_sys/param.sfo"), build(&[
+            ("CATEGORY", Value::Text(category.into())), ("TITLE", Value::Text("Firewatch".into())),
+            ("TITLE_ID", Value::Text("CUSA04118".into())), ("APP_VER", Value::Text("01.08".into())),
+        ])).unwrap();
+        std::fs::write(dir.join("eboot.bin"), b"x").unwrap();
+    }
+
+    #[test]
+    fn finds_ps4_games_but_not_updates() {
+        let t = tempfile::tempdir().unwrap();
+        ps4(&t.path().join("CUSA04118"), "gd");
+        ps4(&t.path().join("CUSA04118-patch"), "gp");
+        let found = scan(&[t.path().to_path_buf()]);
+        assert_eq!(found.len(), 1);
+        let g = &found[0];
+        assert_eq!((g.platform, g.title_id.as_str(), g.name.as_str(), g.version.as_str()), (Platform::Ps4, "CUSA04118", "Firewatch", "01.08"));
+    }
 }

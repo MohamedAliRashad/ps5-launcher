@@ -313,7 +313,7 @@ impl Plan {
     fn add(&mut self, entry: Entry) -> Result<()> {
         ensure!(self.entries.len() < MAX_ENTRIES, "Archive/source exceeds {MAX_ENTRIES} entries");
         ensure!(entry.size <= MAX_FILE, "File exceeds 1 TiB safety limit");
-        if entry.path.ends_with("sce_sys/param.json") { ensure!(entry.size <= MAX_PARAM, "param.json exceeds 1 MiB limit"); }
+        if entry.path.ends_with("sce_sys/param.json") || entry.path.ends_with("sce_sys/param.sfo") { ensure!(entry.size <= MAX_PARAM, "Game metadata exceeds 1 MiB limit"); }
         ensure!(self.explicit.insert(entry.path.clone()), "Duplicate archive entry: {}", entry.path);
         if let Some(kind) = self.paths.get(&entry.path) {
             ensure!(*kind && entry.directory, "File/directory conflict: {}", entry.path);
@@ -705,20 +705,39 @@ fn extract_image(volume: &crate::exfat::Volume, nodes: &[crate::exfat::Node], pl
     Ok(())
 }
 
+/// Whether a PS4 param.sfo describes a full game ("gd"), not an update or add-on.
+fn ps4_is_game(output: &Dir, path: &str) -> bool {
+    output.read(path).ok().and_then(|f| bounded_read(f, MAX_PARAM).ok())
+        .and_then(|b| crate::sfo::parse(&b))
+        .is_some_and(|p| p.get("CATEGORY").is_some_and(|c| c.text().starts_with("gd")))
+}
+
 fn game_root(output: &Dir, plan: &Plan, expected_ids: &[String], cancel: &AtomicBool) -> Result<(String, String)> {
     let mut games = Vec::new();
     let mut failures = Vec::new();
     for entry in &plan.entries {
         check_cancel(cancel)?;
         if entry.directory { continue; }
-        let root = if entry.path == "sce_sys/param.json" { "" }
-            else if let Some(p) = entry.path.strip_suffix("/sce_sys/param.json") { p }
+        // PS5 games describe themselves in param.json, PS4 games in param.sfo.
+        let (root, ps4) = if entry.path == "sce_sys/param.json" { ("", false) }
+            else if let Some(p) = entry.path.strip_suffix("/sce_sys/param.json") { (p, false) }
+            else if entry.path == "sce_sys/param.sfo" { ("", true) }
+            else if let Some(p) = entry.path.strip_suffix("/sce_sys/param.sfo") { (p, true) }
             else { continue; };
+        if ps4 && !ps4_is_game(output, &entry.path) {
+            continue; // an update or add-on next to the game, not a second game
+        }
         let validate = || -> Result<String> {
             let bytes = bounded_read(output.read(&entry.path)?, MAX_PARAM)?;
-            let value: serde_json::Value = serde_json::from_slice(&bytes).context("Invalid sce_sys/param.json JSON")?;
-            let tid = value["titleId"].as_str().context("param.json is missing titleId")?;
-            ensure!(crate::psn::valid_title_id(tid), "Invalid titleId in param.json");
+            let tid = if ps4 {
+                let sfo = crate::sfo::parse(&bytes).context("Invalid sce_sys/param.sfo")?;
+                sfo.get("TITLE_ID").map(|v| v.text().to_string()).context("param.sfo is missing TITLE_ID")?
+            } else {
+                let value: serde_json::Value = serde_json::from_slice(&bytes).context("Invalid sce_sys/param.json JSON")?;
+                value["titleId"].as_str().context("param.json is missing titleId")?.to_string()
+            };
+            let tid = tid.as_str();
+            ensure!(crate::psn::valid_title_id(tid), "Invalid title ID in the game's metadata");
             let executable = if root.is_empty() { "eboot.bin".into() } else { format!("{root}/eboot.bin") };
             let file = output.read(&executable).context("Missing eboot.bin; an update/PKG is not a complete extracted game")?;
             ensure!(file.metadata()?.len() > 0, "eboot.bin is empty");
@@ -734,7 +753,7 @@ fn game_root(output: &Dir, plan: &Plan, expected_ids: &[String], cancel: &Atomic
         if plan.entries.iter().any(|e| e.path.to_ascii_lowercase().ends_with(".pkg")) {
             bail!("Unsupported PKG package; provide an already extracted game with sce_sys/param.json and eboot.bin");
         }
-        bail!("No valid extracted game found; require bounded sce_sys/param.json with titleId and nonempty eboot.bin. {}", failures.join("; "));
+        bail!("No valid extracted game found; require bounded sce_sys/param.json (PS5) or param.sfo (PS4) with a title ID and nonempty eboot.bin. {}", failures.join("; "));
     };
     ensure!(expected_ids.is_empty() || expected_ids.contains(&tid), "Title ID mismatch: extracted {tid}, expected {}", expected_ids.join(", "));
     Ok((root, tid))
@@ -1074,6 +1093,26 @@ mod tests {
         assert_eq!(fs::read(p.join("eboot.bin")).unwrap(), b"fixture binary bytes");
         assert_eq!(Sha256::digest(fs::read(&archive).unwrap()), digest);
         assert_eq!(crate::library::scan(&[req.destination.clone()]).len(), 1); clean(&req);
+    }
+
+    #[test]
+    fn ps4_folder_release_installs_game_and_skips_its_update() {
+        use crate::sfo::{build, Value};
+        let (_t, mut req) = fixture();
+        req.expected_ids = vec!["CUSA04118".into()];
+        let sfo = |cat: &str| build(&[("CATEGORY", Value::Text(cat.into())), ("TITLE_ID", Value::Text("CUSA04118".into())), ("TITLE", Value::Text("Firewatch".into()))]);
+        for (dir, cat) in [("CUSA04118", "gd"), ("CUSA04118-patch", "gp")] {
+            let d = req.source.join(dir);
+            fs::create_dir_all(d.join("sce_sys")).unwrap();
+            fs::write(d.join("sce_sys/param.sfo"), sfo(cat)).unwrap();
+            fs::write(d.join("eboot.bin"), b"generated bytes").unwrap();
+        }
+        let p = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap();
+        assert!(p.file_name().unwrap().to_string_lossy().starts_with("CUSA04118-"));
+        let found = crate::library::scan(&[req.destination.clone()]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].platform, crate::platform::Platform::Ps4);
+        clean(&req);
     }
 
     #[test]
