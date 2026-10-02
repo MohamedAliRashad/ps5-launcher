@@ -1124,78 +1124,100 @@ export component AppWindow inherits Window {
                         Text { text: "Changes are saved automatically"; font-size: (18px * S.k); color: Theme.text3; }
                         for s[i] in root.settings: VerticalLayout {
                             property <bool> f: root.zone == Zone.settings && root.idx == i;
-                            padding-top: s.kind == 0 ? (36px * S.k) : (8px * S.k);
-                            padding-bottom: s.kind == 0 ? (10px * S.k) : (4px * S.k);
-                            spacing: (6px * S.k);
-                            if s.kind == 0: Text { text: s.label; font-size: (16px * S.k); font-weight: 600; letter-spacing: (2px * S.k); color: Theme.text3; }
-                            if s.kind == 1: Text { text: s.label; font-size: (19px * S.k); color: Theme.text2; }
-                            if s.kind == 1: Rectangle {
-                                height: (54px * S.k);
-                                border-radius: (12px * S.k);
-                                background: f ? #ffffff1f : #ffffff12;
-                                border-width: f ? (3px * S.k) : 1px;
-                                border-color: f ? #ffffff : (s.hint-kind == 2 ? Theme.danger : Theme.line);
-                                if root.edit-index != i: Text {
+                            property <length> r: (14px * S.k);
+                            padding-top: s.kind == 0 ? (s.label == "" ? (20px * S.k) : (36px * S.k)) : 0;
+                            padding-bottom: s.kind == 0 ? (12px * S.k) : 0;
+                            if s.kind == 0 && s.label != "": Text { text: s.label; font-size: (16px * S.k); font-weight: 600; letter-spacing: (2px * S.k); color: Theme.text3; }
+                            // One row of a section card: rows between two headers share a card.
+                            if s.kind != 0: Rectangle {
+                                background: f ? (s.danger ? #ff5a6a33 : #ffffff1f) : (s.danger ? #ff5a6a0d : #ffffff0b);
+                                border-top-left-radius: s.group-first || f ? r : 0;
+                                border-top-right-radius: s.group-first || f ? r : 0;
+                                border-bottom-left-radius: s.group-last || f ? r : 0;
+                                border-bottom-right-radius: s.group-last || f ? r : 0;
+                                border-width: f ? (3px * S.k) : 0;
+                                border-color: s.danger ? Theme.danger : #ffffff;
+                                if !s.group-first && !f && !(root.zone == Zone.settings && root.idx == i - 1): Rectangle {
                                     x: (18px * S.k);
+                                    y: 0;
                                     width: parent.width - (36px * S.k);
-                                    text: s.value != "" ? s.value : (s.secret ? "Not set" : "—");
-                                    font-size: (19px * S.k);
-                                    color: s.value != "" ? Theme.text : Theme.text3;
-                                    vertical-alignment: center;
-                                    overflow: elide;
-                                    font-family: "DejaVu Sans Mono";
-                                }
-                                if root.edit-index == i: TextInput {
-                                    x: (18px * S.k);
-                                    width: parent.width - (36px * S.k);
-                                    height: parent.height;
-                                    text <=> root.edit-text;
-                                    single-line: true;
-                                    input-type: s.secret ? InputType.password : InputType.text;
-                                    font-size: (19px * S.k);
-                                    color: Theme.text;
-                                    vertical-alignment: center;
-                                    font-family: "DejaVu Sans Mono";
-                                    init => { self.focus(); self.select-all(); }
-                                    accepted => { root.edit-done(self.text, true); }
+                                    height: 1px;
+                                    background: Theme.line;
                                 }
                                 TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.settings, i); } }
-                            }
-                            if (s.kind == 2 || s.kind == 3 || s.kind == 4): Rectangle {
-                                height: (64px * S.k);
-                                border-radius: (12px * S.k);
-                                background: f ? (s.danger ? #ff5a6a40 : #ffffff1f) : #ffffff0d;
-                                border-width: f ? (3px * S.k) : 1px;
-                                border-color: f ? (s.danger ? Theme.danger : #ffffff) : Theme.line;
-                                HorizontalLayout {
+                                VerticalLayout {
                                     padding-left: (18px * S.k);
                                     padding-right: (18px * S.k);
-                                    spacing: (12px * S.k);
-                                    Text {
-                                        text: s.label;
-                                        font-size: (19px * S.k);
-                                        color: s.danger ? #ffb3bb : Theme.text;
-                                        vertical-alignment: center;
-                                        horizontal-stretch: 1;
-                                        font-weight: s.kind == 4 ? 600 : 400;
+                                    padding-top: (14px * S.k);
+                                    padding-bottom: (14px * S.k);
+                                    spacing: (4px * S.k);
+                                    HorizontalLayout {
+                                        spacing: (16px * S.k);
+                                        min-height: (36px * S.k);
+                                        Text {
+                                            text: s.label;
+                                            font-size: (19px * S.k);
+                                            font-weight: s.kind == 4 ? 600 : 500;
+                                            color: s.danger ? #ffb3bb : Theme.text;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: s.kind == 1 ? 0 : 1;
+                                        }
+                                        if s.kind == 1 && root.edit-index != i: Text {
+                                            text: s.value != "" ? s.value : (s.secret ? "Not set" : "—");
+                                            font-size: (17px * S.k);
+                                            font-family: "DejaVu Sans Mono";
+                                            color: s.value != "" ? Theme.text2 : Theme.text3;
+                                            horizontal-alignment: right;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                            min-width: (120px * S.k);
+                                            overflow: elide;
+                                        }
+                                        if s.kind == 2: VerticalLayout { alignment: center; Switch { on: s.on; } }
+                                        if s.kind == 3: HorizontalLayout {
+                                            spacing: (8px * S.k);
+                                            alignment: end;
+                                            Image { source: Icons.chevl; colorize: f ? Theme.text : Theme.text3; width: (22px * S.k); height: (22px * S.k); y: (7px * S.k); }
+                                            Text { text: s.value; font-size: (19px * S.k); color: Theme.text; vertical-alignment: center; }
+                                            Image { source: Icons.chevr; colorize: f ? Theme.text : Theme.text3; width: (22px * S.k); height: (22px * S.k); y: (7px * S.k); }
+                                        }
+                                        if s.kind == 4 && s.value != "": Text {
+                                            text: s.value;
+                                            font-size: (17px * S.k);
+                                            font-weight: s.value-kind == 3 ? 600 : 400;
+                                            color: s.value-kind == 1 ? Theme.ok : s.value-kind == 2 ? Theme.danger : s.value-kind == 3 ? #7ab4ff : Theme.text3;
+                                            vertical-alignment: center;
+                                        }
                                     }
-                                    if s.kind == 2: Switch { on: s.on; y: (16px * S.k); }
-                                    if s.kind == 3: HorizontalLayout {
-                                        spacing: (8px * S.k);
-                                        Image { source: Icons.chevl; colorize: f ? Theme.text : Theme.text3; width: (22px * S.k); height: (22px * S.k); y: (21px * S.k); }
-                                        Text { text: s.value; font-size: (19px * S.k); color: Theme.text; vertical-alignment: center; }
-                                        Image { source: Icons.chevr; colorize: f ? Theme.text : Theme.text3; width: (22px * S.k); height: (22px * S.k); y: (21px * S.k); }
+                                    if s.kind == 1 && root.edit-index == i: Rectangle {
+                                        height: (50px * S.k);
+                                        border-radius: (10px * S.k);
+                                        background: #00000040;
+                                        border-width: 1px;
+                                        border-color: Theme.line;
+                                        TextInput {
+                                            x: (14px * S.k);
+                                            width: parent.width - (28px * S.k);
+                                            height: parent.height;
+                                            text <=> root.edit-text;
+                                            single-line: true;
+                                            input-type: s.secret ? InputType.password : InputType.text;
+                                            font-size: (18px * S.k);
+                                            color: Theme.text;
+                                            vertical-alignment: center;
+                                            font-family: "DejaVu Sans Mono";
+                                            init => { self.focus(); self.select-all(); }
+                                            accepted => { root.edit-done(self.text, true); }
+                                        }
                                     }
-                                    if s.kind == 4 && s.value != "": Text { text: s.value; font-size: (16px * S.k); color: Theme.text3; vertical-alignment: center; }
+                                    if s.hint != "": Text {
+                                        text: s.hint;
+                                        width: (612px * S.k);
+                                        font-size: (15px * S.k);
+                                        wrap: word-wrap;
+                                        color: s.hint-kind == 1 ? Theme.ok : s.hint-kind == 2 ? Theme.danger : Theme.text3;
+                                    }
                                 }
-                                TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.settings, i); } }
-                            }
-                            if s.hint != "": Text {
-                                text: s.hint;
-                                width: (648px * S.k);
-                                font-size: (16px * S.k);
-                                wrap: word-wrap;
-                                color: s.hint-kind == 1 ? Theme.ok : s.hint-kind == 2 ? Theme.danger : Theme.text3;
                             }
                         }
                         // About: required attribution for the Slint royalty-free license (section 2a).

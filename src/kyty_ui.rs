@@ -145,7 +145,7 @@ impl App {
             }
         } else if manual {
             if self.kyty_update_available() {
-                self.toast("Newer KytyPS5 build available", "To get it, and future updates automatically, choose Switch to official KytyPS5 builds.", 0);
+                self.toast("Newer KytyPS5 build available", "To get it, and future updates automatically, choose Settings → Updates → KytyPS5.", 0);
             } else {
                 self.toast("Your KytyPS5 is up to date", &format!("The latest official build is {}.", kyty::pretty(&rel.tag)), 1);
             }

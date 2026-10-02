@@ -262,7 +262,7 @@ impl App {
                 match res {
                     Ok(()) => {
                         app.upd.installed = Some(rel.version.clone());
-                        app.toast_app("Update ready", &format!("PS5 Launcher {} starts the next time you open it. To switch now, choose Restart now in Settings.", rel.version), 1);
+                        app.toast_app("Update ready", &format!("PS5 Launcher {} starts the next time you open it. To switch now, choose Settings → Updates → PS5 Launcher.", rel.version), 1);
                     }
                     Err(e) => {
                         crate::log!("launcher update failed: {e}");

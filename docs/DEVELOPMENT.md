@@ -120,7 +120,7 @@ Keyboard/controller navigation follows search/sort/density → status filters �
 The welcome screen and app assets use an original white/electric-blue **P5 chassis emblem**,
 not the former generic play-button icon. Source installation updates the matching desktop icon.
 
-**Settings → Reload RuTracker catalog** re-imports local JSON; it does not scrape
+**Settings → Advanced → Reload game catalog** re-imports local JSON; it does not scrape
 the website or refresh peer counts over the network. Source precedence is:
 
 1. `--catalog <PATH>` or `PS5_LAUNCHER_CATALOG_PATH`;
@@ -173,8 +173,8 @@ the payload. **Open folder** opens the saved destination.
 **Completed downloads seed by default.** While the launcher remains open, their
 original files are shared with peers. Downloads shows **Complete · seeding**, upload
 speed and connected peers; **Install / Play** remains available. Use **Stop seeding**
-for one transfer until the next launch, or disable **Settings → Seed completed
-downloads** to stop all seeds; only that saved setting turns seeding off for good.
+for one transfer until the next launch, or disable **Settings → Keep sharing
+finished downloads** to stop all seeds; only that saved setting turns seeding off for good.
 While it is on, completed downloads seed again whenever the launcher opens, and turning
 it back on seeds them all again. Each is first added **paused** so the engine checks its
 files against the torrent: it seeds only if every piece verifies (**Complete · checking
@@ -287,14 +287,14 @@ its official Linux builds from GitHub Releases.
   start before the launcher switches to it.
 - **Your saves are safe:** Kyty's saves, shader caches and patches (`_SaveData`,
   `_PipelineCache`, …) live in one shared folder that every version uses. Updates never touch them.
-- **Rollback:** the previous build is kept. **Settings → Roll back to previous KytyPS5** switches
+- **Rollback:** the previous build is kept. **Settings → Go back to the previous KytyPS5** switches
   back to it, and that build won't be reinstalled automatically.
-- **Using your own build:** if you set **Settings → KytyPS5 executable** to a build you compiled,
+- **Using your own build:** if you set **Settings → Advanced → KytyPS5 location** to a build you compiled,
   the launcher tells you when a newer official build exists but leaves yours alone.
-  **Switch to official KytyPS5 builds** moves you to auto-updates and *copies* your saves across;
+  **Settings → Updates → KytyPS5 → Switch to official builds** moves you to auto-updates and *copies* your saves across;
   your own build folder isn't changed.
 
-To turn this off, disable **Settings → Keep KytyPS5 updated automatically**. Managed builds live
+To turn this off, disable **Settings → Update automatically** (it covers the launcher, KytyPS5 and shadPS4). Managed builds live
 in `~/.local/share/ps5-launcher/kyty/`.
 
 ## PS4 games
@@ -336,7 +336,7 @@ only after the render context exists, or mpv drops the video track.
 one it uses its fixed keyboard layout (J/I/K/L for ✕/△/□/○, WASD and TFGH sticks, Q/E and Z/C
 shoulders, Enter Options). The launcher only reports which controller is connected
 (`gamepad::connected`, from `/proc/bus/input/devices`) on the start-up splash and in
-**Settings → Keyboard controls in games**, which shows that layout.
+**Settings → Controller & keyboard**, which shows that layout.
 
 ## Where things are stored
 

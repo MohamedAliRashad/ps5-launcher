@@ -234,6 +234,8 @@ pub struct App {
     pub hero_flip: bool,
     pub row_flip: bool,
     pub settings_ids: Vec<crate::settings::SId>,
+    /// Settings' Advanced section is expanded (for this session).
+    pub settings_advanced: bool,
     pub boot: crate::boot::Boot,
     pub kyty: crate::kyty_ui::KytyUi,
     pub shad: crate::shad_ui::ShadUi,
@@ -386,6 +388,7 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, target_monitor: Option<Monitor
         hero_flip: false,
         row_flip: false,
         settings_ids: Vec::new(),
+        settings_advanced: false,
         boot: Default::default(),
         kyty: Default::default(),
         shad: Default::default(),
@@ -1034,7 +1037,7 @@ impl App {
                     app.push_hub();
                 }
                 app.toast(&format!("Saved: {} on Linux", status.label()),
-                    &format!("It's shared with {} the next time you choose Settings → Share your results.", crate::platform::Platform::of_title_id(&tid).unwrap_or_default().emulator()), 1);
+                    &format!("It's shared with {} the next time you choose Settings → Share your game ratings.", crate::platform::Platform::of_title_id(&tid).unwrap_or_default().emulator()), 1);
             });
         });
     }

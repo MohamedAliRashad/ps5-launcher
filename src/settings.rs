@@ -9,34 +9,39 @@ use crate::SettingData;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SId {
     Header,
-    Emulator,
-    KytyUpdate,
-    KytyAuto,
-    KytyRollback,
+    // Games
     Dirs,
-    DownloadDir,
     InstallDir,
+    DownloadDir,
+    Rescan,
+    // Playing
+    Fullscreen,
+    ReturnOnExit,
+    Controls,
+    // Downloads
     SeedCompleted,
     Downloads,
-    Share,
-    Controls,
-    ShadUpdate,
-    ShadAuto,
-    ShadRollback,
-    Resolution,
-    Present,
-    Fullscreen,
-    Amd,
-    Extra,
-    ReturnOnExit,
+    // Updates
     AppUpdate,
-    AppAuto,
+    KytyUpdate,
+    ShadUpdate,
+    AutoUpdate,
+    KytyRollback,
+    ShadRollback,
+    // Launcher
     Display,
     Sounds,
+    Share,
+    // Advanced
+    Advanced,
+    Emulator,
+    Resolution,
+    Present,
+    Amd,
+    Extra,
     Rawg,
     RawgRemove,
     Refresh,
-    Rescan,
     Quit,
 }
 
@@ -44,180 +49,149 @@ fn row(kind: i32, label: &str) -> SettingData {
     SettingData { kind, label: label.into(), ..Default::default() }
 }
 
+fn plural(n: usize, one: &str) -> String {
+    format!("{n} {one}{}", if n == 1 { "" } else { "s" })
+}
+
 impl App {
+    /// Sections in the order players need them; expert options folded under Advanced.
     pub fn build_settings(&mut self) {
         let cfg = self.cfg.lock().unwrap().clone();
         let mut rows: Vec<(SId, SettingData)> = Vec::new();
-        rows.push((SId::Header, row(0, "EMULATOR")));
+        let header = |rows: &mut Vec<(SId, SettingData)>, label: &str| rows.push((SId::Header, row(0, label)));
 
-        let mut r = row(1, "KytyPS5 executable");
-        r.value = util::display_path(&cfg.emulator).into();
-        let ok = cfg.emulator_ok();
-        r.hint = if ok { "Emulator found".into() } else { "Emulator not found at this path".into() };
-        r.hint_kind = if ok { 1 } else { 2 };
-        rows.push((SId::Emulator, r));
-
-        // KytyPS5 updates
-        let managed = self.kyty_managed();
-        let latest = self.kyty.latest.as_ref().map(|r| crate::kyty::pretty(&r.tag));
-        let (label, value) = if self.kyty.busy {
-            ("Updating KytyPS5…".to_string(), self.kyty.progress.replace("Downloading KytyPS5 ", ""))
-        } else if self.kyty.checking {
-            ("Checking for KytyPS5 updates…".to_string(), String::new())
-        } else if !managed && !ok {
-            ("Download KytyPS5".to_string(), latest.clone().map(|l| format!("latest {l}")).unwrap_or_else(|| "latest official build".into()))
-        } else if !managed {
-            ("Switch to official KytyPS5 builds".to_string(), "auto-updates · saves are copied".to_string())
-        } else if self.kyty_update_available() {
-            ("Update KytyPS5".to_string(), latest.clone().map(|l| format!("→ {l}")).unwrap_or_default())
-        } else {
-            ("Check for KytyPS5 updates".to_string(), if latest.is_some() { "up to date".into() } else { String::new() })
-        };
-        let mut r = row(4, &label);
-        r.value = value.into();
-        if !self.kyty.error.is_empty() {
-            r.hint = self.kyty.error.clone().into();
-            r.hint_kind = 2;
-        } else {
-            let st = crate::kyty::load_state();
-            let checked = if st.last_check > 0.0 { format!(" · checked {}", util::fmt_last_played(st.last_check).to_lowercase()) } else { String::new() };
-            r.hint = format!("Installed: {}{checked}", if self.kyty.version.is_empty() { "…" } else { &self.kyty.version }).into();
-            r.hint_kind = if managed && !self.kyty_update_available() { 1 } else { 0 };
-        }
-        rows.push((SId::KytyUpdate, r));
-        let mut r = row(2, "Keep KytyPS5 updated automatically");
-        r.on = cfg.kyty_auto_update;
-        rows.push((SId::KytyAuto, r));
-        let prev = crate::kyty::load_state().previous;
-        if managed && !prev.is_empty() && crate::kyty::root().join("versions").join(&prev).is_dir() {
-            let mut r = row(4, "Roll back to previous KytyPS5");
-            r.value = crate::kyty::pretty(&prev).into();
-            rows.push((SId::KytyRollback, r));
-        }
-
-        let mut r = row(1, "Game folders (separate with ;)");
+        header(&mut rows, "GAMES");
+        let mut r = row(1, "Game folders");
         r.value = cfg.game_dirs.iter().map(|d| util::display_path(d)).collect::<Vec<_>>().join("; ").into();
-        let n = self.locals.len();
-        r.hint = format!("{n} installed game{} found · scanned for sce_sys/param.json", if n == 1 { "" } else { "s" }).into();
+        r.hint = format!("{} found · separate several folders with ;", plural(self.locals.len(), "installed game")).into();
         rows.push((SId::Dirs, r));
+        let mut r = row(1, "Install new games to");
+        r.value = util::display_path(&cfg.install_dir).into();
+        r.hint = "Downloaded games are set up here when you press Install".into();
+        rows.push((SId::InstallDir, r));
+        let mut r = row(1, "Save downloads to");
+        r.value = util::display_path(&cfg.download_dir).into();
+        r.hint = "Each download gets its own folder".into();
+        rows.push((SId::DownloadDir, r));
+        rows.push((SId::Rescan, row(4, "Rescan game folders")));
 
-        let mut r = row(3, "Resolution");
-        r.value = format!("{} × {}", cfg.width, cfg.height).into();
-        rows.push((SId::Resolution, r));
-
-        let mut r = row(3, "Present mode");
-        r.value = PRESENT_MODES.iter().find(|(k, _)| *k == cfg.present_mode).map(|(_, l)| *l).unwrap_or(cfg.present_mode.as_str()).into();
-        rows.push((SId::Present, r));
-
-        let mut r = row(2, "Launch games in fullscreen");
+        header(&mut rows, "PLAYING");
+        let mut r = row(2, "Play games in fullscreen");
         r.on = cfg.fullscreen;
         rows.push((SId::Fullscreen, r));
-        let mut r = row(2, "AMD CPU instruction patches");
-        r.on = cfg.amd_cpu;
-        rows.push((SId::Amd, r));
-        let mut r = row(1, "Extra emulator arguments");
-        r.value = cfg.extra_args.clone().into();
-        r.hint = "e.g. --vblank-frequency 60 --tessellation".into();
-        rows.push((SId::Extra, r));
         let mut r = row(2, "Return to the launcher when a game closes");
         r.on = cfg.return_on_exit;
         rows.push((SId::ReturnOnExit, r));
+        let connected = !crate::gamepad::connected().is_empty();
+        let mut r = row(4, "Controller & keyboard");
+        r.value = crate::gamepad::status().into();
+        r.value_kind = if connected { 1 } else { 0 };
+        r.hint = if connected { "Your controller works in games with no setup" } else { "Games play best with a controller · open to see the keyboard keys" }.into();
+        rows.push((SId::Controls, r));
 
-        rows.push((SId::Header, row(0, "PS4 EMULATOR")));
+        header(&mut rows, "DOWNLOADS");
+        let mut r = row(2, "Keep sharing finished downloads");
+        r.on = cfg.seed_after_download;
+        r.hint = "Helps other players download faster · uploads at most 128 KiB/s".into();
+        rows.push((SId::SeedCompleted, r));
+        let mut r = row(4, "Open downloads");
+        r.value = "Ctrl+D".into();
+        rows.push((SId::Downloads, r));
+
+        header(&mut rows, "UPDATES");
+        // PS5 Launcher
+        let cur = crate::update::current_version();
+        let latest = self.upd.latest.as_ref().map(|r| r.version.clone());
+        let mut r = row(4, "PS5 Launcher");
+        r.hint = "This app".into();
+        let (value, kind) = if let Some(v) = &self.upd.installed {
+            (format!("Restart to finish · {v}"), 3)
+        } else if self.upd.busy {
+            (self.upd.progress.replace("Downloading PS5 Launcher ", ""), 0)
+        } else if self.upd.checking {
+            ("Checking…".to_string(), 0)
+        } else if self.app_update_available() {
+            (latest.map(|l| format!("Update to {l}")).unwrap_or_default(), 3)
+        } else if latest.is_some() {
+            (format!("{cur} · Up to date"), 1)
+        } else {
+            (cur.to_string(), 0)
+        };
+        (r.value, r.value_kind) = (value.into(), kind);
+        if !self.upd.error.is_empty() {
+            (r.hint, r.hint_kind) = (self.upd.error.clone().into(), 2);
+        }
+        rows.push((SId::AppUpdate, r));
+
+        // KytyPS5
+        let ok = cfg.emulator_ok();
+        let managed = self.kyty_managed();
+        let kyty_state = crate::kyty::load_state();
+        let mut r = row(4, "KytyPS5");
+        r.hint = "Runs PS5 games".into();
+        let (value, kind) = if self.kyty.busy {
+            (self.kyty.progress.replace("Downloading KytyPS5 ", ""), 0)
+        } else if self.kyty.checking {
+            ("Checking…".to_string(), 0)
+        } else if !managed && !ok {
+            ("Install".to_string(), 3)
+        } else if !managed {
+            r.hint = format!("Runs PS5 games · you use your own build{} · switching keeps your saves",
+                self.kyty.version.strip_prefix("Self-built").map(|v| format!(" ({})", v.trim())).unwrap_or_default()).into();
+            ("Switch to official builds".to_string(), 3)
+        } else if self.kyty_update_available() {
+            (self.kyty.latest.as_ref().map(|l| format!("Update to {}", crate::kyty::pretty(&l.tag))).unwrap_or_default(), 3)
+        } else if self.kyty.latest.is_some() {
+            (format!("{} · Up to date", crate::kyty::pretty(&kyty_state.installed)), 1)
+        } else {
+            (crate::kyty::pretty(&kyty_state.installed), 0)
+        };
+        (r.value, r.value_kind) = (value.into(), kind);
+        if !self.kyty.error.is_empty() {
+            (r.hint, r.hint_kind) = (self.kyty.error.clone().into(), 2);
+        }
+        rows.push((SId::KytyUpdate, r));
+
+        // shadPS4
         let shad_state = crate::shad::load_state();
-        let mut r = row(4, if self.shad.busy { "Installing shadPS4…" } else if crate::shad::installed() { "Check for shadPS4 updates" } else { "Install shadPS4 now" });
-        r.value = if self.shad.busy {
-            self.shad.progress.clone()
-        } else if crate::shad::installed() {
-            format!("shadPS4 {}", crate::shad::pretty(&shad_state.installed))
+        let shad_installed = crate::shad::installed();
+        let mut r = row(4, "shadPS4");
+        r.hint = if shad_installed { "Runs PS4 games" } else { "Runs PS4 games · installs by itself the first time you play one" }.into();
+        let (value, kind) = if self.shad.busy {
+            (self.shad.progress.clone(), 0)
+        } else if !shad_installed {
+            ("Install".to_string(), 3)
+        } else if shad_state.latest == shad_state.installed {
+            (format!("{} · Up to date", crate::shad::pretty(&shad_state.installed)), 1)
         } else {
-            "Not installed".into()
-        }.into();
-        r.hint = if !self.shad.error.is_empty() {
-            r.hint_kind = 2;
-            self.shad.error.clone()
-        } else if crate::shad::installed() {
-            "PS4 games run on shadPS4 · saves are kept across updates".into()
-        } else {
-            "PS4 games run on shadPS4. It installs by itself the first time you play a PS4 game.".into()
-        }.into();
+            (crate::shad::pretty(&shad_state.installed), 0)
+        };
+        (r.value, r.value_kind) = (value.into(), kind);
+        if !self.shad.error.is_empty() {
+            (r.hint, r.hint_kind) = (self.shad.error.clone().into(), 2);
+        }
         rows.push((SId::ShadUpdate, r));
-        let mut r = row(2, "Keep shadPS4 updated automatically");
-        r.on = cfg.shad_auto_update;
-        rows.push((SId::ShadAuto, r));
+
+        let mut r = row(2, "Update automatically");
+        r.on = cfg.app_auto_update && cfg.kyty_auto_update && cfg.shad_auto_update;
+        r.hint = "Checks every few hours · updates wait until you close your game".into();
+        rows.push((SId::AutoUpdate, r));
+        // Rollbacks only when there is something to go back to.
+        let mut rollback_hint = "For when an update breaks a game";
+        if managed && !kyty_state.previous.is_empty() && crate::kyty::root().join("versions").join(&kyty_state.previous).is_dir() {
+            let mut r = row(4, "Go back to the previous KytyPS5");
+            r.value = crate::kyty::pretty(&kyty_state.previous).into();
+            r.hint = std::mem::take(&mut rollback_hint).into();
+            rows.push((SId::KytyRollback, r));
+        }
         if !shad_state.previous.is_empty() && crate::shad::root().join("versions").join(&shad_state.previous).is_dir() {
-            let mut r = row(4, "Roll back to previous shadPS4");
+            let mut r = row(4, "Go back to the previous shadPS4");
             r.value = crate::shad::pretty(&shad_state.previous).into();
+            r.hint = rollback_hint.into();
             rows.push((SId::ShadRollback, r));
         }
 
-        rows.push((SId::Header, row(0, "CONTROLS")));
-        let connected = !crate::gamepad::connected().is_empty();
-        let mut r = row(4, "Keyboard controls in games");
-        r.value = crate::gamepad::status().into();
-        r.hint = if connected {
-            "Your controller works in games with no setup. Without one, games use the keyboard: open this to see the keys.".into()
-        } else {
-            "Games play best with a controller: DualSense, DualShock 4, Xbox and most others work over USB or Bluetooth.".into()
-        };
-        r.hint_kind = if connected { 1 } else { 0 };
-        rows.push((SId::Controls, r));
-
-        rows.push((SId::Header, row(0, "LAUNCHER")));
-
-        let mut r = row(1, "Download folder");
-        r.value = cfg.download_dir.clone().into();
-        r.hint = "New transfers only · each torrent gets its own folder · not installed automatically".into();
-        rows.push((SId::DownloadDir, r));
-        let mut r = row(1, "Installation folder");
-        r.value = cfg.install_dir.clone().into();
-        r.hint = "Explicit Install after download · originals kept · added to the game library after validation".into();
-        rows.push((SId::InstallDir, r));
-        let mut r = row(2, "Seed completed downloads");
-        r.on = cfg.seed_after_download;
-        r.hint = "On by default · shares your completed downloads whenever the launcher is open, also after a restart · upload limit 128 KiB/s · turn off to stop sharing".into();
-        rows.push((SId::SeedCompleted, r));
-        let mut r = row(4, "Manage downloads");
-        r.hint = "Background while the launcher is open · paused on exit · Ctrl+D".into();
-        rows.push((SId::Downloads, r));
-        let unshared = self.my_results.unshared().len();
-        let mut r = row(4, "Share your results with KytyPS5");
-        r.value = if unshared > 0 { format!("{unshared} to share") } else { "Nothing new".to_string() }.into();
-        r.hint = if self.my_results.games.is_empty() {
-            "Rate a game from its Options menu after playing it. Your results help everyone see what runs on Linux.".into()
-        } else {
-            format!("Opens a pre-filled report for each new result (up to {}) · needs a free GitHub account", crate::results::BATCH).into()
-        };
-        rows.push((SId::Share, r));
-
-        // PS5 Launcher updates
-        let cur = crate::update::current_version();
-        let latest = self.upd.latest.as_ref().map(|r| r.version.clone());
-        let (label, value) = if let Some(v) = &self.upd.installed {
-            ("Restart now to finish updating".to_string(), format!("{cur} → {v}"))
-        } else if self.upd.busy {
-            ("Updating PS5 Launcher…".to_string(), self.upd.progress.replace("Downloading PS5 Launcher ", ""))
-        } else if self.upd.checking {
-            ("Checking for launcher updates…".to_string(), String::new())
-        } else if self.app_update_available() {
-            ("Update PS5 Launcher".to_string(), latest.as_ref().map(|l| format!("{cur} → {l}")).unwrap_or_default())
-        } else {
-            ("Check for launcher updates".to_string(), if latest.is_some() { "up to date".into() } else { String::new() })
-        };
-        let mut r = row(4, &label);
-        r.value = value.into();
-        if !self.upd.error.is_empty() {
-            r.hint = self.upd.error.clone().into();
-            r.hint_kind = 2;
-        } else {
-            r.hint = format!("Version {cur}").into();
-            r.hint_kind = if self.upd.installed.is_some() || (latest.is_some() && !self.app_update_available()) { 1 } else { 0 };
-        }
-        rows.push((SId::AppUpdate, r));
-        let mut r = row(2, "Keep PS5 Launcher updated automatically");
-        r.on = cfg.app_auto_update;
-        rows.push((SId::AppAuto, r));
-
+        header(&mut rows, "LAUNCHER");
         let mut r = row(3, "Display");
         r.value = match self.monitors.iter().find(|m| m.name == cfg.monitor) {
             Some(m) => format!("{} · {}×{}", m.name, m.w, m.h),
@@ -228,40 +202,82 @@ impl App {
         let mut r = row(2, "Interface sounds");
         r.on = cfg.sounds;
         rows.push((SId::Sounds, r));
-
-        let mut r = row(1, "RAWG API key");
-        r.secret = true;
-        let key = cfg.rawg_key.trim();
-        r.value = if key.is_empty() { "".into() } else if key.len() >= 8 { format!("••••••••{}", &key[key.len() - 4..]).into() } else { "••••".into() };
-        let rawg_games = self.games.iter().filter(|g| g.info.as_ref().and_then(|i| i.source.as_deref()) == Some("rawg")).count();
-        if !self.rawg_status.is_empty() {
-            r.hint = self.rawg_status.clone().into();
-            r.hint_kind = self.rawg_status_kind;
-        } else if key.is_empty() {
-            r.hint = "Optional. Fills in artwork for games missing from the PlayStation catalog.".into();
+        let unshared = self.my_results.unshared().len();
+        let mut r = row(4, "Share your game ratings");
+        (r.value, r.value_kind) = if unshared > 0 { (format!("{unshared} to share").into(), 3) } else { ("Nothing new".into(), 0) };
+        r.hint = if self.my_results.games.is_empty() {
+            "Rate a game from its Options menu after you play it, then share it here".into()
         } else {
-            r.hint = format!("✓ Key saved · artwork from RAWG for {rawg_games} game{}", if rawg_games == 1 { "" } else { "s" }).into();
-            r.hint_kind = 1;
-        }
-        rows.push((SId::Rawg, r));
-        if !key.is_empty() {
-            rows.push((SId::RawgRemove, row(4, "Remove RAWG key")));
-        }
-
-        let mut r = row(4, "Reload RuTracker catalog");
-        r.value = if self.syncing {
-            "Reloading…".into()
-        } else {
-            let snapshot = self.games.first().map(|game| util::fmt_date(util::parse_iso_date(&game.g.peers_observed))).unwrap_or_default();
-            format!("{} releases · snapshot {}", self.games.len(), if snapshot.is_empty() { "unknown" } else { &snapshot }).into()
+            "Tells the emulator teams which games work on Linux · needs a free GitHub account".into()
         };
-        r.hint = "Reloads local JSON, not the website. Peer counts are snapshot data, not live.".into();
-        rows.push((SId::Refresh, r));
-        rows.push((SId::Rescan, row(4, "Rescan installed games")));
-        let mut r = row(4, "Quit launcher");
+        rows.push((SId::Share, r));
+
+        header(&mut rows, "ADVANCED");
+        let advanced = self.settings_advanced;
+        let mut r = row(4, if advanced { "Hide advanced settings" } else { "Show advanced settings" });
+        r.hint = "KytyPS5 location and video options, artwork key, game catalog".into();
+        rows.push((SId::Advanced, r));
+        if advanced {
+            let mut r = row(1, "KytyPS5 location");
+            r.value = util::display_path(&cfg.emulator).into();
+            (r.hint, r.hint_kind) = if ok { ("Found".into(), 1) } else { ("Nothing runnable at this path".into(), 2) };
+            rows.push((SId::Emulator, r));
+            let mut r = row(3, "Resolution (PS5 games)");
+            r.value = format!("{} × {}", cfg.width, cfg.height).into();
+            rows.push((SId::Resolution, r));
+            let mut r = row(3, "Present mode (PS5 games)");
+            r.value = PRESENT_MODES.iter().find(|(k, _)| *k == cfg.present_mode).map(|(_, l)| *l).unwrap_or(cfg.present_mode.as_str()).into();
+            r.hint = "Try V-Sync if the picture tears".into();
+            rows.push((SId::Present, r));
+            let mut r = row(2, "AMD CPU patches (PS5 games)");
+            r.on = cfg.amd_cpu;
+            r.hint = "Only for AMD processors".into();
+            rows.push((SId::Amd, r));
+            let mut r = row(1, "Extra KytyPS5 arguments");
+            r.value = cfg.extra_args.clone().into();
+            r.hint = "For example --vblank-frequency 60 --tessellation".into();
+            rows.push((SId::Extra, r));
+
+            let mut r = row(1, "RAWG API key");
+            r.secret = true;
+            let key = cfg.rawg_key.trim();
+            r.value = if key.is_empty() { "".into() } else if key.len() >= 8 { format!("••••••••{}", &key[key.len() - 4..]).into() } else { "••••".into() };
+            let rawg_games = self.games.iter().filter(|g| g.info.as_ref().and_then(|i| i.source.as_deref()) == Some("rawg")).count();
+            if !self.rawg_status.is_empty() {
+                (r.hint, r.hint_kind) = (self.rawg_status.clone().into(), self.rawg_status_kind);
+            } else if key.is_empty() {
+                r.hint = "Optional · fills in artwork for games missing from the PlayStation Store".into();
+            } else {
+                (r.hint, r.hint_kind) = (format!("Key saved · artwork for {}", plural(rawg_games, "game")).into(), 1);
+            }
+            rows.push((SId::Rawg, r));
+            if !key.is_empty() {
+                rows.push((SId::RawgRemove, row(4, "Remove RAWG key")));
+            }
+
+            let mut r = row(4, "Reload game catalog");
+            r.value = if self.syncing {
+                "Reloading…".into()
+            } else {
+                let snapshot = self.games.first().map(|game| util::fmt_date(util::parse_iso_date(&game.g.peers_observed))).unwrap_or_default();
+                format!("{} · {}", plural(self.games.len(), "release"), if snapshot.is_empty() { "date unknown" } else { &snapshot }).into()
+            };
+            r.hint = "Seeder counts are from that date, not live".into();
+            rows.push((SId::Refresh, r));
+        }
+
+        header(&mut rows, "");
+        let mut r = row(4, "Quit PS5 Launcher");
+        r.value = "Ctrl+Q".into();
         r.danger = true;
         rows.push((SId::Quit, r));
 
+        // Rows between two headers form one card.
+        for i in 0..rows.len() {
+            let first = i == 0 || rows[i - 1].1.kind == 0;
+            let last = i + 1 == rows.len() || rows[i + 1].1.kind == 0;
+            (rows[i].1.group_first, rows[i].1.group_last) = (first, last);
+        }
         self.settings_ids = rows.iter().map(|(id, _)| *id).collect();
         self.settings_rows = rows.into_iter().map(|(_, r)| r).collect();
     }
@@ -289,11 +305,13 @@ impl App {
             if i as i32 == self.idx {
                 target = y;
             }
+            // Hints wrap at about 76 characters (612 px at 15 px).
+            let hint_lines = r.hint.chars().count().div_ceil(76) as f32;
             y += match r.kind {
-                0 => 36.0 + 10.0 + 22.0,
-                1 => 8.0 + 26.0 + 6.0 + 54.0 + 4.0,
-                _ => 8.0 + 64.0 + 4.0,
-            } + if r.hint.is_empty() { 0.0 } else { 26.0 };
+                0 if r.label.is_empty() => 20.0 + 12.0,
+                0 => 36.0 + 20.0 + 12.0,
+                _ => 64.0 + if hint_lines > 0.0 { 4.0 + hint_lines * 19.0 } else { 0.0 } + if self.edit_index == i as i32 { 54.0 } else { 0.0 },
+            };
         }
         y += 36.0 + 22.0 + 10.0 + 26.0 + 10.0 + 170.0; // About block under the last row
         let (_, h) = self.logical_size();
@@ -351,18 +369,16 @@ impl App {
                 self.save_cfg(|c| c.seed_after_download = on);
                 self.push_downloads();
             }
-            SId::Fullscreen | SId::Amd | SId::ReturnOnExit | SId::Sounds | SId::KytyAuto | SId::AppAuto | SId::ShadAuto => {
+            SId::Fullscreen | SId::Amd | SId::ReturnOnExit | SId::Sounds | SId::AutoUpdate => {
                 let on = dir > 0;
                 self.save_cfg(|c| match id {
                     SId::Fullscreen => c.fullscreen = on,
                     SId::Amd => c.amd_cpu = on,
                     SId::ReturnOnExit => c.return_on_exit = on,
-                    SId::KytyAuto => c.kyty_auto_update = on,
-                    SId::ShadAuto => c.shad_auto_update = on,
-                    SId::AppAuto => c.app_auto_update = on,
+                    SId::AutoUpdate => (c.app_auto_update, c.kyty_auto_update, c.shad_auto_update) = (on, on, on),
                     _ => c.sounds = on,
                 });
-                if id == SId::KytyAuto && on {
+                if id == SId::AutoUpdate && on {
                     self.kyty_check(false);
                 }
                 if id == SId::Sounds {
@@ -394,7 +410,7 @@ impl App {
                 ui.set_edit_text(text.into());
                 ui.set_edit_index(i as i32);
             }
-            SId::Fullscreen | SId::Amd | SId::ReturnOnExit | SId::Sounds | SId::KytyAuto | SId::AppAuto | SId::SeedCompleted | SId::ShadAuto => {
+            SId::Fullscreen | SId::Amd | SId::ReturnOnExit | SId::Sounds | SId::AutoUpdate | SId::SeedCompleted => {
                 let on = self.settings_rows[i].on;
                 self.settings_change(i, if on { -1 } else { 1 });
             }
@@ -468,6 +484,12 @@ impl App {
             }
             SId::Quit => {
                 let _ = slint::quit_event_loop();
+            }
+            SId::Advanced => {
+                audio::play(Sound::Select);
+                self.settings_advanced = !self.settings_advanced;
+                self.refresh_settings();
+                self.scroll_settings();
             }
             SId::Downloads => self.open_downloads(None),
             SId::Share => self.share_results(),

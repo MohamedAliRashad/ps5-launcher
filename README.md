@@ -48,7 +48,7 @@ To uninstall: `./ps5-launcher-linux-x86_64/install.sh --uninstall`
 
 > Only download games you own. Downloads use BitTorrent: other people can see your IP address,
 > and finished downloads are shared while the launcher is open (turn this off in
-> **Settings → Seed completed downloads**).
+> **Settings → Keep sharing finished downloads**).
 
 ## Controls
 
@@ -78,7 +78,7 @@ differently on Linux. In the Library, **In-game** lists every game that reaches 
 **In-game on Linux** only the ones confirmed on Linux.
 
 **Help others:** when you close a game, the launcher asks how far it got, and your answer
-becomes its tag on your PC. Every so often, choose **Settings → Share your results** to send
+becomes its tag on your PC. Every so often, choose **Settings → Share your game ratings** to send
 your results to the community lists (needs a free GitHub account).
 
 PS4 and PS5 releases shipped as **PKG packages** can't be installed by the launcher; pick a

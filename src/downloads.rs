@@ -1,5 +1,5 @@
 //! Opt-in native torrent transfers. Downloads only start from an explicit action. Completed
-//! downloads seed while "Seed completed downloads" is on, including after a restart; only that
+//! downloads seed while "Keep sharing finished downloads" is on, including after a restart; only that
 //! setting turns seeding off for good (Stop seeding on one transfer lasts until the next launch).
 //! Magnet lookup can use DHT/trackers before metadata (including its private flag) is known.
 //! A dedicated Tokio worker owns the engine; the UI reads bounded snapshots once per second.
