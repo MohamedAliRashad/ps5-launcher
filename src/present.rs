@@ -600,9 +600,15 @@ impl App {
             for &index in members {
                 let game = &self.games[index];
                 if !words.iter().all(|word| game.norm.contains(word)) { continue; }
-                if (self.genre == "All" || game.buckets.contains(&self.genre.as_str())) && self.platform_ok(game) {
-                    status[0] = true;
-                    if self.mixed_consoles { status[n - 1] = true; }
+                let genre_ok = self.genre == "All" || game.buckets.contains(&self.genre.as_str());
+                // Console chips count what pressing them would show, with the other filters.
+                if genre_ok && self.mixed_consoles && self.status_filter_ok(game) {
+                    let chip = if game.g.platform == crate::platform::Platform::Ps5 { n - 2 } else { n - 1 };
+                    status[chip] = true;
+                }
+                // "All" resets every filter, so it always counts everything.
+                status[0] |= genre_ok;
+                if genre_ok && self.platform_ok(game) {
                     status[1] |= game.local.is_some();
                     let compat = self.game_compat(game);
                     status[2] |= compat.is_some_and(|entry| entry.in_game_anywhere());
@@ -627,8 +633,9 @@ impl App {
             if i >= n && ((self.zone == Z_CHIPS && i as i32 == self.idx) || ((self.zone != Z_CHIPS || self.idx < n as i32) && *label == self.genre)) {
                 focus_x = x;
             }
-            let console_chip = self.mixed_consoles && i == n - 1;
-            let on = if console_chip { self.platform_filter.is_some() } else if i < n { *label == self.status_filter } else { *label == self.genre || (i == n && self.genre == "All") };
+            let on = if let Some(p) = self.console_chip(i) { self.platform_filter == Some(p) }
+                else if i == 0 { self.status_filter == "All" && self.platform_filter.is_none() }
+                else if i < n { *label == self.status_filter } else { *label == self.genre || (i == n && self.genre == "All") };
             let chip = GenreChip { index: i as i32, label: label.clone().into(), count: c.into(), on, x, w };
             if i < n { statuses.push(chip); } else { chips.push(chip); }
             x += w + 10.0 * self.scale;

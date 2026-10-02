@@ -250,7 +250,7 @@ pub struct App {
     /// The Library catalog has games for more than one console (shows badges and a console chip).
     pub mixed_consoles: bool,
     /// The status filters lead `genre_list`: All, Installed, In-game, In-game on Linux and, with
-    /// more than one console, the console chip. Genres follow.
+    /// more than one console, "PS5 games only" and "PS4 games only". Genres follow.
     pub status_count: usize,
 }
 
@@ -690,9 +690,10 @@ impl App {
         if !self.mixed_consoles {
             self.platform_filter = None;
         } else {
-            let label = match self.platform_filter { None => "All consoles", Some(Platform::Ps5) => "PS5 only", Some(Platform::Ps4) => "PS4 only" };
-            let n = self.groups.members.iter().filter(|m| m.iter().any(|i| self.platform_ok(&self.games[*i]))).count();
-            list.push((label.into(), n));
+            for p in [Platform::Ps5, Platform::Ps4] {
+                let n = self.groups.members.iter().filter(|m| m.iter().any(|i| self.games[*i].g.platform == p)).count();
+                list.push((format!("{} games only", p.label()), n));
+            }
         }
         self.status_count = list.len();
         list.push(("All genres".into(), self.groups.members.len()));
@@ -1690,11 +1691,13 @@ impl App {
                 }
                 Act::Confirm => {
                     if let Some((g, _)) = self.genre_list.get(self.idx as usize).cloned() {
-                        if self.mixed_consoles && self.idx == n - 1 {
-                            // The console chip cycles: every console → PS5 → PS4.
-                            use crate::platform::Platform;
-                            self.platform_filter = match self.platform_filter { None => Some(Platform::Ps5), Some(Platform::Ps5) => Some(Platform::Ps4), Some(Platform::Ps4) => None };
-                            self.build_genres();
+                        if let Some(p) = self.console_chip(self.idx as usize) {
+                            // A console chip toggles: press it again to see every console.
+                            self.platform_filter = if self.platform_filter == Some(p) { None } else { Some(p) };
+                        } else if self.idx == 0 {
+                            // "All" means everything: no status filter and every console.
+                            self.status_filter = g;
+                            self.platform_filter = None;
                         }
                         else if self.idx < n { self.status_filter = g; }
                         else { self.genre = if g == "All genres" { "All".into() } else { g }; }
@@ -1723,6 +1726,15 @@ impl App {
         self.push_genres();
     }
 
+    /// The console a status-row chip stands for ("PS5 games only" / "PS4 games only").
+    pub fn console_chip(&self, i: usize) -> Option<crate::platform::Platform> {
+        use crate::platform::Platform;
+        if !self.mixed_consoles || i >= self.status_count || i + 2 < self.status_count {
+            return None;
+        }
+        Some(if i + 2 == self.status_count { Platform::Ps5 } else { Platform::Ps4 })
+    }
+
     /// The game is for the console the Library shows (any, unless one is chosen).
     pub fn platform_ok(&self, game: &GameV) -> bool {
         self.platform_filter.is_none_or(|p| game.g.platform == p)
@@ -1733,7 +1745,8 @@ impl App {
         self.platform_ok(game) && self.status_filter_ok(game)
     }
 
-    fn status_filter_ok(&self, game: &GameV) -> bool {
+    /// The status filter alone (Installed, In-game, …), whatever the console.
+    pub fn status_filter_ok(&self, game: &GameV) -> bool {
         self.status_filter == "All" || (self.status_filter == "Installed" && game.local.is_some())
             || (self.status_filter == "In-game" && self.game_compat(game).is_some_and(|entry| entry.in_game_anywhere()))
             || (self.status_filter == "In-game on Linux" && self.game_compat(game).is_some_and(|entry| entry.on_linux && entry.status == crate::compat::Status::InGame))
