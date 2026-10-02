@@ -89,31 +89,4 @@ pub fn window_has_focus(ui: &crate::AppWindow) -> bool {
     ui.window().with_winit_window(|w: &winit::window::Window| w.has_focus()).unwrap_or(true)
 }
 
-fn which(bin: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file()))
-}
 
-/// Play a video fullscreen with mpv (YouTube links via yt-dlp), or VLC/ffplay for direct files.
-pub fn play_video(url: &str, monitor: &str) -> Option<std::process::Child> {
-    let youtube = url.contains("youtube.com") || url.contains("youtu.be");
-    let mut cmd = if which("mpv") {
-        let mut c = Command::new("mpv");
-        c.args(["--fs", "--really-quiet", "--force-window=immediate", "--title=Trailer", "--ytdl-format=bestvideo[height<=?1080]+bestaudio/best"]);
-        if !monitor.is_empty() {
-            c.arg(format!("--fs-screen-name={monitor}"));
-        }
-        c.arg(url);
-        c
-    } else if !youtube && which("vlc") {
-        let mut c = Command::new("vlc");
-        c.args(["--fullscreen", "--play-and-exit", "--no-video-title-show", url]);
-        c
-    } else if !youtube && which("ffplay") {
-        let mut c = Command::new("ffplay");
-        c.args(["-fs", "-autoexit", "-loglevel", "quiet", url]);
-        c
-    } else {
-        return None;
-    };
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().ok()
-}

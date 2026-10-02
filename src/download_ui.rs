@@ -93,9 +93,9 @@ impl App {
             if self.download_states.insert(job.key.clone(), job.state).is_some_and(|old| old != job.state) {
                 changed = true;
                 if job.state == State::Complete {
-                    self.toast("Download complete", &format!("{} · files saved, not installed", job.name), 1);
+                    self.toast_action("Download complete", &format!("{} · click to install it from Downloads", job.name), 1, "downloads");
                 } else if job.state == State::Failed {
-                    self.toast("Download stopped", &format!("{} · open Downloads for details", job.name), 2);
+                    self.toast_action("Download stopped", &format!("{} · click to see why in Downloads", job.name), 2, "downloads");
                 }
             }
         }
@@ -137,8 +137,8 @@ impl App {
                 complete: job.state == State::Complete && !installing,
                 primary: if installing { "Installing…" } else if installed { "Play" } else if job.state == State::Complete { if install.is_some() { "Retry install" } else { "Install" } } else { job.primary() }.into(),
                 primary_action: if installing { "" } else if installed { "play_install" } else if job.state == State::Complete { "install" } else { job.action_id() }.into(),
-                secondary: if installing { "Cancel install" } else if job.seeding { "Stop seeding" } else if job.state.active() || review { "Cancel" } else { "Remove" }.into(),
-                secondary_action: if installing { "cancel_install" } else if job.seeding { "stop_seed" } else if job.state.active() || review { "cancel" } else { "remove" }.into(),
+                secondary: if installing { "Cancel install" } else if job.seeding || job.verifying { "Stop seeding" } else if job.state.active() || review { "Cancel" } else { "Remove" }.into(),
+                secondary_action: if installing { "cancel_install" } else if job.seeding || job.verifying { "stop_seed" } else if job.state.active() || review { "cancel" } else { "remove" }.into(),
                 review, files: job.files.join("\n").into(),
                 file_summary: format!("{} files · download all {}{}", job.file_count, bytes_label(job.total),
                     if job.file_count > job.files.len() { " · first 100 shown" } else { "" }).into(),
@@ -196,7 +196,7 @@ impl App {
                 if let Some(job) = jobs.get((self.idx.max(0) / 3) as usize) {
                     let action = match self.idx % 3 {
                         0 => job.action_id(),
-                        1 => if job.seeding { "stop_seed" } else if job.state.active() || job.state == State::Ready { "cancel" } else { "remove" },
+                        1 => if job.seeding || job.verifying { "stop_seed" } else if job.state.active() || job.state == State::Ready { "cancel" } else { "remove" },
                         _ => "folder",
                     };
                     let install = self.installer.snapshot().into_iter().find(|record| record.key == job.key);

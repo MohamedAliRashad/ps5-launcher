@@ -107,6 +107,45 @@ fn gamepad_paths() -> Vec<String> {
     out
 }
 
+/// Names of the connected controllers, for showing whether games will get one. Reads the same
+/// device list as `gamepad_paths`, so it works even without permission to open the devices.
+pub fn connected() -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string("/proc/bus/input/devices") else { return Vec::new() };
+    let mut names: Vec<String> = Vec::new();
+    for block in text.split("\n\n") {
+        let (mut name, mut handlers, mut keys) = ("", "", "");
+        for line in block.lines() {
+            if let Some(n) = line.strip_prefix("N: Name=") {
+                name = n.trim_matches('"');
+            } else if let Some(h) = line.strip_prefix("H: Handlers=") {
+                handlers = h;
+            } else if let Some(k) = line.strip_prefix("B: KEY=") {
+                keys = k;
+            }
+        }
+        if keys.is_empty() || !handlers.split_whitespace().any(|h| h.starts_with("js")) {
+            continue;
+        }
+        let words: Vec<u64> = keys.split_whitespace().filter_map(|w| u64::from_str_radix(w, 16).ok()).collect();
+        let bit = |n: u16| {
+            let (w, b) = ((n / 64) as usize, n % 64);
+            words.len() > w && words[words.len() - 1 - w] >> b & 1 == 1
+        };
+        if (bit(BTN_SOUTH) || bit(BTN_MODE)) && !name.is_empty() && !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
+/// "DualSense Wireless Controller connected" or "No controller connected".
+pub fn status() -> String {
+    match connected().first() {
+        Some(name) => format!("{name} connected"),
+        None => "No controller connected".into(),
+    }
+}
+
 fn open_device(path: &str) -> Option<Device> {
     let c = std::ffi::CString::new(path).ok()?;
     let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC) };

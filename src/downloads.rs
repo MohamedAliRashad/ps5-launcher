@@ -1,7 +1,9 @@
-//! Opt-in native torrent transfers. No session/network activity before an explicit action.
+//! Opt-in native torrent transfers. Downloads only start from an explicit action. Completed
+//! downloads seed while "Seed completed downloads" is on, including after a restart; only that
+//! setting turns seeding off for good (Stop seeding on one transfer lasts until the next launch).
 //! Magnet lookup can use DHT/trackers before metadata (including its private flag) is known.
 //! A dedicated Tokio worker owns the engine; the UI reads bounded snapshots once per second.
-//! Our manifest restores paused, not via rqbit's auto-resuming session persistence.
+//! Our manifest restores unfinished transfers paused, not via rqbit's session persistence.
 
 use anyhow::{bail, ensure, Context, Result};
 use librqbit::{AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, Session, SessionOptions, TorrentStatsState};
@@ -52,14 +54,18 @@ pub struct Job {
     #[serde(skip)] pub peers: usize,
     #[serde(skip)] pub seeding: bool,
     #[serde(skip)] pub upload_speed: f64,
+    /// Checking a completed download's files before it seeds again.
+    #[serde(skip)] pub verifying: bool,
 }
 
 impl Job {
     pub fn label(&self) -> &'static str {
-        if self.state == State::Complete && self.seeding { "Complete · seeding" } else { self.state.label() }
+        if self.state == State::Complete && self.seeding { "Complete · seeding" }
+        else if self.state == State::Complete && self.verifying { "Complete · checking files to seed" }
+        else { self.state.label() }
     }
     fn clear_runtime(&mut self) {
-        self.speed = 0.0; self.peers = 0; self.eta.clear(); self.seeding = false; self.upload_speed = 0.0;
+        self.speed = 0.0; self.peers = 0; self.eta.clear(); self.seeding = false; self.upload_speed = 0.0; self.verifying = false;
     }
     pub fn progress(&self) -> f32 {
         if self.state == State::Complete { return 1.0; }
@@ -103,6 +109,8 @@ impl Default for Policy {
 
 enum Command { Prepare(Job), Start(String), Pause(String), Cancel(String), Remove(String), StopSeed(String), SetSeedAfterDownload(bool), Shutdown }
 
+const FILES_CHANGED: &str = "The downloaded files were moved, changed or deleted, so this download can't seed. Remove it, or download it again.";
+
 pub struct Manager {
     jobs: Arc<Mutex<Vec<Job>>>,
     tx: mpsc::Sender<Command>,
@@ -143,7 +151,7 @@ impl Manager {
             folder: base.join(format!("torrent-{key}")), key: key.clone(), topic,
             name: name.chars().filter(|c| !c.is_control()).take(200).collect(), magnet,
             state: State::Resolving, done: 0, total: 0, file_count: 0, files: vec![], error: String::new(),
-            speed: 0.0, eta: String::new(), peers: 0, seeding: false, upload_speed: 0.0,
+            speed: 0.0, eta: String::new(), peers: 0, seeding: false, upload_speed: 0.0, verifying: false,
         };
         self.tx.try_send(Command::Prepare(job.clone())).context("Download worker is busy or unavailable")?;
         jobs.push(job);
@@ -160,7 +168,7 @@ impl Manager {
             "pause" if matches!(job.state, State::Checking | State::Downloading) => Command::Pause(key.into()),
             "cancel" if !matches!(job.state, State::Complete | State::Cancelled) => Command::Cancel(key.into()),
             "remove" if !job.state.active() => Command::Remove(key.into()),
-            "stop_seed" if job.state == State::Complete && job.seeding => Command::StopSeed(key.into()),
+            "stop_seed" if job.state == State::Complete && (job.seeding || job.verifying) => Command::StopSeed(key.into()),
             _ => return Ok(()),
         };
         self.tx.try_send(command).context("Download worker is busy or unavailable")
@@ -336,6 +344,18 @@ fn inspect_metadata(bytes: &[u8], key: &str, folder: &Path) -> Result<(u64, Vec<
     Ok((total, files))
 }
 
+/// Every file of a completed download is still in place at its full size: seeding must never
+/// turn into downloading missing files again.
+fn payload_present(bytes: &[u8], folder: &Path) -> Result<()> {
+    let meta = librqbit::torrent_from_bytes(bytes).context("Invalid torrent metadata")?;
+    let info = meta.info.data.validate().context("Unsafe torrent metadata")?;
+    for file in info.iter_file_details() {
+        let found = std::fs::symlink_metadata(folder.join(file.filename.to_pathbuf())).ok();
+        ensure!(found.is_some_and(|m| m.is_file() && m.len() == file.len), FILES_CHANGED);
+    }
+    Ok(())
+}
+
 /// Disk allocation, not saved verified progress: deleted files and sparse holes need space again.
 fn required_space(bytes: &[u8], folder: &Path) -> Result<u64> {
     let meta = librqbit::torrent_from_bytes(bytes)?;
@@ -381,11 +401,13 @@ struct Worker {
     resolving: HashMap<String, AbortHandle>,
     task_keys: HashMap<Id, String>,
     tasks: JoinSet<Result<Resolved>>,
+    /// Completed downloads added paused while their files are checked, before seeding again.
+    reseeding: std::collections::HashSet<String>,
 }
 
 impl Worker {
     fn new(store: PathBuf, jobs: Arc<Mutex<Vec<Job>>>, policy: Policy) -> Self {
-        Self { store, jobs, policy, session: None, handles: HashMap::new(), peers: HashMap::new(), resolving: HashMap::new(), task_keys: HashMap::new(), tasks: JoinSet::new() }
+        Self { store, jobs, policy, session: None, handles: HashMap::new(), peers: HashMap::new(), resolving: HashMap::new(), task_keys: HashMap::new(), tasks: JoinSet::new(), reseeding: Default::default() }
     }
     fn job(&self, key: &str) -> Option<Job> { self.jobs.lock().unwrap().iter().find(|job| job.key == key).cloned() }
     fn update(&self, key: &str, f: impl FnOnce(&mut Job)) {
@@ -507,6 +529,7 @@ impl Worker {
         Ok(())
     }
     async fn stop_job(&mut self, key: &str, mut state: State) -> Result<()> {
+        self.reseeding.remove(key);
         if let Some(abort) = self.resolving.remove(key) { abort.abort(); }
         let mut pause_error = None;
         if let Some(handle) = self.handles.get(key).cloned() {
@@ -545,8 +568,10 @@ impl Worker {
 
     async fn set_seed_after_download(&mut self, enabled: bool) -> Result<()> {
         self.policy.seed_after_download = enabled;
-        // Never recreate handles or resolve metadata on enable (including at startup).
-        if enabled { return Ok(()); }
+        if enabled {
+            self.seed_all().await;
+            return Ok(());
+        }
         let keys: Vec<_> = self.handles.iter().filter(|(key, handle)| {
             handle.stats().finished || self.job(key).is_some_and(|job| job.state == State::Complete)
         }).map(|(key, _)| key.clone()).collect();
@@ -559,6 +584,67 @@ impl Worker {
         self.stop_idle_session().await;
         if let Some(error) = first_error { return Err(error); }
         Ok(())
+    }
+
+    /// Seed every completed download that isn't seeding yet (at startup, and when seeding is
+    /// turned back on). Unfinished transfers are never started here.
+    async fn seed_all(&mut self) {
+        let keys: Vec<String> = self.jobs.lock().unwrap().iter()
+            .filter(|job| job.state == State::Complete && !self.handles.contains_key(&job.key))
+            .map(|job| job.key.clone()).collect();
+        for key in keys {
+            if let Err(error) = self.seed(&key).await { self.fail(&key, error); }
+        }
+    }
+
+    /// Seed a completed download again. Its files are checked against the torrent with the
+    /// engine paused first, so a download whose files changed stops instead of downloading.
+    async fn seed(&mut self, key: &str) -> Result<()> {
+        let Some(job) = self.job(key) else { return Ok(()) };
+        if job.state != State::Complete || self.handles.contains_key(key) || !self.policy.seed_after_download { return Ok(()); }
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::fs::File::open(self.store.join(format!("{key}.torrent"))).context("Torrent metadata is missing")?
+            .take(MAX_METADATA + 1).read_to_end(&mut bytes)?;
+        // Never create a folder just to find it empty.
+        ensure!(job.folder.is_dir(), FILES_CHANGED);
+        let folder = owned_folder(&job)?;
+        inspect_metadata(&bytes, key, &folder)?;
+        payload_present(&bytes, &folder)?;
+        let session = self.session().await?;
+        let magnet = librqbit::Magnet::parse(&job.magnet)?;
+        let peers = self.peers.get(key).cloned().unwrap_or_else(|| self.policy.initial_peers.clone());
+        let response = session.add_torrent(AddTorrent::from_bytes(bytes), Some(AddTorrentOptions {
+            paused: true, overwrite: true, output_folder: Some(folder.to_string_lossy().into_owned()),
+            trackers: Some(magnet.trackers), initial_peers: Some(peers), ..Default::default()
+        })).await?;
+        let handle = response.into_handle().context("No transfer handle")?;
+        self.handles.insert(key.into(), handle);
+        self.reseeding.insert(key.into());
+        self.update(key, |job| { job.verifying = true; job.error.clear(); });
+        Ok(())
+    }
+
+    /// After the paused check: seed if every piece is intact, otherwise stop without downloading.
+    async fn reseed_checked(&mut self, key: &str, handle: &Arc<ManagedTorrent>) {
+        let stats = handle.stats();
+        match stats.state {
+            TorrentStatsState::Initializing { .. } => {}
+            TorrentStatsState::Paused if stats.finished && self.policy.seed_after_download => {
+                self.reseeding.remove(key);
+                self.update(key, |job| job.verifying = false);
+                let unpaused = match self.session().await { Ok(session) => session.unpause(handle).await, Err(error) => Err(error) };
+                if let Err(error) = unpaused {
+                    let _ = self.stop_job(key, State::Complete).await;
+                    self.fail(key, error);
+                }
+            }
+            _ => {
+                self.reseeding.remove(key);
+                let _ = self.stop_job(key, State::Complete).await;
+                self.fail(key, anyhow::anyhow!(FILES_CHANGED));
+            }
+        }
     }
 
     async fn remove(&mut self, key: &str) -> Result<()> {
@@ -575,6 +661,10 @@ impl Worker {
     async fn tick(&mut self) {
         let handles: Vec<_> = self.handles.iter().map(|(key, handle)| (key.clone(), handle.clone())).collect();
         for (key, handle) in handles {
+            if self.reseeding.contains(&key) {
+                self.reseed_checked(&key, &handle).await;
+                continue;
+            }
             let stats = handle.stats();
             let was_complete = self.job(&key).is_some_and(|job| job.state == State::Complete);
             let complete = stats.finished || was_complete;
@@ -609,6 +699,7 @@ impl Worker {
         self.stop_idle_session().await;
     }
     async fn run(mut self, mut rx: mpsc::Receiver<Command>) {
+        if self.policy.seed_after_download { self.seed_all().await; }
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut dirty_ticks = 0;
@@ -685,7 +776,7 @@ mod tests {
             key: key.into(), topic: 0, name: "Generated public-domain fixture".into(),
             magnet: format!("magnet:?xt=urn:btih:{key}"), folder: base.join(format!("torrent-{key}")),
             state: State::Resolving, done: 0, total: 0, file_count: 0, files: vec![], error: String::new(),
-            speed: 0.0, eta: String::new(), peers: 0, seeding: false, upload_speed: 0.0,
+            speed: 0.0, eta: String::new(), peers: 0, seeding: false, upload_speed: 0.0, verifying: false,
         }
     }
 
@@ -822,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn loopback_completed_seed_uploads_verified_bytes_and_shutdown_restores_without_network() {
+    fn loopback_completed_seed_uploads_verified_bytes_and_restart_seeds_again() {
         runtime().block_on(async {
             let temp = tempfile::tempdir().unwrap();
             let (mut worker, source, source_handle, expected, key) = completed_worker(temp.path(), true).await;
@@ -880,29 +971,27 @@ mod tests {
             assert!(!restored[0].seeding);
             assert_eq!(restored[0].upload_speed, 0.0);
             assert_eq!(restored[0].label(), State::Complete.label());
-            let mut restored_worker = Worker::new(worker.store.clone(), Arc::new(Mutex::new(restored)), worker.policy.clone());
-            restored_worker.set_seed_after_download(true).await.unwrap();
-            restored_worker.tick().await;
-            assert!(restored_worker.session.is_none());
-            assert!(restored_worker.handles.is_empty());
-            assert!(restored_worker.resolving.is_empty());
-            let uploaded = handle.stats().uploaded_bytes;
             let source_uploaded = source_handle.stats().uploaded_bytes;
-            // Also exercise the actual bounded Settings command on a restored manager.
-            let mut manager = Manager::new(worker.store.clone(), worker.policy.clone());
+            // A restart seeds again: the files are checked first, then shared, never downloaded.
+            let manager = Manager::new(worker.store.clone(), worker.policy.clone());
+            let resumed = wait_job(&manager, &key, |job| job.seeding).await;
+            assert_eq!(resumed.state, State::Complete);
+            assert_eq!(resumed.label(), "Complete · seeding");
+            assert!(resumed.error.is_empty());
+            // Only the Settings switch stops it.
             manager.set_seed_after_download(false).unwrap();
-            manager.set_seed_after_download(true).unwrap();
-            assert_unchanged(&manager, &key, &job.folder.join("public-domain-fixture.bin"), State::Complete, 2).await;
+            wait_job(&manager, &key, |job| !job.seeding && !job.verifying).await;
+            let mut manager = manager;
             // The UI owns Manager outside Tokio. Its synchronous shutdown joins
             // the worker; keep that join off this test's async executor too.
             tokio::task::spawn_blocking(move || manager.shutdown()).await.unwrap();
-            assert_eq!(handle.stats().uploaded_bytes, uploaded, "restart did not seed");
-            assert_eq!(source_handle.stats().uploaded_bytes, source_uploaded, "restart did not download");
+            assert_eq!(source_handle.stats().uploaded_bytes, source_uploaded, "seeding again never downloads");
+            assert_eq!(std::fs::read(job.folder.join("public-domain-fixture.bin")).unwrap(), expected);
         });
     }
 
     #[test]
-    fn loopback_disabled_completion_stops_and_enable_never_restarts_finished_or_paused() {
+    fn loopback_disabled_completion_stops_and_enable_seeds_finished_but_never_paused() {
         runtime().block_on(async {
             let temp = tempfile::tempdir().unwrap();
             let (mut worker, source, _, expected, key) = completed_worker(temp.path(), false).await;
@@ -916,9 +1005,12 @@ mod tests {
             paused.state = State::Paused;
             worker.jobs.lock().unwrap().push(paused.clone());
             worker.set_seed_after_download(true).await.unwrap();
-            worker.tick().await;
-            assert!(worker.session.is_none());
-            assert!(worker.handles.is_empty());
+            assert!(worker.handles.contains_key(&key), "turning seeding on seeds the completed download again");
+            assert!(worker.job(&key).unwrap().verifying);
+            let mut interval = tokio::time::interval(Duration::from_millis(50));
+            tokio::time::timeout(Duration::from_secs(30), async {
+                while !worker.job(&key).unwrap().seeding { interval.tick().await; worker.tick().await; }
+            }).await.expect("completed download seeds again after its files are checked");
             assert!(worker.resolving.is_empty());
             assert_eq!(worker.job(&key).unwrap().state, State::Complete);
             assert_eq!(worker.job(&paused.key).unwrap().state, State::Paused);
@@ -926,6 +1018,43 @@ mod tests {
             assert_eq!(std::fs::read(complete.folder.join("public-domain-fixture.bin")).unwrap(), expected);
             worker.shutdown().await;
             source.stop().await;
+        });
+    }
+
+    #[test]
+    fn loopback_restart_with_missing_or_changed_files_never_downloads() {
+        runtime().block_on(async {
+            for change in ["delete", "corrupt"] {
+                let temp = tempfile::tempdir().unwrap();
+                let (mut worker, source, source_handle, expected, key) = completed_worker(temp.path(), true).await;
+                let payload = worker.job(&key).unwrap().folder.join("public-domain-fixture.bin");
+                worker.shutdown().await;
+                if change == "delete" {
+                    std::fs::remove_file(&payload).unwrap();
+                } else {
+                    let mut bytes = expected.clone();
+                    bytes[1000] ^= 0xff;
+                    std::fs::write(&payload, bytes).unwrap();
+                }
+                let changed = std::fs::read(&payload).ok();
+                let uploaded = source_handle.stats().uploaded_bytes;
+                let mut restarted = Worker::new(worker.store.clone(), Arc::new(Mutex::new(load_manifest(&worker.store))), worker.policy.clone());
+                restarted.seed_all().await;
+                let mut interval = tokio::time::interval(Duration::from_millis(50));
+                tokio::time::timeout(Duration::from_secs(30), async {
+                    while restarted.job(&key).unwrap().error.is_empty() { interval.tick().await; restarted.tick().await; }
+                }).await.expect("changed files are reported");
+                let job = restarted.job(&key).unwrap();
+                assert_eq!(job.state, State::Complete, "{change}");
+                assert!(!job.seeding && !job.verifying);
+                assert!(job.error.contains("can't seed"), "{change}: {}", job.error);
+                assert!(restarted.handles.is_empty());
+                for _ in 0..20 { interval.tick().await; restarted.tick().await; }
+                assert_eq!(source_handle.stats().uploaded_bytes, uploaded, "{change}: nothing was downloaded again");
+                assert_eq!(std::fs::read(&payload).ok(), changed, "{change}: files left as they were");
+                restarted.shutdown().await;
+                source.stop().await;
+            }
         });
     }
 

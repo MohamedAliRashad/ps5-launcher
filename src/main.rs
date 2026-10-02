@@ -7,6 +7,7 @@ mod catalog;
 mod compat;
 mod exfat;
 mod results;
+mod trailer;
 mod config;
 mod display;
 mod download_ui;

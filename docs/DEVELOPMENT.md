@@ -173,10 +173,13 @@ the payload. **Open folder** opens the saved destination.
 **Completed downloads seed by default.** While the launcher remains open, their
 original files are shared with peers. Downloads shows **Complete · seeding**, upload
 speed and connected peers; **Install / Play** remains available. Use **Stop seeding**
-for one transfer, or disable **Settings → Seed completed downloads** to stop all
-current seeds and prevent future post-completion seeding. This preference is saved.
-Turning it back on affects future completions only; it never restarts stopped or
-restored jobs, and never downloads/rechecks old payloads automatically.
+for one transfer until the next launch, or disable **Settings → Seed completed
+downloads** to stop all seeds; only that saved setting turns seeding off for good.
+While it is on, completed downloads seed again whenever the launcher opens, and turning
+it back on seeds them all again. Each is first added **paused** so the engine checks its
+files against the torrent: it seeds only if every piece verifies (**Complete · checking
+files to seed** meanwhile). Missing, resized or changed files stop it with an error and
+nothing is downloaded again; unfinished transfers are never started automatically.
 
 The default destination is `~/Downloads/PS5`, editable in Settings or the setup
 dialog. Each torrent gets a private `torrent-<infohash>` subfolder, preventing
@@ -187,8 +190,8 @@ a transfer. Payload pieces are checked against the torrent's hashes; this does
 not establish authenticity or safety of their contents.
 
 **The launcher must stay open.** Graceful quit/restart saves active transfers as
-paused; completed seeds remain Complete but stop sharing. Reopening never starts the torrent engine or resumes payload traffic
-automatically; choose Resume/Retry explicitly. Transfer history and metadata live
+paused, and reopening never resumes an unfinished download; choose Resume/Retry
+explicitly. Completed downloads seed again as described above. Transfer history and metadata live
 under the XDG configuration directory in the launcher's transfers subfolder.
 Download completion does not extract, install, launch a game or rescan the library.
 Choose the separate **Install** action when ready.
@@ -293,6 +296,23 @@ its official Linux builds from GitHub Releases.
 
 To turn this off, disable **Settings → Keep KytyPS5 updated automatically**. Managed builds live
 in `~/.local/share/ps5-launcher/kyty/`.
+
+## Trailers and controllers
+
+**Trailers** are the official MP4s from the PlayStation Store data and play inside the launcher
+([src/trailer.rs](../src/trailer.rs)). libmpv is loaded at runtime (`libmpv.so.2`, `.1`, or
+`.so`), like libarchive; without it the Trailer button is hidden. mpv decodes and plays the
+sound, and its **software render API** draws each frame into memory on a render thread; the UI
+shows it as an image and the GPU scales it. This deliberately avoids mpv's OpenGL render API:
+sharing the UI renderer's GL context gave intermittent black frames (state left by the UI
+renderer corrupts mpv's setup), while the software path is deterministic. The file is loaded
+only after the render context exists, or mpv drops the video track.
+
+**Controllers in games** are KytyPS5's: it reads gamepads through SDL3 with no setup. Without
+one it uses its fixed keyboard layout (J/I/K/L for ✕/△/□/○, WASD and TFGH sticks, Q/E and Z/C
+shoulders, Enter Options). The launcher only reports which controller is connected
+(`gamepad::connected`, from `/proc/bus/input/devices`) on the start-up splash and in
+**Settings → Keyboard controls in games**, which shows that layout.
 
 ## Where things are stored
 

@@ -90,6 +90,8 @@ export global Zone {
     out property <int> hub-details: 15;
     out property <int> sort-picker: 16;
     out property <int> density: 17;
+    out property <int> trailer: 18;
+    out property <int> controls: 19;
 }
 
 // dot: KytyPS5 compatibility level (0 none, 1 in-game, 2 menus, 3 boots, 4 doesn't boot, 5 untested)
@@ -188,6 +190,7 @@ export struct SettingData {
 // state: 0 waiting, 1 in progress, 2 done, 3 failed
 export struct BootStep { label: string, detail: string, state: int }
 
-export struct ToastData { id: int, text: string, sub: string, kind: int, image: image, has-image: bool, app: bool }
+// action: what clicking the notification does (empty: nothing).
+export struct ToastData { id: int, text: string, sub: string, kind: int, image: image, has-image: bool, app: bool, action: string }
 export struct MenuItem { label: string, icon: string }
 export struct RunningData { active: bool, name: string, time: string }

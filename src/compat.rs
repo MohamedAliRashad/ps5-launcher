@@ -272,20 +272,33 @@ pub fn report_url(name: &str, title_id: &str, kyty_version: &str, status: Status
 /// The last lines of a log, sized to keep the link well under GitHub's URL limit.
 fn log_excerpt(log: &str) -> String {
     let lines: Vec<&str> = log.lines().filter(|l| !l.trim().is_empty()).collect();
-    let mut tail: Vec<&str> = Vec::new();
-    let mut len = 0;
-    for line in lines.iter().rev().take(40) {
-        len += line.len() + 1;
-        if len > 2500 {
-            break;
+    // KytyPS5 prints what went wrong after "--- Error ---": lead with that block when there is one.
+    let error = lines.iter().rposition(|l| l.trim() == "--- Error ---");
+    fn fit<'a>(lines: &[&'a str], budget: usize) -> Vec<&'a str> {
+        let mut out = Vec::new();
+        let mut len = 0;
+        for line in lines.iter().take(40) {
+            len += line.len() + 1;
+            if len > budget {
+                break;
+            }
+            out.push(*line);
         }
-        tail.push(line);
+        out
     }
-    if tail.is_empty() {
+    let excerpt = match error {
+        Some(i) => fit(&lines[i..], 2500),
+        None => {
+            let mut tail = fit(&lines.iter().rev().copied().collect::<Vec<_>>(), 2500);
+            tail.reverse();
+            tail
+        }
+    };
+    if excerpt.is_empty() {
         return String::new();
     }
-    tail.reverse();
-    format!("Last lines of the log (full log attached below):\n```\n{}\n```\n", tail.join("\n"))
+    let what = if error.is_some() { "The error from the log" } else { "Last lines of the log" };
+    format!("{what} (full log attached below):\n```\n{}\n```\n", excerpt.join("\n"))
 }
 
 #[derive(Default)]
@@ -359,8 +372,8 @@ mod tests {
     fn your_result_wins_on_this_pc() {
         let json = br#"{"PPSA1":{"status":"InGame","platforms":{"windows":{"status":"InGame"}}}}"#;
         let mut mine = crate::results::Results::default();
-        mine.rate("PPSA1", "One", Status::Logo, "b", 1.0);
-        mine.rate("PPSA9", "Nine", Status::InGame, "b", 1.0);
+        mine.rate("PPSA1", "One", Status::Logo, "b", 1.0, "");
+        mine.rate("PPSA9", "Nine", Status::InGame, "b", 1.0, "");
         let db = with_mine(parse(json).unwrap(), &mine);
         let e = &db["PPSA1"];
         assert!(e.mine && e.on_linux);
@@ -393,5 +406,9 @@ mod tests {
         assert!(report_url("A", "B", "C", Status::InGame, "").find("log-file").is_none());
         let long = "x".repeat(200) + "\n";
         assert!(log_excerpt(&long.repeat(100)).len() < 2600);
+        let crash = format!("{}--- Build ---\nOfficial build X\n--- Error ---\nCould not find suitable device\n{}", "boot line\n".repeat(500), "after\n".repeat(3));
+        let e = log_excerpt(&crash);
+        assert!(e.starts_with("The error from the log") && e.contains("--- Error ---\nCould not find suitable device"));
+        assert!(!e.contains("boot line"));
     }
 }

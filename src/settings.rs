@@ -19,6 +19,7 @@ pub enum SId {
     SeedCompleted,
     Downloads,
     Share,
+    Controls,
     Resolution,
     Present,
     Fullscreen,
@@ -119,6 +120,18 @@ impl App {
         r.on = cfg.return_on_exit;
         rows.push((SId::ReturnOnExit, r));
 
+        rows.push((SId::Header, row(0, "CONTROLS")));
+        let connected = !crate::gamepad::connected().is_empty();
+        let mut r = row(4, "Keyboard controls in games");
+        r.value = crate::gamepad::status().into();
+        r.hint = if connected {
+            "Your controller works in games with no setup. Without one, games use the keyboard: open this to see the keys.".into()
+        } else {
+            "Games play best with a controller: DualSense, DualShock 4, Xbox and most others work over USB or Bluetooth.".into()
+        };
+        r.hint_kind = if connected { 1 } else { 0 };
+        rows.push((SId::Controls, r));
+
         rows.push((SId::Header, row(0, "LAUNCHER")));
 
         let mut r = row(1, "Download folder");
@@ -131,7 +144,7 @@ impl App {
         rows.push((SId::InstallDir, r));
         let mut r = row(2, "Seed completed downloads");
         r.on = cfg.seed_after_download;
-        r.hint = "On by default · shares original downloads while open · upload limit 128 KiB/s · off stops current seeds".into();
+        r.hint = "On by default · shares your completed downloads whenever the launcher is open, also after a restart · upload limit 128 KiB/s · turn off to stop sharing".into();
         rows.push((SId::SeedCompleted, r));
         let mut r = row(4, "Manage downloads");
         r.hint = "Background while the launcher is open · paused on exit · Ctrl+D".into();
@@ -220,6 +233,15 @@ impl App {
 
         self.settings_ids = rows.iter().map(|(id, _)| *id).collect();
         self.settings_rows = rows.into_iter().map(|(_, r)| r).collect();
+    }
+
+    /// Open Settings with "Share your results with KytyPS5" selected.
+    pub fn open_share_setting(&mut self) {
+        self.open_settings();
+        if let Some(i) = self.settings_ids.iter().position(|s| *s == SId::Share) {
+            self.set_focus(Z_SETTINGS, i as i32);
+            self.scroll_settings();
+        }
     }
 
     pub fn push_settings(&mut self) {
@@ -408,6 +430,7 @@ impl App {
             }
             SId::Downloads => self.open_downloads(None),
             SId::Share => self.share_results(),
+            SId::Controls => self.open_controls(),
             SId::Header => {}
         }
     }

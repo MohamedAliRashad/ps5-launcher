@@ -6,7 +6,8 @@ using a controller, keyboard or mouse.
 
 ![PS5 Launcher: moving through the Home screen, a Game Hub and the Library](docs/demo/demo-loop.webp)
 
-- **Your games on a PS5-style Home screen**, with official backgrounds, logos and trailers.
+- **Your games on a PS5-style Home screen**, with official backgrounds, logos and trailers that
+  play right in the launcher.
 - **A Library of 400+ PS5 games** with search, genre filters and sorting.
 - **See what runs:** every game shows how far it gets in KytyPS5.
 - **Download, install and play** without leaving the launcher.
@@ -25,7 +26,7 @@ curl -fsSL https://github.com/MohamedAliRashad/ps5-launcher/releases/latest/down
 launcher, and installing from archives, also run (Ubuntu, Debian, Mint):
 
 ```bash
-sudo apt install xdotool mpv yt-dlp libarchive13
+sudo apt install xdotool mpv libarchive13
 ```
 
 To uninstall: `./ps5-launcher-linux-x86_64/install.sh --uninstall`
@@ -57,6 +58,11 @@ To uninstall: `./ps5-launcher-linux-x86_64/install.sh --uninstall`
 | Switch Home ⇄ Library | L1 / R1 | Tab |
 | Switch between game and launcher | PS button | |
 | Downloads | | Ctrl+D |
+
+**Games play best with a controller.** DualSense, DualShock 4, Xbox and most other controllers
+work in games over USB or Bluetooth with no setup; connect yours before starting a game. Without
+one, games use the keyboard: **J I K L** for ✕ △ □ ○, **W A S D** to move, **arrow keys** for the
+D-pad and **Enter** for Options. See **Settings → Keyboard controls in games** for every key.
 
 ## Will my game run?
 

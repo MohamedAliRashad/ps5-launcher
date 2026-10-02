@@ -39,6 +39,8 @@ pub const Z_RELEASES: i32 = 14;
 pub const Z_HUB_DETAILS: i32 = 15;
 pub const Z_SORT_PICKER: i32 = 16;
 pub const Z_DENSITY: i32 = 17;
+pub const Z_TRAILER: i32 = 18;
+pub const Z_CONTROLS: i32 = 19;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Overlay {
@@ -50,6 +52,8 @@ pub enum Overlay {
     Menu = 5,
     Downloads = 7, // 6 is reserved by the startup splash.
     Sort = 8,
+    Trailer = 9,
+    Controls = 10,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -210,7 +214,9 @@ pub struct App {
     pub enriching: bool,
     pub pad_hints: bool,
     pub clock: String,
-    pub trailer: Option<std::process::Child>,
+    /// Updates the trailer player's progress and controls while it is open.
+    pub trailer_timer: Option<slint::Timer>,
+    pub trailer_controls_until: f64,
     pub genre_res: Vec<(&'static str, regex::Regex)>,
 
     // Keys of images currently on screen, so a finished load updates only what shows it.
@@ -239,6 +245,8 @@ pub struct App {
     pub compat_checked: f64,
     /// Your own results from this PC, shared with KytyPS5 in batches.
     pub my_results: crate::results::Results,
+    /// Saved logs of games that just crashed, by game ID, waiting to go with their rating.
+    pub crash_logs: HashMap<String, std::path::PathBuf>,
 }
 
 thread_local! {
@@ -354,7 +362,8 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, target_monitor: Option<Monitor
         enriching: false,
         pad_hints: false,
         clock: String::new(),
-        trailer: None,
+        trailer_timer: None,
+        trailer_controls_until: 0.0,
         genre_res,
         tile_keys: Vec::new(),
         grid_keys: Default::default(),
@@ -378,6 +387,7 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, target_monitor: Option<Monitor
         upd: Default::default(),
         compat: crate::compat::with_mine(crate::compat::load().0, &crate::results::load()),
         my_results: crate::results::load(),
+        crash_logs: HashMap::new(),
         compat_checked: 0.0,
     };
     ui.set_grid_rows(ModelRc::from(app.grid_model.clone()));
@@ -420,9 +430,7 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, target_monitor: Option<Monitor
     with_app(|app| {
         app.installer.shutdown();
         app.downloads.shutdown();
-        if let Some(mut t) = app.trailer.take() {
-            let _ = t.kill();
-        }
+        crate::trailer::close();
     });
 }
 
@@ -460,6 +468,8 @@ fn wire_callbacks(ui: &AppWindow) {
     ui.on_edit_done(|t, _| with_app(move |app| app.finish_edit(Some(t.to_string()))));
     ui.on_download_confirm(|| with_app(|app| app.confirm_download()));
     ui.on_download_action(|key, action| with_app(move |app| app.download_action(&key, &action)));
+    ui.on_toast_clicked(|id, action| with_app(move |app| app.toast_clicked(id, &action)));
+    ui.on_trailer_action(|action| with_app(move |app| app.trailer_action(&action)));
     ui.on_download_close(|| with_app(|app| app.back()));
     ui.on_hub_release(|delta| with_app(move |app| app.cycle_hub_release(delta)));
     ui.on_genres_scroll(|delta| with_app(move |app| app.scroll_genres(delta)));
@@ -934,8 +944,8 @@ impl App {
         }
         self.my_results.reminded = util::now_secs();
         self.my_results.save();
-        self.toast(&format!("You've rated {n} game{} on KytyPS5", if n == 1 { "" } else { "s" }),
-            "Share your results with the community: Settings → Share your results.", 0);
+        self.toast_action(&format!("You've rated {n} game{} on KytyPS5", if n == 1 { "" } else { "s" }),
+            "Click to share your results with the KytyPS5 community.", 0, "share");
     }
 
     /// "How far did it get?": saves your result on this PC. `after_play` adds "Not now".
@@ -965,6 +975,13 @@ impl App {
     /// Save a rating (`None`: skipped) with the KytyPS5 build it was played on.
     fn rate(&mut self, l: usize, status: Option<crate::compat::Status>) {
         let (tid, name) = (self.locals[l].l.title_id.clone(), self.locals[l].name.clone());
+        // The log that goes with this result: the saved crash log if the game just crashed,
+        // otherwise a copy of its latest log (the next launch would overwrite the original).
+        let log = match self.crash_logs.remove(&self.locals[l].l.id) {
+            Some(saved) => Some(saved),
+            None if status.is_some() => crate::results::save_log(&util::cache_dir().join("logs").join(format!("{tid}.log")), &tid, false),
+            None => None,
+        }.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         let emulator = self.cfg.lock().unwrap().emulator_path();
         std::thread::spawn(move || {
             let kyty = crate::kyty::version_for(&emulator);
@@ -974,7 +991,7 @@ impl App {
                     app.my_results.save();
                     return;
                 };
-                app.my_results.rate(&tid, &name, status, &kyty, util::now_secs());
+                app.my_results.rate(&tid, &name, status, &kyty, util::now_secs(), &log);
                 app.my_results.save();
                 app.compat = crate::compat::with_mine(std::mem::take(&mut app.compat), &app.my_results);
                 app.build_genres();
@@ -1017,10 +1034,18 @@ impl App {
             return;
         }
         let now = util::now_secs();
-        let logs = util::cache_dir().join("logs");
+        // The logs to attach, gathered in one folder named after each game, opened next to the forms.
+        let folder = util::data_dir().join("share");
+        let _ = std::fs::remove_dir_all(&folder);
+        let _ = std::fs::create_dir_all(&folder);
         let mut reports = Vec::new();
         for (tid, r) in &batch {
-            let log = std::fs::read(logs.join(format!("{tid}.log"))).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+            let saved = Some(std::path::PathBuf::from(&r.log)).filter(|p| p.is_file()).unwrap_or_else(|| util::cache_dir().join("logs").join(format!("{tid}.log")));
+            let log = std::fs::read(&saved).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+            if !log.is_empty() {
+                let name: String = r.name.chars().filter(|c| c.is_alphanumeric() || " -_".contains(*c)).collect();
+                let _ = std::fs::write(folder.join(format!("{tid} {}.log", name.trim())), &log);
+            }
             if let (Some(status), Some(saved)) = (r.status(), self.my_results.games.get_mut(tid)) {
                 saved.shared = now;
                 reports.push((r.name.clone(), tid.clone(), r.kyty.clone(), status, log));
@@ -1036,14 +1061,14 @@ impl App {
                 open_url(&crate::compat::report_url(name, tid, kyty, *status, log));
             }
         });
-        if logs.is_dir() {
-            open_url(&logs.to_string_lossy());
+        if std::fs::read_dir(&folder).is_ok_and(|mut d| d.next().is_some()) {
+            open_url(&folder.to_string_lossy());
         }
         let n = batch.len();
         let left = self.my_results.unshared().len();
         let more = if left > 0 { format!(" {left} more next time.") } else { String::new() };
         self.toast(&format!("Opened {n} report{} in your browser", if n == 1 { "" } else { "s" }),
-            &format!("Check each one, drag in its log from the folder that opened, and submit.{more}"), 1);
+            &format!("Check each one, drag in its log from the folder that opened (named after the game), and submit.{more}"), 1);
         self.refresh_settings();
     }
 
@@ -1153,15 +1178,28 @@ impl App {
         let after: Vec<u32> = self.live.iter().map(|s| s.pid).collect();
         for e in self.sessions.take_ended() {
             let played = util::fmt_duration(e.played);
-            if let Some(code) = e.exit_code.filter(|c| *c != 0 && !e.stopped) {
-                crate::log!("{} crashed (exit {code}), log: {}", e.name, e.log.display());
-                self.toast_game(&format!("{} stopped unexpectedly", e.name),
-                    &format!("KytyPS5 exited with code {code}. See Options → View emulator log."), 2, &e.game_id);
-                audio::play(Sound::Error);
-            } else if e.played < 5.0 && !e.stopped {
-                // Exited cleanly but almost at once: most likely it couldn't start.
-                self.toast_game(&format!("{} closed right after starting", e.name),
-                    "KytyPS5 may not support it yet. See Options → View emulator log.", 2, &e.game_id);
+            let crashed = e.exit_code.filter(|c| *c != 0 && !e.stopped);
+            // Exited cleanly but almost at once: most likely it couldn't start.
+            let failed_to_start = crashed.is_none() && e.played < 5.0 && !e.stopped;
+            if crashed.is_some() || failed_to_start {
+                // Keep the log: the next launch of this game would overwrite it. It goes to KytyPS5
+                // with this game's rating, so they can see what went wrong.
+                let tid = self.locals.iter().find(|l| l.l.id == e.game_id).map(|l| l.l.title_id.clone()).filter(|t| !t.is_empty()).unwrap_or_else(|| e.game_id.clone());
+                let saved = (!e.log.as_os_str().is_empty()).then(|| crate::results::save_log(&e.log, &tid, true)).flatten();
+                if let Some(saved) = &saved {
+                    self.crash_logs.insert(e.game_id.clone(), saved.clone());
+                }
+                let action = saved.as_ref().map(|p| format!("log:{}", p.display())).unwrap_or_default();
+                let what = match crashed {
+                    Some(code) => {
+                        crate::log!("{} crashed (exit {code}), log: {}", e.name, e.log.display());
+                        audio::play(Sound::Error);
+                        (format!("{} stopped unexpectedly", e.name), format!("KytyPS5 exited with code {code}."))
+                    }
+                    None => (format!("{} closed right after starting", e.name), "KytyPS5 may not support it yet.".to_string()),
+                };
+                let more = if saved.is_some() { " Click to see its log; it's saved for your next report to KytyPS5." } else { "" };
+                self.toast_game_action(&what.0, &format!("{}{more}", what.1), 2, &e.game_id, &action);
             } else {
                 self.toast_game(&e.name, &format!("Played for {played}"), 1, &e.game_id);
             }
@@ -1218,14 +1256,6 @@ impl App {
             self.sessions.toggle_focus();
             return;
         }
-        // Close a trailer player that has taken over the screen.
-        if self.trailer_running() && matches!(p, Pad::Back | Pad::Confirm) {
-            if let Some(mut t) = self.trailer.take() {
-                let _ = t.kill();
-            }
-            crate::sessions::show_launcher();
-            return;
-        }
         if !crate::display::window_has_focus(&self.ui()) {
             return;
         }
@@ -1265,19 +1295,6 @@ impl App {
             if act == Act::Confirm { return; }
         }
         self.act(act);
-    }
-
-    fn trailer_running(&mut self) -> bool {
-        match &mut self.trailer {
-            Some(c) => match c.try_wait() {
-                Ok(None) => true,
-                _ => {
-                    self.trailer = None;
-                    false
-                }
-            },
-            None => false,
-        }
     }
 
     pub fn on_key(&mut self, text: &str, ctrl: bool, alt: bool, repeat: bool) -> bool {
@@ -1492,6 +1509,12 @@ impl App {
                 }
             }
             Overlay::Viewer => self.act_viewer(a),
+            Overlay::Trailer => self.act_trailer(a),
+            Overlay::Controls => {
+                if matches!(a, Act::Back | Act::Confirm) {
+                    self.back();
+                }
+            }
             Overlay::Menu => self.act_menu(a),
             Overlay::Settings => self.act_settings(a),
             Overlay::Hub => self.act_hub(a),
@@ -1863,6 +1886,11 @@ impl App {
     }
 
     pub fn back(&mut self) {
+        if self.overlay == Overlay::Trailer {
+            crate::trailer::close();
+            self.trailer_timer = None;
+            self.ui().set_trailer_frame(slint::Image::default());
+        }
         if self.overlay != Overlay::None {
             if self.overlay == Overlay::Downloads {
                 self.download_pending = None;
@@ -2044,7 +2072,7 @@ impl App {
                 else { ("download", "Download") };
             a.push(mk(id, label, "disk", a.is_empty()));
         }
-        if info.as_ref().is_some_and(|i| !i.video.is_empty()) || t.game.is_some_and(|g| !self.games[g].g.trailer.is_empty()) {
+        if crate::trailer::available() && info.as_ref().is_some_and(|i| !i.video.is_empty()) {
             a.push(mk("trailer", "Trailer", "film", false));
         }
         if t.game.is_some() {
@@ -2193,29 +2221,98 @@ impl App {
         }
     }
 
+    /// Play a game's official trailer inside the launcher.
     pub fn play_trailer(&mut self, t: Target) {
-        let info = self.target_info(t);
-        let yt = t.game.map(|g| self.games[g].g.trailer.clone()).unwrap_or_default();
-        let url = match info.as_ref().filter(|i| !i.video.is_empty()) {
-            Some(i) => i.video.clone(),
-            None if !yt.is_empty() => format!("https://www.youtube.com/watch?v={yt}"),
-            None => return,
-        };
-        if let Some(mut old) = self.trailer.take() {
-            let _ = old.kill();
+        let Some(url) = self.target_info(t).map(|i| i.video.clone()).filter(|v| !v.is_empty()) else { return };
+        if !crate::trailer::available() {
+            return;
+        }
+        let weak = self.ui().as_weak();
+        let opened = crate::trailer::open(&url, move |frame| {
+            let weak = weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                // A frame can arrive just after the player closed: ignore it then.
+                if let Some(ui) = weak.upgrade().filter(|ui| ui.get_overlay() == Overlay::Trailer as i32) {
+                    ui.set_trailer_frame(slint::Image::from_rgba8(frame));
+                }
+            });
+        });
+        if let Err(e) = opened {
+            self.toast("Can't play the trailer", &e, 2);
+            return;
         }
         audio::play(Sound::Select);
-        let monitor = self.cfg.lock().unwrap().monitor.clone();
-        match crate::display::play_video(&url, &monitor) {
-            Some(child) => {
-                self.trailer = Some(child);
-                self.toast("Playing trailer", if self.pad_hints { "Press ○ to close it." } else { "Press Q or Esc in the player to close it." }, 0);
+        let ui = self.ui();
+        ui.set_trailer_title(target_name(self, t).into());
+        ui.set_trailer_progress(0.0);
+        ui.set_trailer_time("".into());
+        ui.set_trailer_paused(false);
+        ui.set_trailer_loading(true);
+        ui.set_trailer_frame(slint::Image::default());
+        self.show_trailer_controls();
+        self.push_overlay(Overlay::Trailer, Z_TRAILER, 0);
+        let timer = slint::Timer::default();
+        timer.start(slint::TimerMode::Repeated, Duration::from_millis(250), || with_app(|app| app.trailer_tick()));
+        self.trailer_timer = Some(timer);
+    }
+
+    fn show_trailer_controls(&mut self) {
+        self.trailer_controls_until = util::now_secs() + 3.0;
+        self.ui().set_trailer_controls(true);
+    }
+
+    fn trailer_tick(&mut self) {
+        let Some(status) = crate::trailer::poll() else {
+            if self.overlay == Overlay::Trailer { self.back(); }
+            return;
+        };
+        if let Some(ended) = status.ended {
+            if self.overlay == Overlay::Trailer { self.back(); }
+            if let Err(e) = ended {
+                self.toast("Can't play the trailer", &e, 2);
             }
-            None => {
-                open_url(&url);
-                self.toast("Opened the trailer in your browser", "Install mpv to play trailers fullscreen in the launcher.", 0);
+            return;
+        }
+        let ui = self.ui();
+        let clock = |s: f64| { let s = s.max(0.0) as u64; format!("{}:{:02}", s / 60, s % 60) };
+        ui.set_trailer_progress(if status.duration > 0.0 { (status.position / status.duration) as f32 } else { 0.0 });
+        ui.set_trailer_time(if status.duration > 0.0 { format!("{} / {}", clock(status.position), clock(status.duration)) } else { String::new() }.into());
+        ui.set_trailer_paused(status.paused);
+        ui.set_trailer_loading(status.loading);
+        // Controls stay up while paused or loading, and fade a few seconds after the last input.
+        ui.set_trailer_controls(status.paused || status.loading || util::now_secs() < self.trailer_controls_until);
+    }
+
+    fn act_trailer(&mut self, a: Act) {
+        match a {
+            Act::Confirm => crate::trailer::toggle_pause(),
+            Act::Left => crate::trailer::seek(-10.0, false),
+            Act::Right => crate::trailer::seek(10.0, false),
+            Act::Back | Act::Trailer => return self.back(),
+            _ => {}
+        }
+        self.show_trailer_controls();
+        self.trailer_tick();
+    }
+
+    /// Mouse input on the trailer player.
+    pub fn trailer_action(&mut self, action: &str) {
+        if self.overlay != Overlay::Trailer {
+            return;
+        }
+        match action {
+            "toggle" => crate::trailer::toggle_pause(),
+            "close" => return self.back(),
+            _ => {
+                if let Some(fraction) = action.strip_prefix("seek:").and_then(|f| f.parse::<f64>().ok()) {
+                    if let Some(status) = crate::trailer::poll().filter(|s| s.duration > 0.0) {
+                        crate::trailer::seek(fraction.clamp(0.0, 1.0) * status.duration, true);
+                    }
+                }
             }
         }
+        self.show_trailer_controls();
+        self.trailer_tick();
     }
 
     pub fn open_hub(&mut self, t: Target) {
@@ -2307,9 +2404,24 @@ impl App {
 
     /// "Starting…" splash that stays up until the game's window actually appears (or the game
     /// exits), instead of for a fixed time while KytyPS5 is still booting in the background.
+    /// Which controller games will get: shown when a game starts and on the controls screen.
+    pub fn push_controller_status(&mut self) {
+        let ui = self.ui();
+        ui.set_launch_keyboard(crate::gamepad::connected().is_empty());
+        ui.set_launch_controller(crate::gamepad::status().into());
+    }
+
+    /// Settings → Controls: the keyboard layout games use without a controller.
+    pub fn open_controls(&mut self) {
+        self.push_controller_status();
+        audio::play(Sound::Select);
+        self.push_overlay(Overlay::Controls, Z_CONTROLS, 0);
+    }
+
     fn show_launch_splash(&mut self, l: usize) {
         self.push_launch(l);
         self.ui().set_launch_sub("Starting with KytyPS5…".into());
+        self.push_controller_status();
         self.push_overlay(Overlay::Launch, self.zone, self.idx);
         let Some(pid) = self.session_for_local(l).map(|s| s.pid) else {
             slint::Timer::single_shot(Duration::from_millis(2000), || with_app(|app| app.hide_launch_splash()));
@@ -2416,7 +2528,38 @@ impl App {
         self.toast_full(text, sub, kind, img, false);
     }
 
+    /// A notification that does `action` when clicked (see `toast_clicked`).
+    pub fn toast_action(&mut self, text: &str, sub: &str, kind: i32, action: &str) {
+        self.toast_with(text, sub, kind, None, false, action);
+    }
+
+    pub fn toast_game_action(&mut self, text: &str, sub: &str, kind: i32, game_id: &str, action: &str) {
+        let img = self.locals.iter().position(|l| l.l.id == game_id)
+            .and_then(|l| self.tile_req(RowItem::Local(l)))
+            .and_then(|r| self.images.get(&r.key));
+        self.toast_with(text, sub, kind, img, false, action);
+    }
+
     pub fn toast_full(&mut self, text: &str, sub: &str, kind: i32, image: Option<slint::Image>, app: bool) {
+        self.toast_with(text, sub, kind, image, app, "");
+    }
+
+    /// Clicking a notification does its action and closes it.
+    pub fn toast_clicked(&mut self, id: i32, action: &str) {
+        self.toasts.retain(|t| t.id != id);
+        self.push_toasts();
+        if let Some(path) = action.strip_prefix("log:") {
+            open_url(path);
+            return;
+        }
+        match action {
+            "downloads" => self.open_downloads(None),
+            "share" => self.open_share_setting(),
+            _ => {}
+        }
+    }
+
+    fn toast_with(&mut self, text: &str, sub: &str, kind: i32, image: Option<slint::Image>, app: bool, action: &str) {
         self.toast_seq += 1;
         let id = self.toast_seq;
         self.toasts.push(ToastData {
@@ -2427,6 +2570,7 @@ impl App {
             has_image: image.is_some(),
             image: image.unwrap_or_default(),
             app,
+            action: action.into(),
         });
         if self.toasts.len() > 3 {
             self.toasts.remove(0);

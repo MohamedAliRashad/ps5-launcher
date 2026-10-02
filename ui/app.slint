@@ -9,6 +9,7 @@ export { S, Theme, Zone }
 // Notification card (PS5-style): icon tile, title, message. Slides in from the right.
 component Toast inherits Rectangle {
     in property <ToastData> data;
+    callback clicked();
     property <bool> shown: false;
     property <color> tint: data.kind == 1 ? Theme.ok : data.kind == 2 ? Theme.danger : #3d8bff;
     init => { shown = true; }
@@ -25,6 +26,10 @@ component Toast inherits Rectangle {
     transform-scale: shown ? 1.0 : 0.96;
     animate opacity { duration: 240ms; easing: ease-out-quad; }
     animate transform-scale { duration: 360ms; easing: ease-out-back; }
+    if data.action != "": touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
     // Icon tile: a real picture when we have one, otherwise a tinted symbol.
     Rectangle {
         x: (18px * S.k);
@@ -166,6 +171,14 @@ export component AppWindow inherits Window {
     in-out property <bool> download-editing;
     in-out property <length> downloads-y;
     in property <bool> pad-hints;
+    // Trailer player: video frames come from libmpv through an OpenGL texture (src/trailer.rs).
+    in property <image> trailer-frame;
+    in property <string> trailer-title;
+    in property <float> trailer-progress;
+    in property <string> trailer-time;
+    in property <bool> trailer-paused;
+    in property <bool> trailer-loading;
+    in property <bool> trailer-controls;
     in property <image> bg-a;
     in property <image> bg-b;
     in property <bool> bg-show-b;
@@ -227,6 +240,9 @@ export component AppWindow inherits Window {
     in property <image> launch-icon;
     in property <string> launch-name;
     in property <string> launch-sub: "Starting with KytyPS5…";
+    // Which controller the game will get; without one, the keyboard layout is shown.
+    in property <string> launch-controller;
+    in property <bool> launch-keyboard;
 
     in property <string> menu-title;
     in property <[MenuItem]> menu-items;
@@ -251,6 +267,8 @@ export component AppWindow inherits Window {
     callback edit-done(string, bool);
     callback download-confirm();
     callback download-action(string, string);
+    callback toast-clicked(int, string);            // id, action
+    callback trailer-action(string);                // toggle, close, controls, seek:<0..1>
     callback download-close();
     callback hub-release(int);
     callback genres-scroll(int);
@@ -1336,6 +1354,38 @@ export component AppWindow inherits Window {
                         transform-rotation: animation-tick() / 1ms * 0.4deg;
                     }
                 }
+                Rectangle { height: (40px * S.k); }
+                if !root.launch-keyboard: Text { text: root.launch-controller; font-size: (18px * S.k); color: Theme.ok; horizontal-alignment: center; }
+                if root.launch-keyboard: HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        border-radius: (18px * S.k);
+                        background: #0b1124e6;
+                        border-width: 1px;
+                        border-color: Theme.line;
+                        VerticalLayout {
+                            padding-left: (28px * S.k);
+                            padding-right: (28px * S.k);
+                            padding-top: (20px * S.k);
+                            padding-bottom: (20px * S.k);
+                            spacing: (14px * S.k);
+                            Text { text: "No controller connected: you'll play with the keyboard."; font-size: (18px * S.k); font-weight: 600; color: Theme.text; horizontal-alignment: center; }
+                            Text { text: "Games play best with a controller. Connect one before starting a game."; font-size: (16px * S.k); color: Theme.text2; horizontal-alignment: center; }
+                            HorizontalLayout {
+                                alignment: center;
+                                height: (30px * S.k);
+                                spacing: (8px * S.k);
+                                for k in [{ key: "J", what: "✕" }, { key: "I", what: "△" }, { key: "K", what: "□" }, { key: "L", what: "○" },
+                                          { key: "W A S D", what: "Move" }, { key: "Arrows", what: "D-pad" }, { key: "Enter", what: "Options" }]: HorizontalLayout {
+                                    spacing: (6px * S.k);
+                                    padding-right: (10px * S.k);
+                                    KeyCap { text: k.key; }
+                                    Text { text: k.what; font-size: (16px * S.k); color: Theme.text2; vertical-alignment: center; }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -1570,6 +1620,165 @@ export component AppWindow inherits Window {
             }
         }
 
+        // ------------------------------------------------------------ TRAILER PLAYER
+        if root.overlay == 9: Rectangle {
+            background: #000000;
+            Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.trailer-frame;
+                image-fit: contain;
+            }
+            TouchArea {
+                clicked => { root.trailer-action("toggle"); }
+                moved => { root.trailer-action("controls"); }
+            }
+            if root.trailer-loading: Text {
+                text: "Loading trailer…";
+                font-size: (22px * S.k);
+                color: Theme.text2;
+            }
+            if root.trailer-paused && !root.trailer-loading: Rectangle {
+                width: (96px * S.k);
+                height: self.width;
+                border-radius: self.width / 2;
+                background: #00000099;
+                border-width: 1px;
+                border-color: #ffffff33;
+                Image { source: Icons.play; colorize: Theme.text; width: (40px * S.k); height: self.width; }
+            }
+            // Top: what's playing.
+            Rectangle {
+                y: 0;
+                height: (150px * S.k);
+                opacity: root.trailer-controls ? 1 : 0;
+                animate opacity { duration: 300ms; easing: ease-out-quad; }
+                background: @linear-gradient(180deg, #000000cc 0%, #00000000 100%);
+                BackButton {
+                    x: (48px * S.k);
+                    y: (36px * S.k);
+                    pad: root.pad-hints;
+                    clicked => { root.trailer-action("close"); }
+                }
+                VerticalLayout {
+                    x: (48px * S.k);
+                    y: (84px * S.k);
+                    spacing: (2px * S.k);
+                    Text { text: "TRAILER"; font-size: (14px * S.k); font-weight: 600; letter-spacing: (2px * S.k); color: Theme.text3; }
+                    Text { text: root.trailer-title; font-size: (26px * S.k); font-weight: 600; color: Theme.text; }
+                }
+            }
+            // Bottom: progress and what the buttons do.
+            Rectangle {
+                y: parent.height - self.height;
+                height: (150px * S.k);
+                opacity: root.trailer-controls ? 1 : 0;
+                animate opacity { duration: 300ms; easing: ease-out-quad; }
+                background: @linear-gradient(0deg, #000000cc 0%, #00000000 100%);
+                Rectangle {
+                    x: (48px * S.k);
+                    y: (62px * S.k);
+                    width: parent.width - (96px * S.k);
+                    height: (6px * S.k);
+                    border-radius: (3px * S.k);
+                    background: #ffffff33;
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * clamp(root.trailer-progress, 0, 1);
+                        height: parent.height;
+                        border-radius: parent.border-radius;
+                        background: #ffffff;
+                    }
+                    TouchArea {
+                        y: -(12px * S.k);
+                        height: parent.height + (24px * S.k);
+                        mouse-cursor: pointer;
+                        clicked => { root.trailer-action("seek:" + (self.mouse-x / self.width)); }
+                    }
+                }
+                Text {
+                    x: (48px * S.k);
+                    y: (86px * S.k);
+                    text: root.trailer-time;
+                    font-size: (17px * S.k);
+                    color: Theme.text2;
+                }
+                HorizontalLayout {
+                    width: self.preferred-width;
+                    height: (30px * S.k);
+                    x: parent.width - self.width - (48px * S.k);
+                    y: (82px * S.k);
+                    spacing: (10px * S.k);
+                    KeyCap { text: root.pad-hints ? "✕" : "Enter"; round: root.pad-hints; }
+                    Text { text: root.trailer-paused ? "Play" : "Pause"; font-size: (17px * S.k); color: Theme.text2; vertical-alignment: center; }
+                    Rectangle { width: (14px * S.k); }
+                    KeyCap { text: "◂ ▸"; }
+                    Text { text: "10 s"; font-size: (17px * S.k); color: Theme.text2; vertical-alignment: center; }
+                    Rectangle { width: (14px * S.k); }
+                    KeyCap { text: root.pad-hints ? "○" : "Esc"; round: root.pad-hints; }
+                    Text { text: "Close"; font-size: (17px * S.k); color: Theme.text2; vertical-alignment: center; }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------ KEYBOARD CONTROLS
+        if root.overlay == 10: Rectangle {
+            background: #03050ccc;
+            TouchArea { clicked => { root.click(Zone.controls, -1); } }
+            VerticalLayout {
+                alignment: center;
+                HorizontalLayout {
+                alignment: center;
+            Rectangle {
+                border-radius: (22px * S.k);
+                background: @linear-gradient(180deg, #111a33 0%, #0a1024 100%);
+                border-width: 1px;
+                border-color: Theme.line;
+                TouchArea {}
+                VerticalLayout {
+                    padding-left: (48px * S.k);
+                    padding-right: (48px * S.k);
+                    padding-top: (40px * S.k);
+                    padding-bottom: (40px * S.k);
+                    spacing: (10px * S.k);
+                    Text { text: "Keyboard controls in games"; font-size: (30px * S.k); font-weight: 600; color: Theme.text; }
+                    Text { text: root.launch-controller; font-size: (17px * S.k); color: root.launch-keyboard ? Theme.text3 : Theme.ok; }
+                    Rectangle { height: (10px * S.k); }
+                    HorizontalLayout {
+                        spacing: (56px * S.k);
+                        for column in [
+                            [{ what: "✕  Cross", keys: "J" }, { what: "○  Circle", keys: "L" }, { what: "□  Square", keys: "K" }, { what: "△  Triangle", keys: "I" },
+                             { what: "D-pad", keys: "Arrow keys" }, { what: "Options", keys: "Enter" }],
+                            [{ what: "Left stick", keys: "W  A  S  D" }, { what: "Right stick", keys: "T  F  G  H" }, { what: "L1  /  R1", keys: "Q  /  E" },
+                             { what: "L2  /  R2", keys: "Z  /  C" }, { what: "L3  /  R3", keys: "Left Shift  /  Left Ctrl" }, { what: "Touchpad", keys: "Backspace  /  Tab" }],
+                        ]: VerticalLayout {
+                            spacing: (12px * S.k);
+                            for row in column: HorizontalLayout {
+                                height: (30px * S.k);
+                                spacing: (16px * S.k);
+                                Text { text: row.what; width: (150px * S.k); font-size: (19px * S.k); color: Theme.text2; vertical-alignment: center; }
+                                KeyCap { text: row.keys; }
+                            }
+                        }
+                    }
+                    Rectangle { height: (10px * S.k); }
+                    Text { text: "F7 turns the mouse into the right stick (press it again to release the mouse)."; font-size: (16px * S.k); color: Theme.text3; }
+                    Text {
+                        text: "Games play best with a controller: DualSense, DualShock 4, Xbox and most others work\nover USB or Bluetooth with no setup. Connect it before starting a game.";
+                        font-size: (16px * S.k);
+                        color: Theme.text3;
+                    }
+                    Rectangle { height: (6px * S.k); }
+                    HorizontalLayout {
+                        alignment: start;
+                        BackButton { pad: root.pad-hints; clicked => { root.click(Zone.controls, -1); } }
+                    }
+                }
+            }
+                }
+            }
+        }
+
         // ------------------------------------------------------------ TOASTS
         VerticalLayout {
             x: root.width - (48px * S.k) - (440px * S.k);
@@ -1577,7 +1786,7 @@ export component AppWindow inherits Window {
             width: (440px * S.k);
             spacing: (12px * S.k);
             alignment: start;
-            for t in root.toasts: Toast { data: t; }
+            for t in root.toasts: Toast { data: t; clicked => { root.toast-clicked(t.id, t.action); } }
         }
     }
 }

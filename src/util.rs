@@ -40,6 +40,10 @@ pub fn config_dir() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config")).join(APP_NAME)
 }
 
+pub fn data_dir() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".local").join("share")).join(APP_NAME)
+}
+
 pub fn cache_dir() -> PathBuf {
     std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".cache")).join(APP_NAME)
 }
