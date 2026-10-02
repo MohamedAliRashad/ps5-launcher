@@ -95,9 +95,6 @@ pub const GENRES: [(&str, &str); 16] = [
     ("VR", r"(?i)\bvr\b|virtual reality"),
 ];
 
-/// The Library's status filters come first in `genre_list`: All, Installed, In-game,
-/// In-game on Linux. Genres follow.
-pub const STATUS_FILTERS: usize = 4;
 
 pub const SORTS: [&str; 7] = ["Newest topics", "Name (A–Z)", "Release date", "Top rated", "Size (largest)", "Size (smallest)", "Compatibility"];
 
@@ -248,6 +245,13 @@ pub struct App {
     pub my_results: crate::results::Results,
     /// Saved logs of games that just crashed, by game ID, waiting to go with their rating.
     pub crash_logs: HashMap<String, std::path::PathBuf>,
+    /// Library: show one console's games (None: every console).
+    pub platform_filter: Option<crate::platform::Platform>,
+    /// The Library catalog has games for more than one console (shows badges and a console chip).
+    pub mixed_consoles: bool,
+    /// The status filters lead `genre_list`: All, Installed, In-game, In-game on Linux and, with
+    /// more than one console, the console chip. Genres follow.
+    pub status_count: usize,
 }
 
 thread_local! {
@@ -390,6 +394,9 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, target_monitor: Option<Monitor
         compat: crate::compat::with_mine(crate::compat::load().0, &crate::results::load()),
         my_results: crate::results::load(),
         crash_logs: HashMap::new(),
+        platform_filter: None,
+        mixed_consoles: false,
+        status_count: 4,
         compat_checked: 0.0,
     };
     ui.set_grid_rows(ModelRc::from(app.grid_model.clone()));
@@ -678,6 +685,16 @@ impl App {
             .filter(|members| members.iter().any(|i| self.game_compat(&self.games[*i]).is_some_and(f))).count();
         list.push(("In-game".into(), count(&|e| e.in_game_anywhere())));
         list.push(("In-game on Linux".into(), count(&|e| e.on_linux && e.status == crate::compat::Status::InGame)));
+        use crate::platform::Platform;
+        self.mixed_consoles = [Platform::Ps5, Platform::Ps4].iter().all(|p| self.games.iter().any(|g| g.g.platform == *p));
+        if !self.mixed_consoles {
+            self.platform_filter = None;
+        } else {
+            let label = match self.platform_filter { None => "All consoles", Some(Platform::Ps5) => "PS5 only", Some(Platform::Ps4) => "PS4 only" };
+            let n = self.groups.members.iter().filter(|m| m.iter().any(|i| self.platform_ok(&self.games[*i]))).count();
+            list.push((label.into(), n));
+        }
+        self.status_count = list.len();
         list.push(("All genres".into(), self.groups.members.len()));
         let mut rest: Vec<(&str, usize)> = counts.into_iter().collect();
         rest.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
@@ -911,13 +928,10 @@ impl App {
 
     /// Which console a game is for: the installed copy's, else its catalog title ID / tag.
     pub fn target_platform(&self, t: Target) -> crate::platform::Platform {
-        use crate::platform::Platform;
         if let Some(l) = t.local {
             return self.locals[l].l.platform;
         }
-        t.game.map(|g| &self.games[g].g).and_then(|g| Platform::of_title_id(&g.title_id)
-            .or_else(|| g.title.to_uppercase().starts_with("[PS4]").then_some(Platform::Ps4)))
-            .unwrap_or_default()
+        t.game.map(|g| self.games[g].g.platform).unwrap_or_default()
     }
 
     fn local_platform(&self, game_id: &str) -> crate::platform::Platform {
@@ -1657,18 +1671,18 @@ impl App {
                 Act::Confirm => self.set_library_density(self.idx == 1),
                 _ => {}
             },
-            Z_CHIPS => { const N: i32 = STATUS_FILTERS as i32; match a {
-                Act::Left if self.idx > if self.idx < N { 0 } else { N } => {
+            Z_CHIPS => { let n: i32 = self.status_count as i32; match a {
+                Act::Left if self.idx > if self.idx < n { 0 } else { n } => {
                     self.move_focus(Z_CHIPS, self.idx - 1);
                     self.push_genres();
                 }
-                Act::Right if (self.idx as usize) + 1 < if self.idx < N { N as usize } else { self.genre_list.len() } => {
+                Act::Right if (self.idx as usize) + 1 < if self.idx < n { n as usize } else { self.genre_list.len() } => {
                     self.move_focus(Z_CHIPS, self.idx + 1);
                     self.push_genres();
                 }
-                Act::Up if self.idx >= N => self.focus_status(),
+                Act::Up if self.idx >= n => self.focus_status(),
                 Act::Up => self.move_focus(Z_SEARCH, 0),
-                Act::Down if self.idx < N => self.focus_chip(),
+                Act::Down if self.idx < n => self.focus_chip(),
                 Act::Down if !self.filtered.is_empty() => {
                     let first = self.first_visible_card();
                     self.move_focus(Z_GRID, first as i32);
@@ -1676,7 +1690,13 @@ impl App {
                 }
                 Act::Confirm => {
                     if let Some((g, _)) = self.genre_list.get(self.idx as usize).cloned() {
-                        if self.idx < N { self.status_filter = g; }
+                        if self.mixed_consoles && self.idx == n - 1 {
+                            // The console chip cycles: every console → PS5 → PS4.
+                            use crate::platform::Platform;
+                            self.platform_filter = match self.platform_filter { None => Some(Platform::Ps5), Some(Platform::Ps5) => Some(Platform::Ps4), Some(Platform::Ps4) => None };
+                            self.build_genres();
+                        }
+                        else if self.idx < n { self.status_filter = g; }
                         else { self.genre = if g == "All genres" { "All".into() } else { g }; }
                         self.apply_filter();
                         self.set_grid_scroll(0.0, 0);
@@ -1692,19 +1712,28 @@ impl App {
     }
 
     fn focus_chip(&mut self) {
-        let i = self.genre_list.iter().enumerate().skip(STATUS_FILTERS).find(|(_, (g, _))| *g == self.genre).map(|(i, _)| i).unwrap_or(STATUS_FILTERS);
+        let i = self.genre_list.iter().enumerate().skip(self.status_count).find(|(_, (g, _))| *g == self.genre).map(|(i, _)| i).unwrap_or(self.status_count);
         self.move_focus(Z_CHIPS, i as i32);
         self.push_genres();
     }
 
     fn focus_status(&mut self) {
-        let i = self.genre_list.iter().take(STATUS_FILTERS).position(|(g, _)| *g == self.status_filter).unwrap_or(0);
+        let i = self.genre_list.iter().take(self.status_count).position(|(g, _)| *g == self.status_filter).unwrap_or(0);
         self.move_focus(Z_CHIPS, i as i32);
         self.push_genres();
     }
 
+    /// The game is for the console the Library shows (any, unless one is chosen).
+    pub fn platform_ok(&self, game: &GameV) -> bool {
+        self.platform_filter.is_none_or(|p| game.g.platform == p)
+    }
+
     pub fn matches_status(&self, index: usize) -> bool {
         let game = &self.games[index];
+        self.platform_ok(game) && self.status_filter_ok(game)
+    }
+
+    fn status_filter_ok(&self, game: &GameV) -> bool {
         self.status_filter == "All" || (self.status_filter == "Installed" && game.local.is_some())
             || (self.status_filter == "In-game" && self.game_compat(game).is_some_and(|entry| entry.in_game_anywhere()))
             || (self.status_filter == "In-game on Linux" && self.game_compat(game).is_some_and(|entry| entry.on_linux && entry.status == crate::compat::Status::InGame))
@@ -1745,8 +1774,8 @@ impl App {
 
     pub fn scroll_genres(&mut self, delta: i32) {
         if self.overlay != Overlay::None || self.view != 1 { return; }
-        let i = if self.zone == Z_CHIPS && self.idx >= STATUS_FILTERS as i32 { self.idx } else {
-            self.genre_list.iter().enumerate().skip(STATUS_FILTERS).find(|(_, (g, _))| *g == self.genre).map(|(i, _)| i).unwrap_or(STATUS_FILTERS) as i32
+        let i = if self.zone == Z_CHIPS && self.idx >= self.status_count as i32 { self.idx } else {
+            self.genre_list.iter().enumerate().skip(self.status_count).find(|(_, (g, _))| *g == self.genre).map(|(i, _)| i).unwrap_or(self.status_count) as i32
         };
         let last = self.genre_list.len().saturating_sub(1).max(3) as i32;
         self.set_focus(Z_CHIPS, (i + delta).clamp(3, last));
@@ -2095,7 +2124,10 @@ impl App {
         if !in_hub && (t.game.is_some() || t.local.is_some()) {
             a.push(mk("hub", if t.local.is_some() { "Game Hub" } else { "View Game" }, "info", t.local.is_none()));
         }
-        if t.local.is_none() && t.game.is_some_and(|g| !self.games[g].g.magnet.is_empty()) {
+        let pkg = t.game.is_some_and(|g| self.games[g].g.is_pkg());
+        if t.local.is_none() && pkg && self.download_for_target(t).is_none() {
+            a.push(mk("pkg_info", "PKG release", "info", false));
+        } else if t.local.is_none() && t.game.is_some_and(|g| !self.games[g].g.magnet.is_empty()) {
             let job = self.download_for_target(t);
             let installing = job.as_ref().is_some_and(|job| self.installer.snapshot().iter().any(|record| record.key == job.key && record.state.active()));
             let (id, label) = if installing { ("download", "Installing…") }
@@ -2143,6 +2175,11 @@ impl App {
             }
             "trailer" => self.play_trailer(t),
             "download" => self.prepare_download(t),
+            "pkg_info" => {
+                let others = t.game.map(|g| self.groups.releases(g).iter().filter(|i| !self.games[**i].g.is_pkg()).count()).unwrap_or(0);
+                let tip = if others > 0 { "This game has another release that isn't a PKG: switch to it with the release selector." } else { "Look for a release of this game that is a folder, an archive or an exFAT image." };
+                self.toast("This release is a PKG package", &format!("The launcher can install extracted games only, not PKG packages. {tip}"), 0);
+            }
             "install" => {
                 if let Some(job) = self.download_for_target(t) { self.prepare_install(&job.key); }
             }

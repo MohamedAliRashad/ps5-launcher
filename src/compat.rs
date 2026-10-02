@@ -298,7 +298,10 @@ pub fn fetch() -> Result<Db, String> {
     for (url, file, check) in [(URL, path(), parse as fn(&[u8]) -> Option<Db>), (SHAD_URL, shad_path(), parse_shad)] {
         match http_get(url).and_then(|b| check(&b).map(|_| b).ok_or_else(|| "unexpected data".to_string())) {
             Ok(bytes) => { let _ = atomic_write(&file, &bytes); }
-            Err(e) => errors.push(e),
+            Err(e) => {
+                crate::log!("compatibility list {url} unavailable: {e}");
+                errors.push(e);
+            }
         }
     }
     if errors.len() == 2 {

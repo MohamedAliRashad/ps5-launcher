@@ -29,7 +29,10 @@ impl Groups {
             let names = [name_key(&game.name), name_key(display)];
             let ids = std::iter::once(&game.title_id).chain(game.title_ids.iter())
                 .filter(|id| crate::psn::valid_title_id(id)).map(|id| format!("id:{}", id.to_ascii_uppercase()));
-            let keys = ids.chain(names.into_iter().filter(|name| !name.is_empty()).map(|name| format!("name:{name}")));
+            // A PS4 and a PS5 release of the same game stay separate cards: different emulators.
+            let console = game.platform.label();
+            let keys = ids.chain(names.into_iter().filter(|name| !name.is_empty()).map(|name| format!("name:{name}")))
+                .map(|key| format!("{console}:{key}"));
             for key in keys {
                 if let Some(&other) = aliases.get(&key) {
                     let (a, b) = (root(&mut parent, index), root(&mut parent, other));
@@ -76,6 +79,17 @@ mod tests {
         assert_eq!(grouped.releases(0), &[0, 1, 2, 3]);
         assert_eq!(games[0].magnet, "first magnet"); assert_eq!(games[1].magnet, "second magnet");
     }
+    #[test]
+    fn ps4_and_ps5_releases_of_a_game_stay_separate() {
+        let mut ps4 = game("Firewatch", "CUSA04118");
+        ps4.platform = crate::platform::Platform::Ps4;
+        let mut ps4_eur = game("Firewatch", "CUSA04987");
+        ps4_eur.platform = crate::platform::Platform::Ps4;
+        let games = vec![game("Firewatch", "PPSA01234"), ps4, ps4_eur];
+        let groups = Groups::new(games.iter().map(|g| (g, g.name.as_str())));
+        assert_eq!(groups.members, vec![vec![0], vec![1, 2]]);
+    }
+
     #[test]
     fn keeps_sequels_remasters_and_standalone_expansions_distinct() {
         let games = vec![game("Alan Wake", ""), game("Alan Wake 2", ""), game("Alan Wake Remastered", ""),

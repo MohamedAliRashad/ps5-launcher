@@ -478,6 +478,15 @@ export component AppWindow inherits Window {
                                 Shimmer { active: !c.loaded; }
                                 Cover { source: c.image; loaded: c.loaded; }
                                 Badge { x: (10px * S.k); y: (10px * S.k); text: c.badge; size: (12px * S.k); }
+                                if c.console != "": Rectangle {
+                                    x: parent.width - self.width - (10px * S.k);
+                                    y: (10px * S.k);
+                                    width: cl.preferred-width + (14px * S.k);
+                                    height: (22px * S.k);
+                                    border-radius: (6px * S.k);
+                                    background: #000000c4;
+                                    cl := Text { text: c.console; font-size: (12px * S.k); font-weight: 700; color: c.console == "PS4" ? #8fc2ff : #ffffff; }
+                                }
                                 if c.compat != "": Rectangle {
                                     x: (10px * S.k);
                                     y: parent.height - self.height - (10px * S.k);

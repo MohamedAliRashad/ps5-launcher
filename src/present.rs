@@ -583,19 +583,20 @@ impl App {
 
     pub fn push_genres(&mut self) {
         let words: Vec<_> = util::norm(&self.query).split_whitespace().map(String::from).collect();
-        const N: usize = crate::app::STATUS_FILTERS;
-        let mut status_counts = [0usize; N];
+        let n = self.status_count;
+        let mut status_counts = vec![0usize; n];
         let mut genre_counts = std::collections::HashMap::<&str, usize>::new();
         let mut genre_total = 0;
         for members in &self.groups.members {
-            let mut status = [false; N];
+            let mut status = vec![false; n];
             let mut buckets = HashSet::new();
             let mut any = false;
             for &index in members {
                 let game = &self.games[index];
                 if !words.iter().all(|word| game.norm.contains(word)) { continue; }
-                if self.genre == "All" || game.buckets.contains(&self.genre.as_str()) {
+                if (self.genre == "All" || game.buckets.contains(&self.genre.as_str())) && self.platform_ok(game) {
                     status[0] = true;
+                    if self.mixed_consoles { status[n - 1] = true; }
                     status[1] |= game.local.is_some();
                     let compat = self.game_compat(game);
                     status[2] |= compat.is_some_and(|entry| entry.in_game_anywhere());
@@ -613,16 +614,17 @@ impl App {
         let mut focus_x = 0.0;
         let typography = self.scale.max(0.75);
         for (i, (label, _)) in self.genre_list.iter().enumerate() {
-            if i == N { x = 0.0; }
-            let count = if i < N { status_counts[i] } else if i == N { genre_total } else { *genre_counts.get(label.as_str()).unwrap_or(&0) };
+            if i == n { x = 0.0; }
+            let count = if i < n { status_counts[i] } else if i == n { genre_total } else { *genre_counts.get(label.as_str()).unwrap_or(&0) };
             let c = count.to_string();
             let w = 32.0 * self.scale + (label.chars().count() as f32 * 9.5 + 6.0 + c.len() as f32 * 8.0) * typography;
-            if i >= N && ((self.zone == Z_CHIPS && i as i32 == self.idx) || ((self.zone != Z_CHIPS || self.idx < N as i32) && *label == self.genre)) {
+            if i >= n && ((self.zone == Z_CHIPS && i as i32 == self.idx) || ((self.zone != Z_CHIPS || self.idx < n as i32) && *label == self.genre)) {
                 focus_x = x;
             }
-            let on = if i < N { *label == self.status_filter } else { *label == self.genre || (i == N && self.genre == "All") };
+            let console_chip = self.mixed_consoles && i == n - 1;
+            let on = if console_chip { self.platform_filter.is_some() } else if i < n { *label == self.status_filter } else { *label == self.genre || (i == n && self.genre == "All") };
             let chip = GenreChip { index: i as i32, label: label.clone().into(), count: c.into(), on, x, w };
-            if i < N { statuses.push(chip); } else { chips.push(chip); }
+            if i < n { statuses.push(chip); } else { chips.push(chip); }
             x += w + 10.0 * self.scale;
         }
         let (win_w, _) = self.logical_size();
@@ -773,6 +775,7 @@ impl App {
                 peer_snapshot: "".into(),
                 rating: g.info.as_ref().and_then(|i| i.rating.as_ref()).map(|r| format!("{:.1}", r.score)).unwrap_or_default().into(),
                 badge: if g.local.is_some() { "Installed".into() } else if g.is_new { "New".into() } else { "".into() },
+                console: if self.mixed_consoles { g.g.platform.label().into() } else { "".into() },
                 compat: compat.into(),
                 compat_level,
                 loaded: img.is_some(),
@@ -972,7 +975,9 @@ impl App {
             facts.push(("LOCATION", util::display_path(&lv.l.path.to_string_lossy())));
         }
         // A compact overview; technical provenance and installation data are expandable rows.
+        let console = if ps4 || self.mixed_consoles { self.target_platform(t).label().to_string() } else { String::new() };
         h.subtitle = [
+            console,
             info.as_ref().map(|i| i.publisher.clone()).filter(|s| !s.is_empty()).unwrap_or_else(|| g.map(|g| g.detail("publisher")).unwrap_or_default()),
             g.map(|g| g.release.clone()).unwrap_or_default(), g.map(|g| g.region.clone()).unwrap_or_default(),
         ].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ").into();
