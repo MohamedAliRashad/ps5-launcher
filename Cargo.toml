@@ -21,6 +21,7 @@ flate2 = "1"
 html-escape = "0.2"
 percent-encoding = "2"
 sha2 = "0.10"
+oozextract = { path = "third_party/oozextract", features = ["verbose_errors"] }
 librqbit = { version = "=9.0.1", default-features = false, features = ["rust-tls"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 anyhow = "1"

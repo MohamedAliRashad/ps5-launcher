@@ -16,6 +16,7 @@ mod sandbox;
 #[path = "sandbox_stub.rs"]
 mod sandbox;
 mod exfat;
+mod pkg;
 mod results;
 mod trailer;
 mod config;
