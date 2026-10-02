@@ -1223,12 +1223,34 @@ export component AppWindow inherits Window {
                         // About: required attribution for the Slint royalty-free license (section 2a).
                         VerticalLayout {
                             padding-top: (36px * S.k);
-                            spacing: (10px * S.k);
+                            spacing: (12px * S.k);
                             Text { text: "ABOUT"; font-size: (16px * S.k); font-weight: 600; letter-spacing: (2px * S.k); color: Theme.text3; }
-                            Text { text: "PS5 Launcher " + root.app-version; font-size: (19px * S.k); color: Theme.text2; }
-                            HorizontalLayout {
-                                alignment: start;
-                                AboutSlint { width: (280px * S.k); }
+                            Rectangle {
+                                border-radius: (14px * S.k);
+                                background: #ffffff0b;
+                                HorizontalLayout {
+                                    padding-left: (18px * S.k);
+                                    padding-right: (10px * S.k);
+                                    padding-top: (14px * S.k);
+                                    padding-bottom: (14px * S.k);
+                                    spacing: (16px * S.k);
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Image { source: Icons.app; width: (60px * S.k); height: (60px * S.k); }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: (4px * S.k);
+                                        horizontal-stretch: 1;
+                                        Text { text: "PS5 Launcher"; font-size: (19px * S.k); font-weight: 600; color: Theme.text; }
+                                        Text { text: "Version " + root.app-version + " · Linux"; font-size: (15px * S.k); color: Theme.text3; }
+                                        Text { text: "PS5 games on KytyPS5 · PS4 games on shadPS4"; font-size: (15px * S.k); color: Theme.text3; }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        AboutSlint { width: (190px * S.k); }
+                                    }
+                                }
                             }
                         }
                     }

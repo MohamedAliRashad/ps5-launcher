@@ -313,7 +313,7 @@ impl App {
                 _ => 64.0 + if hint_lines > 0.0 { 4.0 + hint_lines * 19.0 } else { 0.0 } + if self.edit_index == i as i32 { 54.0 } else { 0.0 },
             };
         }
-        y += 36.0 + 22.0 + 10.0 + 26.0 + 10.0 + 170.0; // About block under the last row
+        y += 36.0 + 20.0 + 12.0 + 180.0; // About card under the last row
         let (_, h) = self.logical_size();
         let max = (y + 120.0 - h).max(0.0);
         // The last row reveals the About block, which is not focusable itself.
