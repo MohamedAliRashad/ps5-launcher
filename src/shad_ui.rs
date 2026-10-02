@@ -1,5 +1,5 @@
-//! shadPS4 (PS4 games) inside the app: installed the first time a PS4 game is played, then
-//! kept up to date in the background like KytyPS5, with rollback.
+//! shadPS4 (PS4 games) inside the app: installed in the background like KytyPS5, so the first
+//! PS4 game starts at once, then kept up to date, with rollback.
 
 use crate::app::*;
 use crate::shad::{self, Release};
@@ -21,18 +21,23 @@ fn post(f: impl FnOnce(&mut App) + Send + 'static) {
 }
 
 impl App {
-    /// Background update checks, only once shadPS4 is installed (PS5-only users never get it).
     pub fn shad_start(&mut self) {
-        let check = |app: &mut App| {
-            let auto = app.cfg.lock().unwrap().shad_auto_update;
-            if auto && shad::installed() && crate::util::now_secs() - shad::load_state().last_check > shad::CHECK_INTERVAL {
-                app.shad_check(false);
-            }
-        };
-        check(self);
+        self.shad_tick();
         let t = slint::Timer::default();
-        t.start(slint::TimerMode::Repeated, Duration::from_secs(30 * 60), move || with_app(check));
+        t.start(slint::TimerMode::Repeated, Duration::from_secs(30 * 60), || with_app(|app| app.shad_tick()));
         std::mem::forget(t); // lives for the whole session
+    }
+
+    /// With automatic updates on, install shadPS4 when it's missing and update it every few
+    /// hours. Waits for the start-up screen and for KytyPS5's own download to finish.
+    pub fn shad_tick(&mut self) {
+        let auto = self.cfg.lock().unwrap().shad_auto_update;
+        if !auto || self.boot.active || self.kyty.busy || self.shad.busy {
+            return;
+        }
+        if !shad::installed() || crate::util::now_secs() - shad::load_state().last_check > shad::CHECK_INTERVAL {
+            self.shad_check(false);
+        }
     }
 
     /// Look for a newer build; install it when there is one (unless rolled back from it).
@@ -47,7 +52,9 @@ impl App {
                     shad::mark_checked(&rel.tag);
                     let st = shad::load_state();
                     if rel.tag != st.installed && (manual || rel.tag != st.skip) {
-                        app.shad_install(rel, None);
+                        // A background first install that fails (offline) retries quietly later.
+                        let quiet = !manual && !shad::installed();
+                        app.shad_install(rel, None, quiet);
                     } else if manual {
                         app.toast("shadPS4 is up to date", &format!("You have the latest release, {}.", shad::pretty(&rel.tag)), 1);
                     }
@@ -78,7 +85,7 @@ impl App {
                 match res {
                     Ok(rel) => {
                         let after = app.shad.launch_after.clone();
-                        app.shad_install(rel, after);
+                        app.shad_install(rel, after, false);
                     }
                     Err(e) => {
                         app.shad.launch_after = None;
@@ -89,7 +96,7 @@ impl App {
         });
     }
 
-    pub fn shad_install(&mut self, rel: Release, launch_after: Option<String>) {
+    pub fn shad_install(&mut self, rel: Release, launch_after: Option<String>, quiet: bool) {
         if self.shad.busy {
             return;
         }
@@ -133,7 +140,9 @@ impl App {
                         crate::log!("shadPS4 install failed: {e}");
                         app.shad.error = e.clone();
                         app.shad.launch_after = None;
-                        app.toast("Couldn't install shadPS4", &e, 2);
+                        if !quiet {
+                            app.toast("Couldn't install shadPS4", &e, 2);
+                        }
                     }
                 }
                 app.refresh_settings();
@@ -144,7 +153,7 @@ impl App {
     /// Called when all games have closed.
     pub fn shad_games_closed(&mut self) {
         if let Some(rel) = self.shad.pending.take() {
-            self.shad_install(rel, None);
+            self.shad_install(rel, None, false);
         }
     }
 

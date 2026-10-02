@@ -217,6 +217,7 @@ impl App {
                     }
                 }
                 app.kyty_refresh_version();
+                app.shad_tick(); // shadPS4 waits for KytyPS5's download
             });
         });
     }

@@ -156,7 +156,14 @@ impl App {
         let shad_state = crate::shad::load_state();
         let shad_installed = crate::shad::installed();
         let mut r = row(4, "shadPS4");
-        r.hint = if shad_installed { "Runs PS4 games" } else { "Runs PS4 games · installs by itself the first time you play one" }.into();
+        r.hint = if shad_installed {
+            "Runs PS4 games"
+        } else if cfg.shad_auto_update {
+            "Runs PS4 games · installs by itself in the background"
+        } else {
+            "Runs PS4 games · installs when you first play one"
+        }
+        .into();
         let (value, kind) = if self.shad.busy {
             (self.shad.progress.clone(), 0)
         } else if !shad_installed {
@@ -380,6 +387,7 @@ impl App {
                 });
                 if id == SId::AutoUpdate && on {
                     self.kyty_check(false);
+                    self.shad_tick();
                 }
                 if id == SId::Sounds {
                     audio::set_enabled(on);

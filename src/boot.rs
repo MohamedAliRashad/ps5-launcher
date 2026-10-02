@@ -412,5 +412,6 @@ impl App {
             let p = self.kyty.progress.clone();
             self.set_status(&p, true);
         }
+        self.shad_tick();
     }
 }

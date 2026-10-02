@@ -305,10 +305,12 @@ A `Platform` (PS5 or PS4) travels with each installed game and catalog release
 - **Installed games:** PS4 game folders are recognized by `sce_sys/param.sfo`
   ([src/sfo.rs](../src/sfo.rs), a bounds-checked PSF reader). Only full games (category `gd`)
   are listed; updates (`gp`) and add-ons are skipped, also by the installer.
-- **Emulator:** shadPS4's official Linux release ([src/shad.rs](../src/shad.rs)) is installed the
-  first time a PS4 game is played: the zip is SHA-256 checked, its AppImage unpacked once
+- **Emulator:** shadPS4's official Linux release ([src/shad.rs](../src/shad.rs)) is installed in
+  the background once the start-up screen closes (after any KytyPS5 download), or right away
+  when a PS4 game is played first. The zip is SHA-256 checked, its AppImage unpacked once
   (`--appimage-extract`, so no FUSE), and `AppRun` launched as `-g <game> -f <fullscreen>`.
-  Updates every 6 hours, keeping the previous version for rollback. Saves stay in
+  Updates every 6 hours, keeping the previous version for rollback. With **Update
+  automatically** off, it installs only when a PS4 game is played. Saves stay in
   `~/.local/share/shadPS4`. shadPS4 has no PKG installer (removed upstream in 2025).
 - **Compatibility:** shadPS4's published `compatibility_data.json` (per-OS results) is merged
   with KytyPS5's list (title IDs never collide: CUSA vs PPSA). playable/ingame → In-game,
