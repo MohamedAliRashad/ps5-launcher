@@ -297,6 +297,30 @@ its official Linux builds from GitHub Releases.
 To turn this off, disable **Settings → Keep KytyPS5 updated automatically**. Managed builds live
 in `~/.local/share/ps5-launcher/kyty/`.
 
+## PS4 games
+
+A `Platform` (PS5 or PS4) travels with each installed game and catalog release
+([src/platform.rs](../src/platform.rs)).
+
+- **Installed games:** PS4 game folders are recognized by `sce_sys/param.sfo`
+  ([src/sfo.rs](../src/sfo.rs), a bounds-checked PSF reader). Only full games (category `gd`)
+  are listed; updates (`gp`) and add-ons are skipped, also by the installer.
+- **Emulator:** shadPS4's official Linux release ([src/shad.rs](../src/shad.rs)) is installed the
+  first time a PS4 game is played: the zip is SHA-256 checked, its AppImage unpacked once
+  (`--appimage-extract`, so no FUSE), and `AppRun` launched as `-g <game> -f <fullscreen>`.
+  Updates every 6 hours, keeping the previous version for rollback. Saves stay in
+  `~/.local/share/shadPS4`. shadPS4 has no PKG installer (removed upstream in 2025).
+- **Compatibility:** shadPS4's published `compatibility_data.json` (per-OS results) is merged
+  with KytyPS5's list (title IDs never collide: CUSA vs PPSA). playable/ingame → In-game,
+  menus → Menus, boots → Boots, nothing → Doesn't boot. PS4 ratings go to the
+  shadps4-game-compatibility issue form, whose checklist (own dump, unmodified, official release)
+  the player must confirm themselves.
+- **Catalog:** each console's RuTracker snapshot has its own source, cache and bundled copy
+  (PS4: forum 973, `assets/rutracker/ps4-topics.json`, bundled by `build.rs` only when present).
+  Releases group per console. With both consoles, cards get a PS4/PS5 badge and the status row a
+  console chip. Collect the PS4 snapshot with `node list.mjs --platform ps4 --include-magnets`,
+  then `translate.mjs --platform ps4` and `publish.mjs --platform ps4`.
+
 ## Trailers and controllers
 
 **Trailers** are the official MP4s from the PlayStation Store data and play inside the launcher

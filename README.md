@@ -1,15 +1,17 @@
 # PS5 Launcher
 
-A PS5-style home screen for Linux. Browse PS5 games with their official artwork, download and
-install them, and play them with the [KytyPS5](https://github.com/KytyPS5/KytyPS5) emulator,
-using a controller, keyboard or mouse.
+A PS5-style home screen for Linux. Browse PS5 and PS4 games with their official artwork, download
+and install them, and play them with the [KytyPS5](https://github.com/KytyPS5/KytyPS5) (PS5) and
+[shadPS4](https://github.com/shadps4-emu/shadPS4) (PS4) emulators, using a controller, keyboard or
+mouse.
 
 ![PS5 Launcher: moving through the Home screen, a Game Hub and the Library](docs/demo/demo-loop.webp)
 
 - **Your games on a PS5-style Home screen**, with official backgrounds, logos and trailers that
   play right in the launcher.
 - **A Library of 400+ PS5 games** with search, genre filters and sorting.
-- **See what runs:** every game shows how far it gets in KytyPS5.
+- **PS4 games too:** they run on shadPS4, which installs by itself the first time you play one.
+- **See what runs:** every game shows how far it gets in its emulator.
 - **Download, install and play** without leaving the launcher.
 - **Keeps itself and KytyPS5 up to date**, without touching your saves.
 
@@ -62,11 +64,13 @@ To uninstall: `./ps5-launcher-linux-x86_64/install.sh --uninstall`
 **Games play best with a controller.** DualSense, DualShock 4, Xbox and most other controllers
 work in games over USB or Bluetooth with no setup; connect yours before starting a game. Without
 one, games use the keyboard: **J I K L** for ✕ △ □ ○, **W A S D** to move, **arrow keys** for the
-D-pad and **Enter** for Options. See **Settings → Keyboard controls in games** for every key.
+D-pad and **Enter** for Options (PS4 games use **N C V B** for ✕ △ □ ○). See **Settings → Keyboard
+controls in games** for every key.
 
 ## Will my game run?
 
-Each game shows a tag from the [KytyPS5 compatibility list](https://kytyps5.github.io/):
+Each game shows a tag from its emulator's community list ([KytyPS5](https://kytyps5.github.io/) for
+PS5, [shadPS4](https://github.com/shadps4-compatibility/shadps4-game-compatibility) for PS4):
 🟢 **In-game**, 🟡 **Menus**, 🟠 **Boots** (intro logos only), 🔴 **Doesn't boot**, or ⚪ **Untested**.
 
 Linux results come first. A result from Windows is marked **Win**, because games can behave
@@ -74,8 +78,11 @@ differently on Linux. In the Library, **In-game** lists every game that reaches 
 **In-game on Linux** only the ones confirmed on Linux.
 
 **Help others:** when you close a game, the launcher asks how far it got, and your answer
-becomes its tag on your PC. Every so often, choose **Settings → Share your results with
-KytyPS5** to send your results to the community list (needs a free GitHub account).
+becomes its tag on your PC. Every so often, choose **Settings → Share your results** to send
+your results to the community lists (needs a free GitHub account).
+
+PS4 and PS5 releases shipped as **PKG packages** can't be installed by the launcher; pick a
+release that is a folder, an archive or an exFAT image.
 
 ## Help
 
