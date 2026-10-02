@@ -112,6 +112,12 @@ export function prepareCatalog(input) {
         info.fields['Минимальная версия прошивки'] = firmware;
       }
     }
+    // Title IDs typed with Cyrillic look-alike letters ("СUSA12345") are the Latin ID.
+    const latinIds = value => typeof value === 'string'
+      ? value.replace(/(?<![\p{L}\d])([CcСс][UuУу][SsЅ][AaАа]|[PpРр]{2}[SsЅ][AaАа])(\d{5})(?![\p{L}\d])/gu,
+        (_m, prefix, digits) => `${/^[PpРр]/.test(prefix) ? 'PPSA' : 'CUSA'}${digits}`) : value;
+    for (const [key, value] of Object.entries(info.fields || {})) info.fields[key] = latinIds(value);
+    if (typeof info.title_id === 'string') info.title_id = latinIds(info.title_id);
     // Rebuilt from translated facts later; do not translate duplicated summaries.
     delete info.release_summary;
   }
