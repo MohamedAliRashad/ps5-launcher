@@ -1,0 +1,182 @@
+//! PS4 PKG packages, extracted with the ShadPs4Plus PKG Extractor (GPL-2.0): the PKG code shadPS4
+//! itself shipped until 0.8, as a standalone command-line tool. It is downloaded the first time a
+//! PKG release is installed and checked against a pinned SHA-256, then kept under
+//! ~/.local/share/ps5-launcher/pkg-extractor.
+
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+const VERSION: &str = "1.0";
+const URL: &str = "https://github.com/AzaharPlus/shadPS4Plus/releases/download/PKG_EXTRACTOR_1_0/ShadPs4Plus-PkgExtractor-1.0-linux.zip";
+const SIZE: u64 = 1_944_244;
+const SHA256: &str = "2adb5760be588eef0db76a0b281467ad2fc8ce6885fe00778af143b51b3d4784";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Game,
+    Update,
+    Dlc,
+}
+
+fn root() -> PathBuf {
+    crate::util::data_dir().join("pkg-extractor")
+}
+
+fn tool() -> PathBuf {
+    root().join(VERSION).join("squashfs-root").join("AppRun")
+}
+
+/// The extractor, downloaded and unpacked on first use.
+pub fn ensure() -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("PS5_LAUNCHER_PKG_EXTRACTOR").filter(|p| !p.is_empty()) {
+        return Ok(PathBuf::from(path));
+    }
+    let tool = tool();
+    if tool.is_file() {
+        return Ok(tool);
+    }
+    if cfg!(test) {
+        return Err("no PKG extractor in unit tests (set PS5_LAUNCHER_PKG_EXTRACTOR)".into());
+    }
+    install()
+}
+
+fn install() -> Result<PathBuf, String> {
+    let tool = tool();
+    let r = root();
+    std::fs::create_dir_all(&r).map_err(|e| e.to_string())?;
+    let zip = r.join("download.zip.part");
+    crate::kyty::download_file(URL, SIZE, SHA256, &zip, &|_, _| {}).inspect_err(|_| {
+        let _ = std::fs::remove_file(&zip);
+    })?;
+    let staging = r.join(format!("{VERSION}.tmp"));
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+    let appimage = staging.join("pkg_extractor.AppImage");
+    let unzipped = crate::shad::unzip_one(&zip, "pkg_extractor.AppImage", &appimage);
+    let _ = std::fs::remove_file(&zip);
+    unzipped?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&appimage, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    // Unpacked once, so it runs without FUSE.
+    let unpacked = Command::new(&appimage).arg("--appimage-extract").current_dir(&staging)
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+    let _ = std::fs::remove_file(&appimage);
+    let unpacked_tool = staging.join("squashfs-root").join("AppRun");
+    if !unpacked || !runs(&unpacked_tool) {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err("the PKG extractor does not run on this system".into());
+    }
+    let final_dir = r.join(VERSION);
+    let _ = std::fs::remove_dir_all(&final_dir);
+    std::fs::rename(&staging, &final_dir).map_err(|e| e.to_string())?;
+    crate::log!("PKG extractor {VERSION} installed");
+    Ok(tool)
+}
+
+/// It prints its banner for any input; a missing file is reported, not extracted.
+fn runs(tool: &Path) -> bool {
+    Command::new(tool).arg(root().join("no-such.pkg")).arg("--check-type").stdin(Stdio::null()).stderr(Stdio::null())
+        .output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("THE END"))
+}
+
+/// Base game, update or DLC (the tool's exit code: 101, 102, 103).
+pub fn kind(tool: &Path, pkg: &Path) -> Result<Kind, String> {
+    let out = Command::new(tool).arg(pkg).arg("--check-type").stdin(Stdio::null()).stderr(Stdio::null())
+        .output().map_err(|e| format!("could not run the PKG extractor: {e}"))?;
+    match out.status.code() {
+        Some(101) => Ok(Kind::Game),
+        Some(102) => Ok(Kind::Update),
+        Some(103) => Ok(Kind::Dlc),
+        _ => Err(problem(&String::from_utf8_lossy(&out.stdout)).unwrap_or_else(|| "not a PS4 PKG package".into())),
+    }
+}
+
+/// The tool always exits 0; failures are only in what it prints.
+fn problem(output: &str) -> Option<String> {
+    output.split(['\r', '\n']).map(str::trim)
+        .find(|l| l.starts_with("Cannot") || l.starts_with("Could not") || l.contains("doesn't appear to be a valid PKG"))
+        .map(|l| l.replace("doesn't appear to be a valid PKG file", "is not a PS4 PKG package"))
+}
+
+/// Extract `pkg` into `dest` (the game lands in `dest/<TITLE_ID>`, an update in
+/// `dest/<TITLE_ID>-patch`, DLC in `dest/<TITLE_ID>/<label>`). `progress(files done, files)`.
+pub fn extract(tool: &Path, pkg: &Path, dest: &Path, cancel: &AtomicBool, progress: &dyn Fn(u64, u64)) -> Result<(), String> {
+    let mut child = Command::new(tool).arg(pkg).arg(dest).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null())
+        .spawn().map_err(|e| format!("could not run the PKG extractor: {e}"))?;
+    let mut stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let reader = std::thread::spawn(move || {
+        let mut all = String::new();
+        let mut line = Vec::new();
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = stdout.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            for &b in &buf[..n] {
+                if b == b'\r' || b == b'\n' {
+                    let text = String::from_utf8_lossy(&line).into_owned();
+                    let _ = tx.send(text.clone());
+                    all.push_str(&text);
+                    all.push('\n');
+                    line.clear();
+                } else {
+                    line.push(b);
+                }
+            }
+        }
+        all.push_str(&String::from_utf8_lossy(&line));
+        all
+    });
+    let files = regex::Regex::new(r"Extracting file (\d+) of (\d+)").unwrap();
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Cancelled".into());
+        }
+        while let Ok(line) = rx.try_recv() {
+            if let Some(c) = files.captures(&line) {
+                progress(c[1].parse().unwrap_or(0), c[2].parse().unwrap_or(1));
+            }
+        }
+        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let output = reader.join().unwrap_or_default();
+    match problem(&output) {
+        Some(p) => Err(p),
+        None => Ok(()),
+    }
+}
+
+/// Where shadPS4 looks for DLC by default (its user folder's `addcont`).
+pub fn addons_dir() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| crate::util::expand_home("~/.local/share"))
+        .join("shadPS4").join("addcont")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Downloads the real extractor (network): cargo test -- --ignored pkg_extractor_downloads
+    #[test]
+    #[ignore]
+    fn pkg_extractor_downloads_verifies_and_classifies() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_DATA_HOME", home.path());
+        let tool = install().unwrap();
+        assert!(tool.starts_with(home.path()) && tool.is_file());
+        assert!(kind(&tool, &home.path().join("missing.pkg")).is_err());
+        if let Ok(pkg) = std::env::var("PKG_FIXTURE") {
+            assert_eq!(kind(&tool, Path::new(&pkg)).unwrap(), Kind::Game);
+        }
+    }
+}

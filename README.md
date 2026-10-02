@@ -81,8 +81,9 @@ differently on Linux. In the Library, **In-game** lists every game that reaches 
 becomes its tag on your PC. Every so often, choose **Settings → Share your game ratings** to send
 your results to the community lists (needs a free GitHub account).
 
-PS4 and PS5 releases shipped as **PKG packages** can't be installed by the launcher; pick a
-release that is a folder, an archive or an exFAT image.
+PS4 releases shipped as **PKG packages** install like any other: the launcher unpacks the game,
+its update and its DLC for shadPS4 (it fetches a small PKG extractor the first time). PS5 PKG
+releases can't be installed; pick a release that is a folder, an archive or an exFAT image.
 
 ## Help
 

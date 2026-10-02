@@ -66,11 +66,11 @@ pub struct Game {
 impl Game {
     pub fn detail(&self, key: &str) -> String { text(&self.game_info, key) }
 
-    /// Shipped as a PKG package, which the launcher can't install (only extracted games:
-    /// folders, archives and exFAT images).
+    /// A PS5 release shipped as a PKG package, which the launcher can't install (PS5 games
+    /// install from folders, archives and exFAT images). PS4 PKGs are extracted on install.
     pub fn is_pkg(&self) -> bool {
         static PKG: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?i)\bf?pkg\b").unwrap());
-        PKG.is_match(&self.detail("format")) || PKG.is_match(&self.title)
+        self.platform == Platform::Ps5 && (PKG.is_match(&self.detail("format")) || PKG.is_match(&self.title))
     }
 }
 

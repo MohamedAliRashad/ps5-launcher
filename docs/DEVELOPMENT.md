@@ -226,8 +226,9 @@ installation itself never executes their contents.
 Loose game folders are copied. RAR, ZIP, 7z and TAR-family decoding uses dynamically
 loaded system libarchive; no archive helper process is executed. Matching multipart
 RAR and split 7z volumes are ordered and checked for gaps, but decoder support varies
-with the installed libarchive version. Password-protected archives, PKG decryption,
-update/DLC merging, and archives containing multiple complete games are unsupported.
+with the installed libarchive version. Password-protected archives, PS5 PKG packages,
+PKGs inside archives, and archives containing multiple complete games are unsupported
+(PS4 PKG releases: see *PS4 games*).
 An unsupported or malformed archive fails with an explanation instead of publishing
 a partial library entry. RAR4 stored, ZIP, 7z/split 7z and TAR generated fixtures were
 tested on libarchive 3.7.2; compressed/solid/multipart RAR variants are not certified.
@@ -311,7 +312,17 @@ A `Platform` (PS5 or PS4) travels with each installed game and catalog release
   (`--appimage-extract`, so no FUSE), and `AppRun` launched as `-g <game> -f <fullscreen>`.
   Updates every 6 hours, keeping the previous version for rollback. With **Update
   automatically** off, it installs only when a PS4 game is played. Saves stay in
-  `~/.local/share/shadPS4`. shadPS4 has no PKG installer (removed upstream in 2025).
+  `~/.local/share/shadPS4`.
+- **PKG releases:** shadPS4 dropped its PKG installer in 0.8, so PS4 PKG releases are unpacked
+  with the standalone [ShadPs4Plus PKG Extractor](https://github.com/AzaharPlus/shadPS4Plus/releases/tag/PKG_EXTRACTOR_1_0)
+  (GPL-2.0, that same code), downloaded on first use with a pinned SHA-256 into
+  `~/.local/share/ps5-launcher/pkg-extractor` ([src/pkgx.rs](../src/pkgx.rs)). Each PKG is
+  classified (`--check-type`: game, update, DLC); the game and its update are extracted into
+  the installer's stage, validated like a folder release, and published as `<game>` and
+  `<game>-patch` (where shadPS4 looks for updates). DLC goes to `~/.local/share/shadPS4/addcont`.
+  The torrent's PKGs are kept for seeding. `PS5_LAUNCHER_PKG_EXTRACTOR` points at another
+  extractor; with it and `PKG_FIXTURE`/`PKG_TITLE_ID`, `cargo test -- --ignored pkg_` runs the
+  end-to-end tests against a real PKG.
 - **Compatibility:** shadPS4's published `compatibility_data.json` (per-OS results) is merged
   with KytyPS5's list (title IDs never collide: CUSA vs PPSA). playable/ingame → In-game,
   menus → Menus, boots → Boots, nothing → Doesn't boot. PS4 ratings go to the

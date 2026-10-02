@@ -82,6 +82,16 @@ v9.0.1 repository tree has no applicable standalone NOTICE file. This is not a
 claim that no other source attribution exists. Apache-2.0 does not impose a
 general in-application “Built with librqbit” branding requirement.
 
+## Tools downloaded at run time
+
+These are not part of this release. The launcher downloads them from their official
+GitHub releases when needed, verifies a SHA-256 checksum and runs them as separate
+programs, under their own licenses:
+
+- **KytyPS5** (PS5 games) and **shadPS4** (PS4 games, GPL-2.0).
+- **ShadPs4Plus PKG Extractor 1.0** (GPL-2.0, <https://github.com/AzaharPlus/shadPS4Plus>),
+  fetched the first time a PS4 PKG release is installed. Its source is available there.
+
 ## Scope requiring separate review
 
 This is a source-document retention mechanism, not a complete binary-content or

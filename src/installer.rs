@@ -772,8 +772,9 @@ fn install(req: &Request, cancel: &AtomicBool, progress: Progress<'_>, commit: &
     let volume = match &image { Some(path) => Some(crate::exfat::Volume::open(source.file(path)?).context("Open exFAT disk image")?), None => None };
     let image_plan = match &volume { Some(v) => Some(inspect_image(v, cancel)?), None => None };
     let plan = archive_plan.as_ref().or(image_plan.as_ref().map(|(_, plan)| plan)).unwrap_or(&source.plan);
-    if paths.is_none() && image.is_none() && plan.entries.iter().any(|e| e.path.to_ascii_lowercase().ends_with(".pkg")) {
-        bail!("Unsupported PKG package; provide an already extracted game");
+    let pkgs: Vec<String> = plan.entries.iter().filter(|e| !e.directory && e.path.to_ascii_lowercase().ends_with(".pkg")).map(|e| e.path.clone()).collect();
+    if paths.is_none() && image.is_none() && !pkgs.is_empty() {
+        return install_pkgs(req, &source, &pkgs, cancel, progress, commit);
     }
     check_cancel(cancel)?;
     let destination = Dir::absolute(&req.destination, true).context("Open explicit installation destination")?;
@@ -797,6 +798,74 @@ fn install(req: &Request, cancel: &AtomicBool, progress: Progress<'_>, commit: &
     let leaf = format!("{tid}-{}", &req.key[..12]);
     check_cancel(cancel)?;
     commit(&stage, &root, &leaf, &tid)?;
+    Ok(())
+}
+
+/// A PS4 release shipped as PKG packages: the game, its updates and DLC. The game and its
+/// update are extracted into the stage and validated like any folder release; the update is
+/// published next to the game as `<game>-patch`, where shadPS4 finds it. DLC goes to shadPS4's
+/// add-on folder.
+fn install_pkgs(req: &Request, source: &Source, pkgs: &[String], cancel: &AtomicBool, progress: Progress<'_>, commit: &dyn Fn(&Stage, &str, &str, &str) -> Result<()>) -> Result<()> {
+    use crate::pkgx::{self, Kind};
+    let tool = pkgx::ensure().map_err(|e| anyhow::anyhow!("Could not get the PKG extractor: {e}"))?;
+    let size = |path: &String| source.plan.entries.iter().find(|e| &e.path == path).map_or(0, |e| e.size);
+    let (mut games, mut updates, mut dlc) = (Vec::new(), Vec::new(), Vec::new());
+    for path in pkgs {
+        check_cancel(cancel)?;
+        source.file(path)?; // complete and unchanged since inspection
+        match pkgx::kind(&tool, &req.source.join(path)).map_err(|e| anyhow::anyhow!("{path}: {e}"))? {
+            Kind::Game => games.push(path.clone()),
+            Kind::Update => updates.push(path.clone()),
+            Kind::Dlc => dlc.push(path.clone()),
+        }
+    }
+    ensure!(!games.is_empty(), "This download has no game PKG, only {}; install the game itself first",
+        if updates.is_empty() { "add-ons" } else { "an update" });
+    ensure!(games.len() == 1, "This download has {} game PKGs; install one game at a time", games.len());
+    check_cancel(cancel)?;
+    let destination = Dir::absolute(&req.destination, true).context("Open explicit installation destination")?;
+    let actual_dest = fs::canonicalize(format!("/proc/self/fd/{}", destination.0.as_raw_fd()))?;
+    let actual_source = fs::canonicalize(format!("/proc/self/fd/{}", source.dir.0.as_raw_fd()))?;
+    ensure!(!actual_dest.starts_with(&actual_source) && !actual_source.starts_with(&actual_dest), "Source and destination trees must be separate");
+    let staged: Vec<&String> = games.iter().chain(&updates).collect();
+    let total: u64 = staged.iter().map(|p| size(p)).sum::<u64>() + dlc.iter().map(size).sum::<u64>();
+    disk_check(&destination, &Plan { total, ..Plan::default() })?;
+    let stage = Stage::new(destination, &req.key)?;
+    let output = stage.payload()?;
+    let output_path = fs::read_link(format!("/proc/self/fd/{}", output.0.as_raw_fd())).context("Locate staging folder")?;
+    progress(State::Extracting, 0, total);
+    let mut done = 0u64;
+    let addons = pkgx::addons_dir();
+    for path in staged.iter().copied().chain(&dlc) {
+        check_cancel(cancel)?;
+        let bytes = size(path);
+        let into = if dlc.contains(path) { &addons } else { &output_path };
+        if dlc.contains(path) { fs::create_dir_all(into).context("Create shadPS4 add-on folder")?; }
+        pkgx::extract(&tool, &req.source.join(path), into, cancel, &|file, files| {
+            progress(State::Extracting, done + bytes * file / files.max(1), total);
+        }).map_err(|e| if e == "Cancelled" { anyhow::anyhow!("Cancelled") } else { anyhow::anyhow!("{path}: {e}") })?;
+        source.file(path).context("PKG changed while installing")?;
+        done += bytes;
+    }
+    check_cancel(cancel)?;
+    progress(State::Validating, total, total);
+    // Validate exactly what the extractor wrote (no links or special files), then find the game.
+    let mut tree = Source { dir: Dir(output.0.try_clone()?), plan: Plan::default(), stamps: BTreeMap::new() };
+    tree.walk(&Dir(output.0.try_clone()?), "", cancel)?;
+    let (root, tid) = game_root(&output, &tree.plan, &req.expected_ids, cancel)?;
+    let leaf = format!("{tid}-{}", &req.key[..12]);
+    let patch = format!("{root}-patch");
+    let has_patch = !updates.is_empty() && output.metadata(&patch).is_ok();
+    if !updates.is_empty() && !has_patch {
+        crate::log!("PKG update for another title than {tid}: not installed");
+    }
+    commit(&stage, &root, &leaf, &tid)?;
+    if has_patch {
+        // The game is published; a failure here leaves it playable without the update.
+        if let Err(e) = stage.publish(&patch, &format!("{leaf}-patch")) {
+            crate::log!("Installed {tid}, but its update could not be placed: {e:#}");
+        }
+    }
     Ok(())
 }
 
@@ -1115,6 +1184,33 @@ mod tests {
         clean(&req);
     }
 
+    /// End to end with a real PS4 PKG and the extractor (not in the repo):
+    /// PS5_LAUNCHER_PKG_EXTRACTOR=…/AppRun PKG_FIXTURE=…/game.pkg PKG_TITLE_ID=CUSA… cargo test -- --ignored pkg_release
+    #[test]
+    #[ignore]
+    fn pkg_release_installs_extracted_game() {
+        let (Ok(pkg), Ok(tid)) = (std::env::var("PKG_FIXTURE"), std::env::var("PKG_TITLE_ID")) else { return };
+        let (t, mut req) = fixture();
+        req.expected_ids = if crate::psn::valid_title_id(&tid) { vec![tid.clone()] } else { vec![] };
+        fs::copy(&pkg, req.source.join("game.pkg")).unwrap();
+        let result = install(&req, &AtomicBool::new(false), &|_, _, _| {}, &|stage, root, leaf, title| {
+            assert_eq!(title, tid);
+            stage.publish(root, leaf)
+        });
+        if !crate::psn::valid_title_id(&tid) {
+            // Homebrew (e.g. APOL00004): extracted and inspected, then refused as not a game.
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("Invalid title ID in the game's metadata"), "{err}");
+            assert_eq!(fs::read_dir(&req.destination).unwrap().count(), 0, "nothing published, stage cleaned");
+            return;
+        }
+        result.unwrap();
+        let game = req.destination.join(format!("{tid}-{}", &KEY[..12]));
+        assert!(game.join("eboot.bin").is_file() && game.join("sce_sys/param.sfo").is_file());
+        assert!(req.source.join("game.pkg").is_file(), "the download is kept for seeding");
+        drop(t);
+    }
+
     #[test]
     fn exfat_image_release_installs_game_and_keeps_image() {
         for scatter in [false, true] {
@@ -1191,7 +1287,7 @@ mod tests {
                 _ => unreachable!(),
             }
             let err = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap_err();
-            if case == "pkg" { assert!(err.to_string().contains("Unsupported PKG")); }
+            if case == "pkg" { assert!(err.to_string().contains("PKG"), "{err:#}"); }
             clean(&req); assert!(crate::library::scan(&[req.destination]).is_empty());
         }
     }

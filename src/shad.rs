@@ -91,7 +91,7 @@ pub fn latest_release() -> Result<Release, String> {
 }
 
 /// Pull the one file whose name ends with `suffix` out of a zip (stored or deflated).
-fn unzip_one(zip: &Path, suffix: &str, dest: &Path) -> Result<(), String> {
+pub(crate) fn unzip_one(zip: &Path, suffix: &str, dest: &Path) -> Result<(), String> {
     let bytes = std::fs::read(zip).map_err(|e| e.to_string())?;
     let u16_at = |o: usize| bytes.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]) as usize).ok_or("damaged zip");
     let u32_at = |o: usize| bytes.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize).ok_or("damaged zip");
