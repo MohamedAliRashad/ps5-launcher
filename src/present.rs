@@ -625,8 +625,9 @@ impl App {
         let mut statuses = Vec::new();
         let mut focus_x = 0.0;
         let typography = self.scale.max(0.75);
+        let mut status_end = 0.0f32;
         for (i, (label, _)) in self.genre_list.iter().enumerate() {
-            if i == n { x = 0.0; }
+            if i == n { status_end = x; x = 0.0; }
             let count = if i < n { status_counts[i] } else if i == n { genre_total } else { *genre_counts.get(label.as_str()).unwrap_or(&0) };
             let c = count.to_string();
             let w = 32.0 * self.scale + (label.chars().count() as f32 * 9.5 + 6.0 + c.len() as f32 * 8.0) * typography;
@@ -647,6 +648,7 @@ impl App {
         let ui = self.ui();
         ui.set_genres(model(chips));
         ui.set_status_filters(model(statuses));
+        ui.set_status_filters_end(status_end);
         ui.set_genres_x(-scroll);
         ui.set_genres_more_right(x - scroll > view_w + 1.0);
     }

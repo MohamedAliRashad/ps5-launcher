@@ -209,6 +209,7 @@ export component AppWindow inherits Window {
     in property <[GenreChip]> genres;
     in property <length> genres-x;
     in property <bool> genres-more-right;
+    in property <length> status-filters-end; // right edge of the last status/console chip
     in property <[CardRow]> grid-rows;
     in-out property <length> grid-y;
     in property <duration> grid-glide;
@@ -662,11 +663,15 @@ export component AppWindow inherits Window {
                         focused: root.zone == Zone.chips && root.idx == g.index && root.overlay == 0;
                         clicked => { root.click(Zone.chips, g.index); }
                     }
-                    VerticalLayout {
+                    // The result count, only where it fits beside the chips (narrow windows drop it).
+                    Rectangle {
                         x: parent.width - self.width; width: max(count.preferred-width, snapshot.preferred-width);
-                        alignment: center; spacing: (3px * S.k);
-                        count := Text { text: root.count-label; font-size: (18px * root.library-type-scale); color: Theme.text2; horizontal-alignment: right; }
-                        snapshot := Text { text: root.peer-snapshot-label; font-size: (14px * root.library-type-scale); color: Theme.text3; horizontal-alignment: right; }
+                        visible: root.status-filters-end + (24px * S.k) <= self.x;
+                        VerticalLayout {
+                            alignment: center; spacing: (3px * S.k);
+                            count := Text { text: root.count-label; font-size: (18px * root.library-type-scale); color: Theme.text2; horizontal-alignment: right; }
+                            snapshot := Text { text: root.peer-snapshot-label; font-size: (14px * root.library-type-scale); color: Theme.text3; horizontal-alignment: right; }
+                        }
                     }
                 }
                 Rectangle {
@@ -687,6 +692,11 @@ export component AppWindow inherits Window {
                             focused: root.zone == Zone.chips && root.idx == g.index && root.overlay == 0;
                             clicked => { root.click(Zone.chips, g.index); }
                         }
+                    }
+                    // Chips scrolled past either edge fade out instead of being sliced off.
+                    if root.genres-x < 0: Rectangle {
+                        x: (124px * S.k); width: (48px * S.k); height: parent.height;
+                        background: @linear-gradient(90deg, #070a14, #070a1400);
                     }
                     if root.genres-more-right: Rectangle {
                         x: parent.width - (92px * S.k); width: (48px * S.k); height: parent.height;
