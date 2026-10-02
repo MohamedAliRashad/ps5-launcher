@@ -76,6 +76,7 @@ impl Config {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
+        cfg.one_update_switch();
         if cfg.emulator.is_empty() || !cfg.emulator_path().is_file() {
             let managed = crate::kyty::managed_emulator();
             if managed.is_file() {
@@ -85,6 +86,14 @@ impl Config {
             }
         }
         cfg
+    }
+
+    /// Settings has one "Update automatically" switch for the launcher, KytyPS5 and shadPS4.
+    /// Older settings files set them separately (and have no shadPS4 entry, which defaults to
+    /// on): if any was turned off, all are off, so the switch shows what actually happens.
+    fn one_update_switch(&mut self) {
+        let all = self.app_auto_update && self.kyty_auto_update && self.shad_auto_update;
+        (self.app_auto_update, self.kyty_auto_update, self.shad_auto_update) = (all, all, all);
     }
 
     pub fn save(&self) {
@@ -117,6 +126,20 @@ fn is_executable(m: &std::fs::Metadata) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_older_update_opt_out_turns_every_automatic_update_off() {
+        let mut old: Config = serde_json::from_str(r#"{"kyty_auto_update": false, "app_auto_update": false}"#).unwrap();
+        assert!(old.shad_auto_update, "a missing shadPS4 entry defaults to on");
+        old.one_update_switch();
+        assert!(!old.app_auto_update && !old.kyty_auto_update && !old.shad_auto_update);
+        let mut partial: Config = serde_json::from_str(r#"{"app_auto_update": false}"#).unwrap();
+        partial.one_update_switch();
+        assert!(!partial.kyty_auto_update && !partial.shad_auto_update);
+        let mut fresh = Config::default();
+        fresh.one_update_switch();
+        assert!(fresh.app_auto_update && fresh.kyty_auto_update && fresh.shad_auto_update);
+    }
 
     #[test]
     fn seeding_defaults_on_for_old_configs_and_preserves_explicit_opt_out() {
