@@ -243,6 +243,9 @@ export component AppWindow inherits Window {
     // Which controller the game will get; without one, the keyboard layout is shown.
     in property <string> launch-controller;
     in property <bool> launch-keyboard;
+    // PS4 games run on shadPS4, whose keyboard layout differs from KytyPS5's.
+    in property <bool> launch-ps4;
+    in property <bool> controls-ps4;
 
     in property <string> menu-title;
     in property <[MenuItem]> menu-items;
@@ -1375,8 +1378,11 @@ export component AppWindow inherits Window {
                                 alignment: center;
                                 height: (30px * S.k);
                                 spacing: (8px * S.k);
-                                for k in [{ key: "J", what: "✕" }, { key: "I", what: "△" }, { key: "K", what: "□" }, { key: "L", what: "○" },
-                                          { key: "W A S D", what: "Move" }, { key: "Arrows", what: "D-pad" }, { key: "Enter", what: "Options" }]: HorizontalLayout {
+                                for k in (root.launch-ps4
+                                        ? [{ key: "N", what: "✕" }, { key: "C", what: "△" }, { key: "V", what: "□" }, { key: "B", what: "○" },
+                                           { key: "W A S D", what: "Move" }, { key: "Arrows", what: "D-pad" }, { key: "Enter", what: "Options" }]
+                                        : [{ key: "J", what: "✕" }, { key: "I", what: "△" }, { key: "K", what: "□" }, { key: "L", what: "○" },
+                                           { key: "W A S D", what: "Move" }, { key: "Arrows", what: "D-pad" }, { key: "Enter", what: "Options" }]): HorizontalLayout {
                                     spacing: (6px * S.k);
                                     padding-right: (10px * S.k);
                                     KeyCap { text: k.key; }
@@ -1743,8 +1749,41 @@ export component AppWindow inherits Window {
                     spacing: (10px * S.k);
                     Text { text: "Keyboard controls in games"; font-size: (30px * S.k); font-weight: 600; color: Theme.text; }
                     Text { text: root.launch-controller; font-size: (17px * S.k); color: root.launch-keyboard ? Theme.text3 : Theme.ok; }
-                    Rectangle { height: (10px * S.k); }
+                    Rectangle { height: (6px * S.k); }
+                    // PS5 and PS4 games use different emulators, with different keys.
                     HorizontalLayout {
+                        alignment: start;
+                        spacing: (8px * S.k);
+                        for tab[i] in ["PS5 games · KytyPS5", "PS4 games · shadPS4"]: Rectangle {
+                            property <bool> on: (i == 1) == root.controls-ps4;
+                            width: tl.preferred-width + (28px * S.k);
+                            height: (36px * S.k);
+                            border-radius: (18px * S.k);
+                            background: on ? #ffffff : #ffffff14;
+                            tl := Text { text: tab; font-size: (16px * S.k); font-weight: 600; color: on ? #0a0d18 : Theme.text2; }
+                            TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.controls, i); } }
+                        }
+                        Text { text: "  ◂ ▸ to switch"; font-size: (15px * S.k); color: Theme.text3; vertical-alignment: center; }
+                    }
+                    Rectangle { height: (6px * S.k); }
+                    if root.controls-ps4: HorizontalLayout {
+                        spacing: (56px * S.k);
+                        for column in [
+                            [{ what: "✕  Cross", keys: "N  (or keypad 2)" }, { what: "○  Circle", keys: "B  (or keypad 6)" }, { what: "□  Square", keys: "V  (or keypad 4)" },
+                             { what: "△  Triangle", keys: "C  (or keypad 8)" }, { what: "D-pad", keys: "Arrow keys" }, { what: "Options", keys: "Enter" }],
+                            [{ what: "Left stick", keys: "W  A  S  D" }, { what: "Right stick", keys: "I  J  K  L" }, { what: "L1  /  R1", keys: "Q  /  U" },
+                             { what: "L2  /  R2", keys: "E  /  O" }, { what: "L3  /  R3", keys: "X  /  M" }, { what: "Touchpad", keys: "Space" }],
+                        ]: VerticalLayout {
+                            spacing: (12px * S.k);
+                            for row in column: HorizontalLayout {
+                                height: (30px * S.k);
+                                spacing: (16px * S.k);
+                                Text { text: row.what; width: (150px * S.k); font-size: (19px * S.k); color: Theme.text2; vertical-alignment: center; }
+                                KeyCap { text: row.keys; }
+                            }
+                        }
+                    }
+                    if !root.controls-ps4: HorizontalLayout {
                         spacing: (56px * S.k);
                         for column in [
                             [{ what: "✕  Cross", keys: "J" }, { what: "○  Circle", keys: "L" }, { what: "□  Square", keys: "K" }, { what: "△  Triangle", keys: "I" },
@@ -1762,7 +1801,7 @@ export component AppWindow inherits Window {
                         }
                     }
                     Rectangle { height: (10px * S.k); }
-                    Text { text: "F7 turns the mouse into the right stick (press it again to release the mouse)."; font-size: (16px * S.k); color: Theme.text3; }
+                    Text { text: root.controls-ps4 ? "shadPS4 keeps its key layout in its own settings file; these are its defaults." : "F7 turns the mouse into the right stick (press it again to release the mouse)."; font-size: (16px * S.k); color: Theme.text3; }
                     Text {
                         text: "Games play best with a controller: DualSense, DualShock 4, Xbox and most others work\nover USB or Bluetooth with no setup. Connect it before starting a game.";
                         font-size: (16px * S.k);

@@ -7,6 +7,8 @@ mod catalog;
 mod compat;
 mod platform;
 mod sfo;
+mod shad;
+mod shad_ui;
 mod exfat;
 mod results;
 mod trailer;

@@ -20,6 +20,9 @@ pub enum SId {
     Downloads,
     Share,
     Controls,
+    ShadUpdate,
+    ShadAuto,
+    ShadRollback,
     Resolution,
     Present,
     Fullscreen,
@@ -119,6 +122,34 @@ impl App {
         let mut r = row(2, "Return to the launcher when a game closes");
         r.on = cfg.return_on_exit;
         rows.push((SId::ReturnOnExit, r));
+
+        rows.push((SId::Header, row(0, "PS4 EMULATOR")));
+        let shad_state = crate::shad::load_state();
+        let mut r = row(4, if self.shad.busy { "Installing shadPS4…" } else if crate::shad::installed() { "Check for shadPS4 updates" } else { "Install shadPS4 now" });
+        r.value = if self.shad.busy {
+            self.shad.progress.clone()
+        } else if crate::shad::installed() {
+            format!("shadPS4 {}", crate::shad::pretty(&shad_state.installed))
+        } else {
+            "Not installed".into()
+        }.into();
+        r.hint = if !self.shad.error.is_empty() {
+            r.hint_kind = 2;
+            self.shad.error.clone()
+        } else if crate::shad::installed() {
+            "PS4 games run on shadPS4 · saves are kept across updates".into()
+        } else {
+            "PS4 games run on shadPS4. It installs by itself the first time you play a PS4 game.".into()
+        }.into();
+        rows.push((SId::ShadUpdate, r));
+        let mut r = row(2, "Keep shadPS4 updated automatically");
+        r.on = cfg.shad_auto_update;
+        rows.push((SId::ShadAuto, r));
+        if !shad_state.previous.is_empty() && crate::shad::root().join("versions").join(&shad_state.previous).is_dir() {
+            let mut r = row(4, "Roll back to previous shadPS4");
+            r.value = crate::shad::pretty(&shad_state.previous).into();
+            rows.push((SId::ShadRollback, r));
+        }
 
         rows.push((SId::Header, row(0, "CONTROLS")));
         let connected = !crate::gamepad::connected().is_empty();
@@ -320,13 +351,14 @@ impl App {
                 self.save_cfg(|c| c.seed_after_download = on);
                 self.push_downloads();
             }
-            SId::Fullscreen | SId::Amd | SId::ReturnOnExit | SId::Sounds | SId::KytyAuto | SId::AppAuto => {
+            SId::Fullscreen | SId::Amd | SId::ReturnOnExit | SId::Sounds | SId::KytyAuto | SId::AppAuto | SId::ShadAuto => {
                 let on = dir > 0;
                 self.save_cfg(|c| match id {
                     SId::Fullscreen => c.fullscreen = on,
                     SId::Amd => c.amd_cpu = on,
                     SId::ReturnOnExit => c.return_on_exit = on,
                     SId::KytyAuto => c.kyty_auto_update = on,
+                    SId::ShadAuto => c.shad_auto_update = on,
                     SId::AppAuto => c.app_auto_update = on,
                     _ => c.sounds = on,
                 });
@@ -362,7 +394,7 @@ impl App {
                 ui.set_edit_text(text.into());
                 ui.set_edit_index(i as i32);
             }
-            SId::Fullscreen | SId::Amd | SId::ReturnOnExit | SId::Sounds | SId::KytyAuto | SId::AppAuto | SId::SeedCompleted => {
+            SId::Fullscreen | SId::Amd | SId::ReturnOnExit | SId::Sounds | SId::KytyAuto | SId::AppAuto | SId::SeedCompleted | SId::ShadAuto => {
                 let on = self.settings_rows[i].on;
                 self.settings_change(i, if on { -1 } else { 1 });
             }
@@ -411,6 +443,15 @@ impl App {
                 audio::play(Sound::Select);
                 self.kyty_rollback();
                 self.refresh_settings();
+            }
+            SId::ShadUpdate => {
+                audio::play(Sound::Select);
+                // Installs when shadPS4 isn't there yet, otherwise updates it if there's a newer release.
+                self.shad_check(true);
+            }
+            SId::ShadRollback => {
+                audio::play(Sound::Select);
+                self.shad_rollback();
             }
             SId::Refresh => {
                 audio::play(Sound::Select);

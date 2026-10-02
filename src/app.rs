@@ -99,7 +99,7 @@ pub const GENRES: [(&str, &str); 16] = [
 /// In-game on Linux. Genres follow.
 pub const STATUS_FILTERS: usize = 4;
 
-pub const SORTS: [&str; 7] = ["Newest topics", "Name (A–Z)", "Release date", "Top rated", "Size (largest)", "Size (smallest)", "KytyPS5 compatibility"];
+pub const SORTS: [&str; 7] = ["Newest topics", "Name (A–Z)", "Release date", "Top rated", "Size (largest)", "Size (smallest)", "Compatibility"];
 
 /// A catalog game plus derived data.
 pub struct GameV {
@@ -239,6 +239,7 @@ pub struct App {
     pub settings_ids: Vec<crate::settings::SId>,
     pub boot: crate::boot::Boot,
     pub kyty: crate::kyty_ui::KytyUi,
+    pub shad: crate::shad_ui::ShadUi,
     pub warming: bool,
     pub upd: crate::update::AppUpdate,
     pub compat: crate::compat::Db,
@@ -383,6 +384,7 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, target_monitor: Option<Monitor
         settings_ids: Vec::new(),
         boot: Default::default(),
         kyty: Default::default(),
+        shad: Default::default(),
         warming: false,
         upd: Default::default(),
         compat: crate::compat::with_mine(crate::compat::load().0, &crate::results::load()),
@@ -404,6 +406,7 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, target_monitor: Option<Monitor
     APP.with(|a| *a.borrow_mut() = Some(app));
     with_app(move |app| app.boot_start(first_run));
     with_app(|app| app.kyty_start());
+    with_app(|app| app.shad_start());
     with_app(|app| app.app_update_start());
     with_app(|app| app.compat_start());
 
@@ -906,6 +909,21 @@ impl App {
 
     // ------------------------------------------------------------------ KytyPS5 compatibility
 
+    /// Which console a game is for: the installed copy's, else its catalog title ID / tag.
+    pub fn target_platform(&self, t: Target) -> crate::platform::Platform {
+        use crate::platform::Platform;
+        if let Some(l) = t.local {
+            return self.locals[l].l.platform;
+        }
+        t.game.map(|g| &self.games[g].g).and_then(|g| Platform::of_title_id(&g.title_id)
+            .or_else(|| g.title.to_uppercase().starts_with("[PS4]").then_some(Platform::Ps4)))
+            .unwrap_or_default()
+    }
+
+    fn local_platform(&self, game_id: &str) -> crate::platform::Platform {
+        self.locals.iter().find(|l| l.l.id == game_id).map(|l| l.l.platform).unwrap_or_default()
+    }
+
     pub fn game_compat(&self, g: &GameV) -> Option<&crate::compat::Entry> {
         (!g.g.title_id.is_empty()).then(|| self.compat.get(&g.g.title_id)).flatten()
     }
@@ -944,8 +962,8 @@ impl App {
         }
         self.my_results.reminded = util::now_secs();
         self.my_results.save();
-        self.toast_action(&format!("You've rated {n} game{} on KytyPS5", if n == 1 { "" } else { "s" }),
-            "Click to share your results with the KytyPS5 community.", 0, "share");
+        self.toast_action(&format!("You've rated {n} game{} you played", if n == 1 { "" } else { "s" }),
+            "Click to share your results with the emulator communities.", 0, "share");
     }
 
     /// "How far did it get?": saves your result on this PC. `after_play` adds "Not now".
@@ -982,9 +1000,9 @@ impl App {
             None if status.is_some() => crate::results::save_log(&util::cache_dir().join("logs").join(format!("{tid}.log")), &tid, false),
             None => None,
         }.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-        let emulator = self.cfg.lock().unwrap().emulator_path();
+        let (emulator, platform) = (self.cfg.lock().unwrap().emulator_path(), self.locals[l].l.platform);
         std::thread::spawn(move || {
-            let kyty = crate::kyty::version_for(&emulator);
+            let kyty = emulator_version(platform, &emulator);
             post(move |app| {
                 let Some(status) = status else {
                     app.my_results.skip(&tid, &kyty);
@@ -1001,7 +1019,7 @@ impl App {
                     app.push_hub();
                 }
                 app.toast(&format!("Saved: {} on Linux", status.label()),
-                    "It's shared with KytyPS5 the next time you choose Settings → Share your results.", 1);
+                    &format!("It's shared with {} the next time you choose Settings → Share your results.", crate::platform::Platform::of_title_id(&tid).unwrap_or_default().emulator()), 1);
             });
         });
     }
@@ -1010,10 +1028,10 @@ impl App {
     fn ask_rating(&mut self, game_id: &str) {
         let Some(l) = self.locals.iter().position(|g| g.l.id == game_id) else { return };
         let tid = self.locals[l].l.title_id.clone();
-        let emulator = self.cfg.lock().unwrap().emulator_path();
+        let (emulator, platform) = (self.cfg.lock().unwrap().emulator_path(), self.locals[l].l.platform);
         let id = game_id.to_string();
         std::thread::spawn(move || {
-            let kyty = crate::kyty::version_for(&emulator);
+            let kyty = emulator_version(platform, &emulator);
             post(move |app| {
                 let free = matches!(app.overlay, Overlay::None | Overlay::Hub) && app.live.is_empty() && !app.boot.active;
                 if free && app.my_results.should_ask(&tid, &kyty) {
@@ -1048,17 +1066,18 @@ impl App {
             }
             if let (Some(status), Some(saved)) = (r.status(), self.my_results.games.get_mut(tid)) {
                 saved.shared = now;
-                reports.push((r.name.clone(), tid.clone(), r.kyty.clone(), status, log));
+                let game_version = self.locals.iter().find(|g| &g.l.title_id == tid).map(|g| g.l.version.clone()).unwrap_or_default();
+                reports.push((r.name.clone(), tid.clone(), r.kyty.clone(), game_version, status, log));
             }
         }
         self.my_results.save();
         // Building the links reads system details: do it, and open the tabs, off the UI thread.
         std::thread::spawn(move || {
-            for (i, (name, tid, kyty, status, log)) in reports.iter().enumerate() {
+            for (i, (name, tid, kyty, game_version, status, log)) in reports.iter().enumerate() {
                 if i > 0 {
                     std::thread::sleep(Duration::from_millis(800));
                 }
-                open_url(&crate::compat::report_url(name, tid, kyty, *status, log));
+                open_url(&crate::compat::report_url_for(name, tid, kyty, game_version, *status, log));
             }
         });
         if std::fs::read_dir(&folder).is_ok_and(|mut d| d.next().is_some()) {
@@ -1066,7 +1085,10 @@ impl App {
         }
         let n = batch.len();
         let left = self.my_results.unshared().len();
-        let more = if left > 0 { format!(" {left} more next time.") } else { String::new() };
+        let mut more = if left > 0 { format!(" {left} more next time.") } else { String::new() };
+        if batch.iter().any(|(tid, _)| crate::platform::Platform::of_title_id(tid) == Some(crate::platform::Platform::Ps4)) {
+            more.push_str(" shadPS4 only accepts reports for games dumped from a copy you own, unmodified.");
+        }
         self.toast(&format!("Opened {n} report{} in your browser", if n == 1 { "" } else { "s" }),
             &format!("Check each one, drag in its log from the folder that opened (named after the game), and submit.{more}"), 1);
         self.refresh_settings();
@@ -1190,15 +1212,16 @@ impl App {
                     self.crash_logs.insert(e.game_id.clone(), saved.clone());
                 }
                 let action = saved.as_ref().map(|p| format!("log:{}", p.display())).unwrap_or_default();
+                let emulator = self.local_platform(&e.game_id).emulator();
                 let what = match crashed {
                     Some(code) => {
                         crate::log!("{} crashed (exit {code}), log: {}", e.name, e.log.display());
                         audio::play(Sound::Error);
-                        (format!("{} stopped unexpectedly", e.name), format!("KytyPS5 exited with code {code}."))
+                        (format!("{} stopped unexpectedly", e.name), format!("{emulator} exited with code {code}."))
                     }
-                    None => (format!("{} closed right after starting", e.name), "KytyPS5 may not support it yet.".to_string()),
+                    None => (format!("{} closed right after starting", e.name), format!("{emulator} may not support it yet.")),
                 };
-                let more = if saved.is_some() { " Click to see its log; it's saved for your next report to KytyPS5." } else { "" };
+                let more = if saved.is_some() { format!(" Click to see its log; it's saved for your next report to {emulator}.") } else { String::new() };
                 self.toast_game_action(&what.0, &format!("{}{more}", what.1), 2, &e.game_id, &action);
             } else {
                 self.toast_game(&e.name, &format!("Played for {played}"), 1, &e.game_id);
@@ -1222,6 +1245,7 @@ impl App {
             self.tick();
             if self.live.is_empty() {
                 self.kyty_games_closed();
+                self.shad_games_closed();
             }
         }
     }
@@ -1425,6 +1449,10 @@ impl App {
             self.back();
             return;
         }
+        if zone == Z_CONTROLS && self.overlay == Overlay::Controls {
+            self.ui().set_controls_ps4(idx == 1);
+            return;
+        }
         if zone == Z_ROW && self.overlay == Overlay::None {
             if self.zone == Z_ROW && self.sel == idx as usize {
                 self.activate_row();
@@ -1510,11 +1538,15 @@ impl App {
             }
             Overlay::Viewer => self.act_viewer(a),
             Overlay::Trailer => self.act_trailer(a),
-            Overlay::Controls => {
-                if matches!(a, Act::Back | Act::Confirm) {
-                    self.back();
+            Overlay::Controls => match a {
+                Act::Back | Act::Confirm => self.back(),
+                Act::Left | Act::Right => {
+                    let ui = self.ui();
+                    ui.set_controls_ps4(!ui.get_controls_ps4());
+                    audio::play(Sound::Move);
                 }
-            }
+                _ => {}
+            },
             Overlay::Menu => self.act_menu(a),
             Overlay::Settings => self.act_settings(a),
             Overlay::Hub => self.act_hub(a),
@@ -2169,8 +2201,9 @@ impl App {
                 }
             }
             "compat" => {
-                open_url(crate::compat::LIST_PAGE);
-                self.toast("Opened in your browser", "The KytyPS5 compatibility list is in your browser.", 1);
+                let platform = self.target_platform(t);
+                open_url(crate::compat::list_page(platform));
+                self.toast("Opened in your browser", &format!("The {} compatibility list is in your browser.", platform.emulator()), 1);
             }
             _ => {}
         }
@@ -2184,6 +2217,11 @@ impl App {
             return;
         }
         let game = self.locals[l].l.clone();
+        // PS4 games run on shadPS4, which is installed the first time one is played.
+        if game.platform == crate::platform::Platform::Ps4 && !crate::shad::installed() {
+            self.shad_install_then_launch(game.id.clone());
+            return;
+        }
         match self.sessions.launch(&game) {
             Ok(()) => {
                 audio::play(Sound::Start);
@@ -2210,7 +2248,8 @@ impl App {
         };
         if let Some(s) = s {
             audio::play(Sound::Back);
-            self.toast_game(&format!("Stopping {}…", s.name), "Closing the game and saving KytyPS5's caches.", 0, &s.game_id.clone());
+            let emulator = self.local_platform(&s.game_id).emulator();
+            self.toast_game(&format!("Stopping {}…", s.name), &format!("Closing the game and saving {emulator}'s caches."), 0, &s.game_id.clone());
             self.sessions.stop(s.pid);
         }
     }
@@ -2392,7 +2431,7 @@ impl App {
             let on = self.cfg.lock().unwrap().rawg_art.contains(&self.games[g].g.id);
             items.push(mk("rawg_art", if on { "Use PlayStation artwork" } else { "Use RAWG artwork" }, "star"));
         }
-        items.push(mk("compat", "KytyPS5 compatibility list", "web"));
+        items.push(mk("compat", if self.target_platform(t) == crate::platform::Platform::Ps4 { "shadPS4 compatibility list" } else { "KytyPS5 compatibility list" }, "web"));
         items.push(mk("settings", "Settings", "gear"));
         let title = t.local.map(|l| self.locals[l].name.clone()).or_else(|| t.game.map(|g| self.games[g].name.clone())).unwrap_or_default();
         self.menu_target = Some(t);
@@ -2420,7 +2459,9 @@ impl App {
 
     fn show_launch_splash(&mut self, l: usize) {
         self.push_launch(l);
-        self.ui().set_launch_sub("Starting with KytyPS5…".into());
+        let platform = self.locals[l].l.platform;
+        self.ui().set_launch_sub(format!("Starting with {}…", platform.emulator()).into());
+        self.ui().set_launch_ps4(platform == crate::platform::Platform::Ps4);
         self.push_controller_status();
         self.push_overlay(Overlay::Launch, self.zone, self.idx);
         let Some(pid) = self.session_for_local(l).map(|s| s.pid) else {
@@ -2615,3 +2656,12 @@ pub fn model<T: Clone + 'static>(v: Vec<T>) -> ModelRc<T> {
     ModelRc::new(VecModel::from(v))
 }
 
+
+/// The emulator build a game runs on, recorded with its rating: KytyPS5's for PS5 games,
+/// shadPS4's release for PS4 games. Can take a moment for a custom KytyPS5: call off the UI thread.
+fn emulator_version(platform: crate::platform::Platform, kyty: &std::path::Path) -> String {
+    match platform {
+        crate::platform::Platform::Ps4 => crate::shad::pretty(&crate::shad::load_state().installed),
+        crate::platform::Platform::Ps5 => crate::kyty::version_for(kyty),
+    }
+}

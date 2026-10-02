@@ -11,7 +11,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const EMULATOR_NAMES: [&str; 2] = ["kyty_emulator", "kyty_emulator.exe"];
+const EMULATOR_NAMES: [&str; 3] = ["kyty_emulator", "kyty_emulator.exe", "shadps4"];
 
 // ------------------------------------------------------------------ X11 helpers (xdotool)
 
@@ -88,7 +88,8 @@ fn scan_emulators(extra_name: &str) -> HashMap<u32, (String, f64)> {
             continue;
         }
         // Only an emulator that is running a game counts (not e.g. `kyty_emulator --help`).
-        let Some(mut game) = args.iter().position(|a| a == "--game").and_then(|i| args.get(i + 1)).cloned() else { continue };
+        // KytyPS5 takes `--game <dir>`, shadPS4 `-g <dir>`.
+        let Some(mut game) = args.iter().position(|a| a == "--game" || a == "-g").and_then(|i| args.get(i + 1)).cloned() else { continue };
         if !game.is_empty() && !game.starts_with('/') {
             if let Ok(cwd) = std::fs::read_link(format!("/proc/{pid}/cwd")) {
                 game = cwd.join(&game).to_string_lossy().into_owned();
@@ -199,10 +200,14 @@ impl Sessions {
         if let Some(s) = inner.live.first() {
             return Err(format!("{} is already running. Stop it first.", s.name));
         }
-        if !cfg.emulator_ok() {
+        let ps4 = game.platform == crate::platform::Platform::Ps4;
+        if ps4 && !crate::shad::emulator().is_file() {
+            return Err("shadPS4 isn't installed yet".into());
+        }
+        if !ps4 && !cfg.emulator_ok() {
             return Err(format!("Emulator not found or not executable:\n{}", cfg.emulator_path().display()));
         }
-        let emu = cfg.emulator_path();
+        let emu = if ps4 { crate::shad::emulator() } else { cfg.emulator_path() };
         let mut args: Vec<String> = vec![
             "--game".into(),
             game.path.to_string_lossy().into_owned(),
@@ -220,6 +225,10 @@ impl Sessions {
             args.push("--amd-cpu".into());
         }
         args.extend(shell_split(&cfg.extra_args));
+        if ps4 {
+            // shadPS4: game folder and fullscreen; its other settings live in its own config.
+            args = vec!["-g".into(), game.path.to_string_lossy().into_owned(), "-f".into(), cfg.fullscreen.to_string()];
+        }
         let log_dir = cache_dir().join("logs");
         let _ = std::fs::create_dir_all(&log_dir);
         let log = log_dir.join(format!("{}.log", if game.title_id.is_empty() { &game.id } else { &game.title_id }));

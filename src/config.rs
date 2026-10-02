@@ -27,6 +27,8 @@ pub struct Config {
     pub monitor: String,
     /// Keep the launcher-managed KytyPS5 on the latest official build.
     pub kyty_auto_update: bool,
+    /// Keep shadPS4 (installed with the first PS4 game) on the latest official release.
+    pub shad_auto_update: bool,
     /// Install new PS5 Launcher releases automatically (applied on the next start).
     pub app_auto_update: bool,
     /// Catalog game ids whose artwork comes from RAWG (chosen per game in the Options menu).
@@ -53,6 +55,7 @@ impl Default for Config {
             rawg_key: String::new(),
             monitor: String::new(),
             kyty_auto_update: true,
+            shad_auto_update: true,
             app_auto_update: true,
             rawg_art: Vec::new(),
         }

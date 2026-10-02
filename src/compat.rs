@@ -9,6 +9,18 @@ pub const LIST_PAGE: &str = "https://kytyps5.github.io/";
 pub const REFRESH: f64 = 6.0 * 3600.0;
 /// KytyPS5's "Game Emulation Status Report" form; reports there feed the list above.
 const REPORT_FORM: &str = "https://github.com/KytyPS5/KytyPS5/issues/new?template=kytyps5-game-emulation.yaml";
+/// shadPS4's community list for PS4 games, published as one file per update.
+const SHAD_URL: &str = "https://github.com/shadps4-compatibility/shadps4-game-compatibility/releases/latest/download/compatibility_data.json";
+pub const SHAD_LIST_PAGE: &str = "https://github.com/shadps4-compatibility/shadps4-game-compatibility/issues";
+const SHAD_REPORT_FORM: &str = "https://github.com/shadps4-compatibility/shadps4-game-compatibility/issues/new?template=game_compatibility.yml";
+
+/// The community list page for a console's emulator.
+pub fn list_page(platform: crate::platform::Platform) -> &'static str {
+    match platform {
+        crate::platform::Platform::Ps5 => LIST_PAGE,
+        crate::platform::Platform::Ps4 => SHAD_LIST_PAGE,
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Status {
@@ -160,6 +172,54 @@ fn path() -> std::path::PathBuf {
     cache_dir().join("compatibility.json")
 }
 
+fn shad_path() -> std::path::PathBuf {
+    cache_dir().join("compatibility-shadps4.json")
+}
+
+fn shad_status(s: &str) -> Option<Status> {
+    Some(match s {
+        "status-playable" | "status-ingame" => Status::InGame,
+        "status-menus" => Status::MainMenu,
+        "status-boots" => Status::Logo,
+        "status-nothing" => Status::DoesntBoot,
+        _ => return None,
+    })
+}
+
+/// shadPS4's list: { "CUSA04118": { "os-linux": { "status": "status-ingame", "last_tested": … }, … } }.
+fn parse_shad(bytes: &[u8]) -> Option<Db> {
+    let v: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let mut db = Db::new();
+    for (tid, per_os) in v.as_object()? {
+        let Some(per_os) = per_os.as_object() else { continue };
+        let on = |os: &str| per_os.get(os).and_then(|e| e["status"].as_str()).and_then(shad_status);
+        let Some(best) = per_os.values().filter_map(|e| e["status"].as_str().and_then(shad_status)).min() else { continue };
+        let linux = on("os-linux");
+        let mut platforms: Vec<String> = per_os.keys().filter_map(|k| match k.as_str() {
+            "os-linux" => Some("Linux".to_string()),
+            "os-windows" => Some("Windows".to_string()),
+            "os-macOS" => Some("macOS".to_string()),
+            _ => None,
+        }).collect();
+        platforms.sort();
+        // The Linux report's test date, else the newest one.
+        let tested = per_os.get("os-linux").and_then(|e| e["last_tested"].as_str())
+            .or_else(|| per_os.values().filter_map(|e| e["last_tested"].as_str()).max())
+            .unwrap_or_default().to_string();
+        db.insert(tid.to_uppercase(), Entry {
+            status: linux.unwrap_or(best),
+            on_linux: linux.is_some(),
+            mine: false,
+            linux,
+            windows: on("os-windows"),
+            reports: per_os.len() as u64,
+            version: tested,
+            platforms,
+        });
+    }
+    Some(db)
+}
+
 fn parse(bytes: &[u8]) -> Option<Db> {
     let v: serde_json::Value = serde_json::from_slice(bytes).ok()?;
     let mut db = Db::new();
@@ -222,28 +282,59 @@ pub fn with_mine(mut db: Db, mine: &crate::results::Results) -> Db {
 }
 
 /// Cached copy (instant) and its age in seconds.
+/// Both lists (KytyPS5 for PS5, shadPS4 for PS4) and the age of the older cached one.
 pub fn load() -> (Db, f64) {
-    let age = std::fs::metadata(path())
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.elapsed().ok())
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(f64::MAX);
-    let db = std::fs::read(path()).ok().and_then(|b| parse(&b)).unwrap_or_default();
+    let age_of = |p: std::path::PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok()
+        .and_then(|t| t.elapsed().ok()).map(|d| d.as_secs_f64()).unwrap_or(f64::MAX);
+    let age = age_of(path()).max(age_of(shad_path()));
+    let mut db = std::fs::read(path()).ok().and_then(|b| parse(&b)).unwrap_or_default();
+    db.extend(std::fs::read(shad_path()).ok().and_then(|b| parse_shad(&b)).unwrap_or_default());
     (db, age)
 }
 
+/// Download both lists; a list that can't be fetched keeps its cached copy.
 pub fn fetch() -> Result<Db, String> {
-    let bytes = http_get(URL)?;
-    let db = parse(&bytes).ok_or("unexpected data")?;
-    let _ = atomic_write(&path(), &bytes);
-    Ok(db)
+    let mut errors = Vec::new();
+    for (url, file, check) in [(URL, path(), parse as fn(&[u8]) -> Option<Db>), (SHAD_URL, shad_path(), parse_shad)] {
+        match http_get(url).and_then(|b| check(&b).map(|_| b).ok_or_else(|| "unexpected data".to_string())) {
+            Ok(bytes) => { let _ = atomic_write(&file, &bytes); }
+            Err(e) => errors.push(e),
+        }
+    }
+    if errors.len() == 2 {
+        return Err(errors.join("; "));
+    }
+    Ok(load().0)
 }
 
 /// The report form, pre-filled with the game, your result, this PC and the end of the emulator
 /// log. Nothing is sent until the player reviews it and submits it on GitHub.
-pub fn report_url(name: &str, title_id: &str, kyty_version: &str, status: Status, log: &str) -> String {
+/// The report form for the game's console: KytyPS5's for PS5 games, shadPS4's for PS4 games.
+pub fn report_url_for(name: &str, title_id: &str, emulator_version: &str, game_version: &str, status: Status, log: &str) -> String {
     let q = crate::util::query_escape;
+    if crate::platform::Platform::of_title_id(title_id) == Some(crate::platform::Platform::Ps4) {
+        let sys = system_info();
+        let label = match status {
+            Status::InGame => "Ingame",
+            Status::MainMenu => "Menus",
+            Status::Logo => "Boots",
+            Status::DoesntBoot => "Nothing",
+        };
+        let details = format!("{} on Linux.", status.meaning());
+        let log = log_excerpt(log);
+        let mut url = format!("{SHAD_REPORT_FORM}&title={}", q(&format!("{title_id} - {name}")));
+        for (field, value) in [
+            ("game-name", name), ("game-serial", title_id), ("game-version", game_version),
+            ("emulator-version", emulator_version), ("emulation-status", label), ("Operating-System", "Linux"),
+            ("processor", &sys.cpu), ("graphics-card", &sys.gpu), ("emulation-description", &details), ("log", &log),
+        ] {
+            if !value.is_empty() {
+                url.push_str(&format!("&{field}={}", q(value)));
+            }
+        }
+        return url;
+    }
+    let kyty_version = emulator_version;
     let mut url = format!("{REPORT_FORM}&title={}", q(&format!("[GAME STATUS]: {name} (linux)")));
     let sys = system_info();
     let log = log_excerpt(log);
@@ -369,6 +460,23 @@ mod tests {
     }
 
     #[test]
+    fn shadps4_list_and_ps4_report() {
+        let json = br#"{"CUSA04118":{"os-linux":{"status":"status-ingame","last_tested":"2026-10-01T22:30:38Z"},"os-windows":{"status":"status-playable","last_tested":"2026-09-01T00:00:00Z"}},
+            "CUSA00001":{"os-windows":{"status":"status-boots","last_tested":"2026-09-02T00:00:00Z"}},"CUSA00002":{"os-linux":{"status":"status-unknown"}}}"#;
+        let db = parse_shad(json).unwrap();
+        let fw = &db["CUSA04118"];
+        assert_eq!((fw.status, fw.on_linux, fw.windows), (Status::InGame, true, Some(Status::InGame)));
+        assert_eq!(fw.tested_date(), "2026-10-01");
+        assert_eq!(fw.platforms, vec!["Linux", "Windows"]);
+        assert_eq!(db["CUSA00001"].tag(), "Win · Boots");
+        assert!(!db.contains_key("CUSA00002"), "unknown statuses are skipped");
+        let url = report_url_for("Firewatch", "CUSA04118", "0.18.0", "01.08", Status::MainMenu, "");
+        assert!(url.starts_with(SHAD_REPORT_FORM));
+        assert!(url.contains("&game-serial=CUSA04118") && url.contains("&emulation-status=Menus") && url.contains("&game-version=01%2E08"));
+        assert_eq!(list_page(crate::platform::Platform::Ps4), SHAD_LIST_PAGE);
+    }
+
+    #[test]
     fn your_result_wins_on_this_pc() {
         let json = br#"{"PPSA1":{"status":"InGame","platforms":{"windows":{"status":"InGame"}}}}"#;
         let mut mine = crate::results::Results::default();
@@ -395,7 +503,7 @@ mod tests {
 
     #[test]
     fn report_url_prefills_the_form() {
-        let url = report_url("Dreaming Sarah", "PPSA02929", "KytyPS5-2026-09-30-b7a1fac", Status::DoesntBoot, "boot\n\nCould not find suitable device\n");
+        let url = report_url_for("Dreaming Sarah", "PPSA02929", "KytyPS5-2026-09-30-b7a1fac", "", Status::DoesntBoot, "boot\n\nCould not find suitable device\n");
         assert!(url.starts_with(REPORT_FORM));
         assert!(url.contains("&game-id=PPSA02929"));
         assert!(url.contains("&game-title=Dreaming%20Sarah"));
@@ -403,7 +511,7 @@ mod tests {
         assert!(url.contains("&compatibility-status=Doesn%27t%20boot"));
         assert!(url.contains("&log-file="));
         assert!(url.contains("Could%20not%20find%20suitable%20device"));
-        assert!(report_url("A", "B", "C", Status::InGame, "").find("log-file").is_none());
+        assert!(report_url_for("A", "B", "C", "", Status::InGame, "").find("log-file").is_none());
         let long = "x".repeat(200) + "\n";
         assert!(log_excerpt(&long.repeat(100)).len() < 2600);
         let crash = format!("{}--- Build ---\nOfficial build X\n--- Error ---\nCould not find suitable device\n{}", "boot line\n".repeat(500), "after\n".repeat(3));

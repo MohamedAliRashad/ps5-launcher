@@ -35,10 +35,10 @@ fn chip(icon: &str, text: impl Into<SharedString>, gold: bool) -> ChipData {
 }
 
 /// "● In-game on Linux" / "● In-game on Windows · untested on Linux" / "● Untested on KytyPS5".
-fn compat_chip(e: Option<&crate::compat::Entry>) -> ChipData {
+fn compat_chip(e: Option<&crate::compat::Entry>, platform: crate::platform::Platform) -> ChipData {
     match e {
         Some(e) => ChipData { icon: "".into(), text: e.chip_text().into(), gold: false, dot: e.status.level(), stars: 0.0 },
-        None => ChipData { icon: "".into(), text: "Untested on KytyPS5".into(), gold: false, dot: 5, stars: 0.0 },
+        None => ChipData { icon: "".into(), text: format!("Untested on {}", platform.emulator()).into(), gold: false, dot: 5, stars: 0.0 },
     }
 }
 
@@ -251,7 +251,7 @@ impl App {
     fn chips_for(&self, t: Target) -> Vec<ChipData> {
         let info = self.target_info(t);
         let g = t.game.map(|g| &self.games[g]);
-        let mut c: Vec<ChipData> = self.target_compat(t).map(|e| compat_chip(Some(e))).into_iter().collect();
+        let mut c: Vec<ChipData> = self.target_compat(t).map(|e| compat_chip(Some(e), self.target_platform(t))).into_iter().collect();
         if let Some(r) = info.as_ref().and_then(|i| i.rating.as_ref()) {
             c.push(ChipData { stars: r.score as f32, ..chip("", format!("{:.1} · {} ratings", r.score, thousands(r.total)), false) });
         }
@@ -346,7 +346,7 @@ impl App {
                 let desc = info.as_ref().map(|i| i.short.clone()).filter(|s| s.chars().count() > 30 && s.chars().any(|c| c.is_lowercase()))
                     .or_else(|| g.and_then(|g| g.description.first().cloned()))
                     .or_else(|| g.map(|g| g.excerpt.clone()))
-                    .unwrap_or_else(|| "Installed locally. Launches with the KytyPS5 emulator.".into());
+                    .unwrap_or_else(|| format!("Installed locally. Launches with the {} emulator.", self.target_platform(t).emulator()));
                 h.desc = truncate(&desc, 260).into();
                 self.hero_actions = self.actions_for(t, false);
             }
@@ -926,6 +926,7 @@ impl App {
         let g = g_owned.as_ref();
         let region = g.map(|g| g.region.clone()).unwrap_or_default();
         let ce = self.target_compat(t).cloned();
+        let ps4 = self.target_platform(t) == crate::platform::Platform::Ps4;
         let mut facts: Vec<(&str, String)> = vec![
             ("YOUR RESULT", ce.as_ref().filter(|e| e.mine).map(|e| e.status.meaning().to_string()).unwrap_or_default()),
             ("ON LINUX", ce.as_ref().and_then(|e| e.linux).map(|l| l.meaning().to_string()).unwrap_or_else(|| "Not tested yet".into())),
@@ -998,7 +999,9 @@ impl App {
                 Some(e) if e.mine => ("YOUR RESULT", e.status.meaning().to_string()),
                 Some(e) if e.on_linux => ("ON LINUX", e.status.meaning().to_string()),
                 Some(e) if e.windows.is_some() => ("ON WINDOWS · LINUX UNTESTED", e.status.meaning().to_string()),
+                Some(e) if ps4 => ("ON SHADPS4 · LINUX UNTESTED", e.status.meaning().to_string()),
                 Some(e) => ("ON KYTYPS5 · LINUX UNTESTED", e.status.meaning().to_string()),
+                None if ps4 => ("ON SHADPS4", "Not tested yet".to_string()),
                 None => ("ON KYTYPS5", "Not tested yet".to_string()),
             },
             ("DOWNLOAD SIZE", g.map(|g| g.size.clone()).filter(|size| !size.is_empty()).unwrap_or_else(|| "Unknown".into())),
@@ -1007,7 +1010,7 @@ impl App {
         ].into_iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| Fact { key: k.into(), value: v.into() }).collect();
         h.facts = model(summary.chunks(3).map(|c| FactRow { items: model(c.to_vec()) }).collect());
         let details: Vec<Fact> = facts.into_iter().filter(|(k, v)| !v.is_empty()
-            && !matches!(*k, "SEEDERS · SNAPSHOT" | "LEECHERS · SNAPSHOT" | "OBSERVED · NOT LIVE" | "ON KYTYPS5" | "SIZE" | "PUBLISHER" | "RELEASE" | "REGION"))
+            && !matches!(*k, "SEEDERS · SNAPSHOT" | "LEECHERS · SNAPSHOT" | "OBSERVED · NOT LIVE" | "ON KYTYPS5" | "ON SHADPS4" | "SIZE" | "PUBLISHER" | "RELEASE" | "REGION"))
             .map(|(k, v)| Fact { key: k.into(), value: v.into() }).collect();
         h.details = model(vec![FactRow { items: model(details) }]);
 
