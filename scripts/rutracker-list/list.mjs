@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { chromium } from 'playwright-core';
+import { spawn, execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
@@ -41,9 +42,11 @@ const pending = new Set([platform.source]);
 const visited = new Set();
 const failures = [];
 let context;
+let browser;
+let chrome;
 let enriched;
 let interrupted = false;
-const interrupt = () => { interrupted = true; void context?.close(); };
+const interrupt = () => { interrupted = true; void context?.close(); chrome?.kill(); };
 process.once('SIGINT', interrupt);
 process.once('SIGTERM', interrupt);
 
@@ -52,18 +55,24 @@ try {
   console.log(includeMagnets
     ? 'Reading forum/topic HTML and magnet strings only; no magnet links are opened and no files are downloaded.'
     : 'Only forum listings will be collected; no topics, magnets, torrents or game files are fetched.');
-  context = await chromium.launchPersistentContext(profile, {
-    channel: 'chrome', headless, acceptDownloads: false, serviceWorkers: 'block',
-    viewport: { width: 1280, height: 800 },
-  });
+  if (headless) {
+    context = await chromium.launchPersistentContext(profile, {
+      channel: 'chrome', headless, acceptDownloads: false, serviceWorkers: 'block',
+      viewport: { width: 1280, height: 800 },
+    });
+  } else {
+    // Cloudflare's check keeps looping in a browser that automation launched (automation flag,
+    // navigator.webdriver). Start the user's own Chrome normally, with this dedicated profile,
+    // and only attach to it afterwards.
+    ({ browser, chrome } = await startChrome(profile));
+    context = browser.contexts()[0];
+  }
   await context.route('**/*', route => {
     const request = route.request();
     const url = new URL(request.url());
     if (!['https:', 'http:'].includes(url.protocol)
         || /\/(?:dl|download)\.php$/.test(url.pathname)
-        || /\.(?:torrent|rar|7z|zip|pkg)$/i.test(url.pathname)
-        || ['media', 'font'].includes(request.resourceType())
-        || (request.resourceType() === 'image' && !url.hostname.endsWith('.cloudflare.com'))) {
+        || /\.(?:torrent|rar|7z|zip|pkg)$/i.test(url.pathname)) {
       return route.abort();
     }
     if (request.isNavigationRequest() && request.frame() === request.frame().page().mainFrame()
@@ -115,7 +124,8 @@ try {
 } catch (error) {
   failures.push({ status: interrupted ? 'cancelled' : 'browser_error', message: error.message });
 } finally {
-  await context?.close().catch(() => {});
+  await (browser ? browser.close() : context?.close())?.catch(() => {});
+  chrome?.kill();
 }
 
 const topics = mergeTopics(pages);
@@ -150,3 +160,23 @@ if (successful) {
 console.log(`${successful ? 'Complete' : 'Partial/blocked'}: ${report.topic_count} topics; ${visited.size} listing pages visited in this run.`);
 console.log(`Saved ${successful ? output : `${output}.partial.json`}`);
 process.exitCode = successful ? 0 : 2;
+/** Launch Chrome as a normal process with a debugging port, then attach Playwright to it. */
+async function startChrome(profileDir) {
+  const binary = ['google-chrome-stable', 'google-chrome', 'chromium', 'chromium-browser'].find(name => {
+    try { execFileSync('which', [name], { stdio: 'ignore' }); return true; } catch { return false; }
+  });
+  if (!binary) throw new Error('Google Chrome or Chromium is required');
+  const port = 20000 + Math.floor(Math.random() * 20000);
+  const child = spawn(binary, [`--user-data-dir=${profileDir}`, `--remote-debugging-port=${port}`,
+    '--remote-debugging-address=127.0.0.1', '--no-first-run', '--no-default-browser-check', 'about:blank'],
+  { stdio: 'ignore' });
+  for (let attempt = 0; attempt < 60; attempt++) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/json/version`);
+      if (response.ok) return { browser: await chromium.connectOverCDP(`http://127.0.0.1:${port}`), chrome: child };
+    } catch { /* still starting */ }
+    await new Promise(done => setTimeout(done, 500));
+  }
+  child.kill();
+  throw new Error('Chrome did not start; close any Chrome window using the collector profile and retry');
+}
