@@ -226,11 +226,29 @@ installation itself never executes their contents.
 Loose game folders are copied. RAR, ZIP, 7z and TAR-family decoding uses dynamically
 loaded system libarchive; no archive helper process is executed. Matching multipart
 RAR and split 7z volumes are ordered and checked for gaps, but decoder support varies
-with the installed libarchive version. Password-protected archives, PKG decryption,
-update/DLC merging, and archives containing multiple complete games are unsupported.
+with the installed libarchive version. Password-protected archives, retail PKG
+decryption, update/DLC merging, and archives containing multiple complete games are
+unsupported.
 An unsupported or malformed archive fails with an explanation instead of publishing
 a partial library entry. RAR4 stored, ZIP, 7z/split 7z and TAR generated fixtures were
 tested on libarchive 3.7.2; compressed/solid/multipart RAR variants are not certified.
+
+PS5 **debug packages** (`.pkg` files that start with `7F 46 49 48`, "FIH") are unpacked
+by `src/pkg.rs`, without a helper process and without any key. The package's outer file
+system is readable, `sce_sys` files come from its metadata block, and the game files are
+rebuilt block by block from `pfs_image.dat` using `naps_pkg_layout.dat`. Blocks are stored
+raw or as Oodle Kraken with the headers removed. The launcher puts the headers back and
+decodes them with the MIT-licensed `oozextract` crate. A release folder may hold several
+packages. The installer takes the one that holds a game (`sce_sys/param.json` and
+`eboot.bin`), preferring the package nearest the top of the folder, so a backport overlay
+or DLC pack beside the base game is ignored. Equal depth is refused. Retail packages
+(signed byte `0x80`) need a console key and are refused.
+
+The package format is not documented by its vendor. The reader follows layouts seen in
+other open tools, and generated packages cover the stored, entropy-only and error paths in
+the unit tests. The Kraken LZ path can only be checked against a real package. Run
+`PS5_TEST_PKG=/path/to/game.pkg cargo test --release real_package -- --ignored` to do so;
+that test lists the package, reads `param.json` and checks that `eboot.bin` is a SELF file.
 
 **Validation is not an authenticity, malware or universal checksum guarantee.**
 In particular, libarchive 3.7.2 accepted corrupted stored-RAR4 payload bytes despite
