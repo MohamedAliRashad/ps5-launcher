@@ -3,17 +3,19 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { platformFrom } from './platforms.mjs';
 
-const input = fileURLToPath(new URL('../../dist/rutracker/ps5-topics.json', import.meta.url));
-const output = fileURLToPath(new URL('../../assets/rutracker/ps5-topics.json', import.meta.url));
+const platform = platformFrom(process.argv.slice(2));
+const input = fileURLToPath(new URL(`../../dist/rutracker/${platform.key}-topics.json`, import.meta.url));
+const output = fileURLToPath(new URL(`../../assets/rutracker/${platform.key}-topics.json`, import.meta.url));
 const bytes = await readFile(input);
 const report = JSON.parse(bytes);
 if (!report.complete || report.translation?.language !== 'en'
     || !Array.isArray(report.topics) || !report.topics.length
     || report.topic_count !== report.topics.length
     || new Set(report.topics.map(topic => topic.id)).size !== report.topics.length
-    || report.source !== 'https://rutracker.net/forum/viewforum.php?f=546') {
-  throw new Error('Only a complete, English, deduplicated PS5 forum snapshot can be bundled');
+    || report.source !== platform.source) {
+  throw new Error(`Only a complete, English, deduplicated ${platform.tag} forum snapshot can be bundled`);
 }
 await mkdir(dirname(output), { recursive: true });
 await writeFile(`${output}.tmp`, bytes);

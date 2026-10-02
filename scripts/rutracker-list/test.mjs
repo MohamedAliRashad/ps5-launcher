@@ -4,6 +4,28 @@ import { chromium } from 'playwright-core';
 import { readListing, mergeTopics } from './listing.mjs';
 import { collectMagnetBatch, applyMagnets, normalizeGameInfo } from './magnets.mjs';
 
+test('PS4 forum: reads forum 973 and keeps only [PS4] topics', async () => {
+  const { PLATFORMS } = await import('./platforms.mjs');
+  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.route('https://rutracker.net/**', route => route.fulfill({ contentType: 'text/html', body: '<title>PS4</title>' }));
+    await page.goto('https://rutracker.net/forum/viewforum.php?f=973');
+    await page.setContent(`<title>PS4</title><table>
+      <tr><td><a class="torTopic" href="viewtopic.php?t=300">[PS4] Example Game [CUSA12345]</a></td></tr>
+      <tr><td><a class="torTopic" href="viewtopic.php?t=301">[PS5] Wrong console</a></td></tr>
+    </table><a href="viewforum.php?f=973&amp;start=50">2</a>`);
+    const result = await page.evaluate(readListing, PLATFORMS.ps4);
+    assert.equal(result.status, 'ok');
+    assert.deepEqual(result.topics.map(t => t.id), ['300']);
+    assert.equal(result.pageUrls[1], 'https://rutracker.net/forum/viewforum.php?f=973&start=50');
+    // The PS5 reader refuses the PS4 forum page.
+    assert.equal((await page.evaluate(readListing, PLATFORMS.ps5)).status, 'unexpected_page');
+  } finally {
+    await browser.close();
+  }
+});
+
 test('forum DOM reader: pagination, metadata, duplicates and challenge handling', async () => {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   try {

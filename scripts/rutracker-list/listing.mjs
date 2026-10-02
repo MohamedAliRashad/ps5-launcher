@@ -1,5 +1,5 @@
 /** Self-contained DOM reader; runs unchanged in Playwright's page.evaluate(). */
-export function readListing({ forumId = '546' } = {}) {
+export function readListing({ forumId = '546', tag = 'PS5' } = {}) {
   const base = new URL(document.location.href);
   const clean = value => (value || '').replace(/\s+/g, ' ').trim();
   const integer = element => {
@@ -25,7 +25,7 @@ export function readListing({ forumId = '546' } = {}) {
     const url = new URL(anchor.getAttribute('href'), base);
     const id = url.searchParams.get('t');
     if (url.origin !== base.origin || url.pathname !== '/forum/viewtopic.php'
-        || !/^\d+$/.test(id || '') || !/^\[PS5\]/i.test(title)) {
+        || !/^\d+$/.test(id || '') || !title.toUpperCase().startsWith(`[${tag.toUpperCase()}]`)) {
       skipped++;
       continue;
     }

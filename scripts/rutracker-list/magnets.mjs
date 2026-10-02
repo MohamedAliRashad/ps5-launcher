@@ -52,7 +52,7 @@ export async function collectMagnetBatch({ topicIds, delayMs = 1500 }) {
     }
     const heading = lines[0];
     info.name = heading && !heading.includes(':') && heading.length < 180
-      ? heading : clean(doc.querySelector('#topic-title')?.textContent).replace(/^\[PS5\]\s*/i, '').split(' [')[0];
+      ? heading : clean(doc.querySelector('#topic-title')?.textContent).replace(/^\[PS\d\]\s*/i, '').split(' [')[0];
     if (!info.title_id) info.title_id = /\b(?:PPSA|CUSA)\d{5}\b/.exec(JSON.stringify(details))?.[0] || null;
     const urls = new Set();
     for (const img of body.querySelectorAll('img.postImg, var.postImg')) {

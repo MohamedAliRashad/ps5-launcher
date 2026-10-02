@@ -6,6 +6,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readListing, mergeTopics } from './listing.mjs';
 import { collectMagnetBatch, applyMagnets } from './magnets.mjs';
+import { platformFrom } from './platforms.mjs';
 
 const args = process.argv.slice(2);
 function option(name, fallback) {
@@ -15,11 +16,12 @@ function option(name, fallback) {
   return args[index + 1];
 }
 if (args.includes('--help')) {
-  console.log('Usage: node list.mjs [--output path] [--max-pages 200] [--verification-timeout 180] [--headless] [--include-magnets] [--enrich-existing path]\n'
+  console.log('Usage: node list.mjs [--platform ps5|ps4] [--output path] [--max-pages 200] [--verification-timeout 180] [--headless] [--include-magnets] [--enrich-existing path]\n'
     + 'Reads listing/topic HTML only. Complete verification/login manually. Never opens magnet links or downloads torrents.');
   process.exit(0);
 }
-const output = resolve(option('--output', fileURLToPath(new URL('../../dist/rutracker/ps5-topics.json', import.meta.url))));
+const platform = platformFrom(args);
+const output = resolve(option('--output', fileURLToPath(new URL(`../../dist/rutracker/${platform.key}-topics.json`, import.meta.url))));
 const maxPages = Number(option('--max-pages', '200'));
 const headless = args.includes('--headless');
 const existingPath = option('--enrich-existing', null);
@@ -35,7 +37,7 @@ if (!Number.isSafeInteger(maxPages) || maxPages < 1 || maxPages > 200
 }
 const profile = resolve(homedir(), '.cache/ps5-launcher/rutracker-list-browser');
 const pages = [];
-const pending = new Set(['https://rutracker.net/forum/viewforum.php?f=546']);
+const pending = new Set([platform.source]);
 const visited = new Set();
 const failures = [];
 let context;
@@ -74,7 +76,7 @@ try {
     pending.delete(url);
     if (visited.has(url)) continue;
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
-    let result = await page.evaluate(readListing);
+    let result = await page.evaluate(readListing, platform);
     if (result.status !== 'ok' && verificationSeconds > 0) {
       console.log(`Waiting up to ${verificationSeconds}s for manual verification/login at ${url}`);
       try {
@@ -82,7 +84,7 @@ try {
           && document.querySelector('a.torTopic[href], a.topictitle[href]') !== null,
         null, { polling: 1000, timeout: verificationSeconds * 1000 });
       } catch { /* Report the actual page rather than interpreting a challenge as an empty result. */ }
-      result = await page.evaluate(readListing);
+      result = await page.evaluate(readListing, platform);
     }
     if (result.status !== 'ok') {
       failures.push({ url, status: result.status });
@@ -92,7 +94,7 @@ try {
     if (existing) { pending.clear(); break; }
     pages.push(result);
     for (const next of result.pageUrls) if (!visited.has(next)) pending.add(next);
-    console.log(`Page ${visited.size}: ${result.topics.length} PS5 topics; ${pending.size} pages remaining`);
+    console.log(`Page ${visited.size}: ${result.topics.length} ${platform.tag} topics; ${pending.size} pages remaining`);
     // Sequential, polite requests. This is rate limiting, not challenge solving.
     if (pending.size) await new Promise(done => setTimeout(done, 1500));
   }
@@ -119,10 +121,11 @@ try {
 const topics = mergeTopics(pages);
 const complete = !interrupted && failures.length === 0 && pending.size === 0;
 let report = existing ? { ...existing } : {
-  source: 'https://rutracker.net/forum/viewforum.php?f=546',
+  source: platform.source,
+  platform: platform.key,
   collected_at: new Date().toISOString(),
   complete,
-  scope: 'PS5-tagged topic listings in forum 546; not a count of distinct games or an atomic site-wide snapshot',
+  scope: `${platform.tag}-tagged topic listings in forum ${platform.forumId}; not a count of distinct games or an atomic site-wide snapshot`,
   pages_visited: [...visited],
   pages_remaining: [...pending],
   failures,

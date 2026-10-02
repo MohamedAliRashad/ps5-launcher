@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { access, copyFile, readFile, rename, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { englishCatalog, hasRussian, isProtected, prepareCatalog, protectTechnical, translationInputs } from './english.mjs';
+import { platformFrom } from './platforms.mjs';
 
-const output = fileURLToPath(new URL('../../dist/rutracker/ps5-topics.json', import.meta.url));
+const platform = platformFrom(process.argv.slice(2));
+const output = fileURLToPath(new URL(`../../dist/rutracker/${platform.key}-topics.json`, import.meta.url));
 const cachePath = fileURLToPath(new URL('../../dist/rutracker/english-translations.json', import.meta.url));
 const original = JSON.parse(await readFile(process.argv.includes('--from-original') ? `${output}.ru-backup.json` : output, 'utf8'));
 const prepared = prepareCatalog(original);
