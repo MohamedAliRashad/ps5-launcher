@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 
 pub const CATALOG_TTL: f64 = 6.0 * 3600.0;
-pub const CATALOG_SCHEMA: u32 = 3;
+pub const CATALOG_SCHEMA: u32 = 4;
 pub const SOURCE: &str = "https://rutracker.net/forum/viewforum.php?f=546";
 pub const PS4_SOURCE: &str = "https://rutracker.net/forum/viewforum.php?f=973";
 const BUNDLED: &[u8] = include_bytes!("../assets/rutracker/ps5-topics.json");
@@ -205,6 +205,17 @@ pub fn import(bytes: &[u8]) -> Result<CatalogFile, String> {
     import_for(&SOURCES[0], bytes)
 }
 
+/// The PS4 forum also carries apps (YouTube, Media Player), system software and forum
+/// threads (rules, chat); the Library lists games only.
+fn is_game(title: &str, genre: &str, title_id: &str, magnet: &str) -> bool {
+    static NOT_GAME: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(
+        r"(?i)\b(firmware|exploits?|ps4hen|theme pack|psnow|ps now|shadps4)\b").unwrap());
+    let app = ["app", "apps", "application", "applications", "program", "programs", "software", "media", "utility", "utilities"]
+        .iter().any(|g| genre.eq_ignore_ascii_case(g));
+    let thread = magnet.is_empty() && title_id.is_empty() && genre.is_empty();
+    !app && !thread && !NOT_GAME.is_match(title)
+}
+
 fn import_for(src: &Source, bytes: &[u8]) -> Result<CatalogFile, String> {
     let report: Value = serde_json::from_slice(bytes).map_err(|error| format!("Invalid RuTracker JSON: {error}"))?;
     if report["complete"].as_bool() != Some(true) || report["source"].as_str() != Some(src.url) {
@@ -239,6 +250,7 @@ fn import_for(src: &Source, bytes: &[u8]) -> Result<CatalogFile, String> {
             .filter_map(Value::as_str).filter(|url| url.starts_with("https://") || url.starts_with("http://"))
             .map(str::to_string).collect();
         let candidate = text(topic, "magnet");
+        if !is_game(&title, &genre, &raw_id, &candidate) { continue; }
         let magnet = if candidate.starts_with("magnet:?") && MAGNET_RE.is_match(&candidate) { candidate } else { String::new() };
         let multiplayer = text(&info, "multiplayer");
         let mode = match multiplayer.as_str() { "No" | "None" => "Single player".to_string(), "Yes" => "Multiplayer".to_string(), _ => multiplayer };
@@ -315,6 +327,21 @@ mod tests {
         let ps5 = fixture(serde_json::json!([{ "id": "100", "title": "[PS5] Example [EUR]", "game_info": { "title_id": "PPSA12345" } }]));
         let merged = merge(vec![import(&ps5).unwrap(), file]);
         assert_eq!(merged.games.iter().map(|g| (g.id, g.platform)).collect::<Vec<_>>(), vec![(900, Platform::Ps4), (100, Platform::Ps5)]);
+    }
+
+    #[test]
+    fn apps_system_software_and_forum_threads_are_not_games() {
+        let bytes = fixture(serde_json::json!([
+            { "id": "1", "title": "[PS5] YouTube [EUR] [2.23]", "magnet": "magnet:?xt=urn:btih:FFEA223A07AB3759DD3C037B0EB4B3992700553A", "game_info": { "genre": "App", "title_id": "PPSA01116" } },
+            { "id": "2", "title": "[PS5] SHAREfactory [EUR]", "game_info": { "genre": "Media", "title_id": "PPSA00572" } },
+            { "id": "3", "title": "[PS5] System firmware version 1.52 [RUS]", "game_info": { "genre": "Software" } },
+            { "id": "4", "title": "[PS5] 4.05 + PS4HEN", "magnet": "magnet:?xt=urn:btih:FFEA223A07AB3759DD3C037B0EB4B3992700553B" },
+            { "id": "5", "title": "[PS5] Fludilka" },
+            { "id": "6", "title": "[PS5] Far Cry 5 [EUR/RUS] (v1.00)", "magnet": "magnet:?xt=urn:btih:FFEA223A07AB3759DD3C037B0EB4B3992700553C" },
+            { "id": "7", "title": "[PS5] Patapon 3 [USA]", "game_info": { "genre": "Action Adventure, Rhythm, Music", "title_id": "PPSA12345" } }
+        ]));
+        let file = import(&bytes).unwrap();
+        assert_eq!(file.games.iter().map(|g| g.id).collect::<Vec<_>>(), vec![7, 6]);
     }
 
     #[test]
