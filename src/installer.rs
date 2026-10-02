@@ -392,6 +392,13 @@ impl Source {
 // Identify exactly one archive family. The ordered paths are passed as pinned fds
 // to libarchive's multi-volume reader (also concatenates split .7z.001 streams).
 fn volumes(plan: &Plan) -> Result<Option<Vec<String>>> {
+    let mut families = volume_groups(plan)?;
+    ensure!(families.len() <= 1, "Multiple independent archives found; choose a single release folder");
+    Ok(families.pop())
+}
+
+// Every complete archive family in the source, each as its ordered volume list.
+fn volume_groups(plan: &Plan) -> Result<Vec<Vec<String>>> {
     let part = regex::Regex::new(r"(?i)^(.*)\.part(\d+)\.rar$").unwrap();
     let split = regex::Regex::new(r"(?i)^(.*\.7z)\.(\d{3})$").unwrap();
     let old = regex::Regex::new(r"(?i)^(.*)\.r(\d{2})$").unwrap();
@@ -413,14 +420,42 @@ fn volumes(plan: &Plan) -> Result<Option<Vec<String>>> {
         ensure!(n > 0 && n <= MAX_ENTRIES as u32, "Invalid multipart volume number");
         ensure!(groups.entry(family).or_default().insert(n, p.clone()).is_none(), "Duplicate multipart volume number");
     }
-    ensure!(groups.len() <= 1, "Multiple independent archives found; choose a single release folder");
-    let Some((_, group)) = groups.into_iter().next() else { return Ok(None); };
-    let mut out = Vec::new();
-    for (i, (n, path)) in group.into_iter().enumerate() {
-        ensure!(n == i as u32 + 1, "Missing multipart volume {}; all volumes must be complete", i + 1);
-        out.push(path);
+    let mut families = Vec::new();
+    for (_, group) in groups {
+        let mut out = Vec::new();
+        for (i, (n, path)) in group.into_iter().enumerate() {
+            ensure!(n == i as u32 + 1, "Missing multipart volume {}; all volumes must be complete", i + 1);
+            out.push(path);
+        }
+        families.push(out);
     }
-    Ok(Some(out))
+    Ok(families)
+}
+
+// A release folder can ship extras next to the game, such as a firmware backport overlay.
+// An archive holds a game when it has a sce_sys/param.json; the launcher installs the one
+// archive that does, and refuses to guess when zero or several do.
+fn holds_game(plan: &Plan) -> bool {
+    plan.entries.iter().any(|e| !e.directory && (e.path == "sce_sys/param.json" || e.path.ends_with("/sce_sys/param.json")))
+}
+
+fn pick_game<T>(candidates: Vec<(Vec<String>, T, bool)>) -> Result<(Vec<String>, T)> {
+    let names = |hits: &[&(Vec<String>, T, bool)]| hits.iter().map(|c| c.0[0].clone()).collect::<Vec<_>>().join(", ");
+    let games: Vec<_> = candidates.iter().filter(|c| c.2).collect();
+    ensure!(!games.is_empty(), "Multiple independent archives found and none holds a game (sce_sys/param.json); choose a single release folder");
+    ensure!(games.len() == 1, "Multiple archives hold a game ({}); choose a single release folder", names(&games));
+    let (paths, plan, _) = candidates.into_iter().find(|c| c.2).unwrap();
+    Ok((paths, plan))
+}
+
+fn select_archive(api: &Api, source: &Source, families: Vec<Vec<String>>, cancel: &AtomicBool) -> Result<(Vec<String>, Plan)> {
+    let mut candidates = Vec::new();
+    for paths in families {
+        let plan = inspect_archive(api, source, &paths, cancel)?;
+        let game = holds_game(&plan);
+        candidates.push((paths, plan, game));
+    }
+    pick_game(candidates)
 }
 
 type Handle = *mut libc::c_void;
@@ -431,7 +466,7 @@ struct Api {
     new: unsafe extern "C" fn() -> Handle, formats: Unary, filters: Unary,
     open: unsafe extern "C" fn(Handle, *const *const libc::c_char, usize) -> libc::c_int,
     next: unsafe extern "C" fn(Handle, *mut Handle) -> libc::c_int,
-    data: unsafe extern "C" fn(Handle, *mut libc::c_void, usize) -> isize,
+    data_block: unsafe extern "C" fn(Handle, *mut *const libc::c_void, *mut usize, *mut i64) -> libc::c_int,
     skip: Unary, free: Unary, error: Text, pathname: Text, hardlink: Text, symlink: Text,
     size: unsafe extern "C" fn(Handle) -> i64, size_set: Unary,
     kind: unsafe extern "C" fn(Handle) -> libc::mode_t, encrypted: Unary,
@@ -449,7 +484,7 @@ impl Api {
             macro_rules! sym { ($name:literal) => { *lib.get(concat!($name, "\0").as_bytes()).context(concat!("Missing libarchive symbol ", $name))? }; }
             Ok(Self { new: sym!("archive_read_new"), formats: sym!("archive_read_support_format_all"),
                 filters: sym!("archive_read_support_filter_all"), open: sym!("archive_read_open_filenames"),
-                next: sym!("archive_read_next_header"), data: sym!("archive_read_data"),
+                next: sym!("archive_read_next_header"), data_block: sym!("archive_read_data_block"),
                 skip: sym!("archive_read_data_skip"), free: sym!("archive_read_free"),
                 error: sym!("archive_error_string"), pathname: sym!("archive_entry_pathname"),
                 hardlink: sym!("archive_entry_hardlink"), symlink: sym!("archive_entry_symlink"),
@@ -504,6 +539,21 @@ impl<'a> Archive<'a> {
             ensure!(size >= 0 && (!directory || size == 0), "Invalid declared archive size");
             Ok(Some(Entry { path, directory, size: size as u64 }))
         }
+    }
+    // Next block of the current entry's data, or None at its end. Reads with
+    // archive_read_data_block because archive_read_data can fail with a bogus
+    // "Block checksum error" at the end of some RAR5 files (libarchive #3352, fixed in #3361).
+    // The slice is valid until the next call. Blocks must follow each other without gaps.
+    fn block(&self, expected_offset: u64) -> Result<Option<&[u8]>> {
+        let mut data: *const libc::c_void = std::ptr::null();
+        let (mut size, mut offset) = (0usize, 0i64);
+        let code = unsafe { (self.api.data_block)(self.handle, &mut data, &mut size, &mut offset) };
+        if code == 1 { return Ok(None); } // ARCHIVE_EOF
+        self.status(code, "Extract archive data (corruption, password, or missing volume)")?;
+        ensure!(offset >= 0 && offset as u64 == expected_offset, "Archive entry has sparse or out-of-order data; refusing to install");
+        if size == 0 { return Ok(Some(&[])); }
+        ensure!(!data.is_null(), "libarchive returned a null data block");
+        Ok(Some(unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) }))
     }
     fn verify_sources(&self, source: &Source, volumes: &[String]) -> Result<()> {
         for (file, path) in self.files.iter().zip(volumes) {
@@ -632,7 +682,6 @@ fn copy_folder(source: &Source, output: &Dir, cancel: &AtomicBool, progress: Pro
 fn extract(api: &Api, source: &Source, paths: &[String], plan: &Plan, output: &Dir, cancel: &AtomicBool, progress: Progress<'_>) -> Result<()> {
     let archive = Archive::open(api, source, paths)?;
     let mut done = 0u64;
-    let mut buf = vec![0u8; 256 * 1024];
     for expected in &plan.entries {
         check_cancel(cancel)?;
         let entry = archive.header()?.context("Archive truncated since inspection")?;
@@ -644,14 +693,11 @@ fn extract(api: &Api, source: &Source, paths: &[String], plan: &Plan, output: &D
             let mut count = 0u64;
             loop {
                 check_cancel(cancel)?;
-                let n = unsafe { (api.data)(archive.handle, buf.as_mut_ptr().cast(), buf.len()) };
-                if n < 0 { archive.status(n as i32, "Extract archive data (corruption, password, or missing volume)")?; }
-                if n == 0 { break; }
-                ensure!(n as usize <= buf.len(), "Invalid libarchive read length");
-                count = count.checked_add(n as u64).context("Output size overflow")?;
-                done = done.checked_add(n as u64).context("Total output overflow")?;
+                let Some(chunk) = archive.block(count)? else { break; };
+                count = count.checked_add(chunk.len() as u64).context("Output size overflow")?;
+                done = done.checked_add(chunk.len() as u64).context("Total output overflow")?;
                 ensure!(count <= entry.size && done <= plan.total, "Archive output exceeds inspected header size");
-                target.write_all(&buf[..n as usize])?;
+                target.write_all(chunk)?;
                 progress(State::Extracting, done, plan.total);
             }
             ensure!(count == entry.size, "Archive entry truncated: {}", entry.path);
@@ -749,9 +795,20 @@ fn install(req: &Request, cancel: &AtomicBool, progress: Progress<'_>, commit: &
     check_cancel(cancel)?;
     progress(State::Inspecting, 0, 0);
     let source = Source::inspect(req, cancel)?;
-    let paths = volumes(&source.plan)?;
-    let api = if paths.is_some() { Some(Api::load()?) } else { None };
-    let archive_plan = if let Some(paths) = &paths { Some(inspect_archive(api.as_ref().unwrap(), &source, paths, cancel)?) } else { None };
+    let mut families = volume_groups(&source.plan)?;
+    let api = if families.is_empty() { None } else { Some(Api::load()?) };
+    let (paths, archive_plan) = match families.len() {
+        0 => (None, None),
+        1 => {
+            let paths = families.pop().unwrap();
+            let plan = inspect_archive(api.as_ref().unwrap(), &source, &paths, cancel)?;
+            (Some(paths), Some(plan))
+        }
+        _ => {
+            let (paths, plan) = select_archive(api.as_ref().unwrap(), &source, families, cancel)?;
+            (Some(paths), Some(plan))
+        }
+    };
     let image = exfat_image(&source)?;
     ensure!(image.is_none() || paths.is_none(), "This download has both an archive and a disk image; choose a single release folder");
     let volume = match &image { Some(path) => Some(crate::exfat::Volume::open(source.file(path)?).context("Open exFAT disk image")?), None => None };
@@ -1142,6 +1199,45 @@ mod tests {
         }
     }
 
+    // The Minecraft release ships the game next to a firmware backport overlay. Install the game
+    // and leave both archives in the torrent folder untouched.
+    #[test]
+    fn install_picks_the_game_archive_and_ignores_the_overlay_archive() {
+        let (t, req) = fixture(); let input = t.path().join("generated"); game(&input);
+        let overlay = t.path().join("overlay");
+        fs::create_dir_all(overlay.join("fakelib")).unwrap();
+        fs::write(overlay.join("eboot.bin"), b"backport eboot").unwrap();
+        fs::write(overlay.join("fakelib/libSceAgc.sprx"), b"fake").unwrap();
+        let pack = |dir: &Path, name: &str, items: &[&str]| {
+            let result = std::process::Command::new(seven_zip()).current_dir(dir)
+                .args(["a", "-bd", "-y", "-tzip"]).arg(req.source.join(name)).args(items).output().unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        };
+        pack(&input, "PPSA12345-app.zip", &["sce_sys", "eboot.bin", "data"]);
+        pack(&overlay, "Backport PPSA12345 4.00.zip", &["eboot.bin", "fakelib"]);
+        fs::write(req.source.join("ps5-backport.elf"), b"loose file").unwrap();
+        let before: Vec<_> = fs::read_dir(&req.source).unwrap().map(|e| { let p=e.unwrap().path(); let d=Sha256::digest(fs::read(&p).unwrap()); (p,d) }).collect();
+        let p = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap();
+        assert_eq!(fs::read(p.join("sce_sys/param.json")).unwrap(), PARAM);
+        assert_eq!(fs::read(p.join("eboot.bin")).unwrap(), b"not an executable; generated bytes\0\xff");
+        assert!(!p.join("fakelib").exists(), "the overlay must not be installed");
+        for (path, digest) in before { assert_eq!(Sha256::digest(fs::read(path).unwrap()), digest); }
+        clean(&req);
+    }
+
+    #[test]
+    fn two_game_archives_are_still_refused() {
+        let (t, req) = fixture(); let input = t.path().join("generated"); game(&input);
+        for name in ["one.zip", "two.zip"] {
+            let result = std::process::Command::new(seven_zip()).current_dir(&input)
+                .args(["a", "-bd", "-y", "-tzip"]).arg(req.source.join(name)).args(["sce_sys", "eboot.bin", "data"]).output().unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        }
+        let error = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap_err();
+        assert!(format!("{error:#}").contains("Multiple archives hold a game"), "{error:#}");
+        assert!(!req.destination.exists() || fs::read_dir(&req.destination).unwrap().next().is_none());
+    }
+
     #[test]
     fn malicious_archive_headers_rejected_before_extraction() {
         let bad = vec![
@@ -1218,6 +1314,35 @@ mod tests {
         }
         assert_eq!(volumes(&plan(&["x.part02.rar", "x.part01.rar"])).unwrap().unwrap(), ["x.part01.rar", "x.part02.rar"]);
         assert_eq!(volumes(&plan(&["x.r01", "x.rar", "x.r00"])).unwrap().unwrap(), ["x.rar", "x.r00", "x.r01"]);
+    }
+
+    #[test]
+    fn release_folder_with_overlay_installs_only_the_archive_that_holds_the_game() {
+        let plan = |entries: &[&str]| {
+            let mut p = Plan::default();
+            for e in entries { p.add(Entry { path: (*e).into(), size: 1, directory: false }).unwrap(); } p
+        };
+        // The Minecraft release: the game archive, a firmware backport overlay and a loose ELF.
+        let source = plan(&["PPSA17221-app.rar", "Backpork PPSA17221 4.00.rar", "ps5-backpork.elf"]);
+        assert_eq!(volume_groups(&source).unwrap().len(), 2);
+        assert!(volumes(&source).is_err(), "volumes() still refuses several families");
+        let game = plan(&["PPSA17221-app/eboot.bin", "PPSA17221-app/sce_sys/param.json"]);
+        let overlay = plan(&["Backpork 4.00/eboot.bin", "Backpork 4.00/fakelib/libSceAgc.sprx"]);
+        assert!(holds_game(&game));
+        assert!(!holds_game(&overlay));
+        assert!(holds_game(&plan(&["sce_sys/param.json", "eboot.bin"])), "game at the archive root");
+        let (paths, kept) = pick_game(vec![
+            (vec!["Backpork PPSA17221 4.00.rar".into()], overlay, false),
+            (vec!["PPSA17221-app.rar".into()], game, true),
+        ]).unwrap();
+        assert_eq!(paths, ["PPSA17221-app.rar"]);
+        assert!(holds_game(&kept));
+        // Zero or several games: refuse and name the problem.
+        let none = pick_game(vec![(vec!["a.rar".into()], (), false), (vec!["b.rar".into()], (), false)]).unwrap_err();
+        assert!(format!("{none:#}").contains("none holds a game"));
+        let many = pick_game(vec![(vec!["a.rar".into()], (), true), (vec!["b.rar".into()], (), true)]).unwrap_err();
+        let message = format!("{many:#}");
+        assert!(message.contains("a.rar") && message.contains("b.rar"), "{message}");
     }
 
     #[test]
