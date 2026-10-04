@@ -98,8 +98,9 @@ impl App {
                     }
                     Err(e) => {
                         crate::log!("KytyPS5 update check failed: {e}");
-                        app.kyty.error = format!("Update check failed: {e}");
+                        // Like the launcher's: only a check you asked for shows an error.
                         if manual {
+                            app.kyty.error = format!("Update check failed: {e}");
                             app.toast("Couldn't check for KytyPS5 updates", &e, 2);
                         }
                         if app.kyty.force_install {

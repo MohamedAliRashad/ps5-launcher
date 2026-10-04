@@ -212,8 +212,10 @@ impl App {
                     }
                     Err(e) => {
                         crate::log!("launcher update check failed: {e}");
-                        app.upd.error = format!("Update check failed: {e}");
+                        // A background check that fails (offline) stays in the log; Settings
+                        // shows errors only for a check you asked for.
                         if manual {
+                            app.upd.error = format!("Update check failed: {e}");
                             app.toast_app("Couldn't check for updates", &e, 2);
                         }
                     }
