@@ -11,11 +11,11 @@ use std::sync::LazyLock;
 
 pub const CATALOG_TTL: f64 = 6.0 * 3600.0;
 pub const CATALOG_SCHEMA: u32 = 4;
-pub const SOURCE: &str = "https://rutracker.net/forum/viewforum.php?f=546";
-pub const PS4_SOURCE: &str = "https://rutracker.net/forum/viewforum.php?f=973";
-const BUNDLED: &[u8] = include_bytes!("../assets/rutracker/ps5-topics.json");
+pub const SOURCE_PS4: &str = "https://rutracker.net/forum/viewforum.php?f=973";
+pub const SOURCE_PS5: &str = "https://rutracker.net/forum/viewforum.php?f=546";
 /// Empty until the PS4 snapshot is collected and bundled (see build.rs).
 const BUNDLED_PS4: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ps4-topics.json"));
+const BUNDLED_PS5: &[u8] = include_bytes!("../assets/rutracker/ps5-topics.json");
 
 /// One console's RuTracker forum snapshot and where it's cached.
 struct Source {
@@ -27,10 +27,16 @@ struct Source {
     bundled: &'static [u8],
 }
 
+/// The order does not matter: code finds a console by its `platform`, never by position.
 const SOURCES: [Source; 2] = [
-    Source { platform: Platform::Ps5, url: SOURCE, file: "ps5-topics.json", cache: "catalog-rutracker.json", env: "PS5_LAUNCHER_CATALOG_PATH", bundled: BUNDLED },
-    Source { platform: Platform::Ps4, url: PS4_SOURCE, file: "ps4-topics.json", cache: "catalog-rutracker-ps4.json", env: "PS5_LAUNCHER_PS4_CATALOG_PATH", bundled: BUNDLED_PS4 },
+    Source { platform: Platform::Ps4, url: SOURCE_PS4, file: "ps4-topics.json", cache: "catalog-rutracker-ps4.json", env: "PS5_LAUNCHER_PS4_CATALOG_PATH", bundled: BUNDLED_PS4 },
+    Source { platform: Platform::Ps5, url: SOURCE_PS5, file: "ps5-topics.json", cache: "catalog-rutracker.json", env: "PS5_LAUNCHER_CATALOG_PATH", bundled: BUNDLED_PS5 },
 ];
+
+#[cfg(test)]
+fn source_of(platform: Platform) -> &'static Source {
+    SOURCES.iter().find(|src| src.platform == platform).expect("every console has a source")
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]
@@ -86,9 +92,9 @@ pub struct CatalogFile {
 }
 
 impl CatalogFile {
-    /// Every console's catalog, merged: PS5 and, once collected, PS4.
+    /// Every console's catalog, merged. The PS4 catalog is empty until it has been collected.
     pub fn load() -> Self {
-        merge(SOURCES.iter().map(load_one).collect())
+        merge(SOURCES.iter().map(|src| (src.platform, load_one(src))).collect())
     }
 
     pub fn stale(&self) -> bool {
@@ -129,9 +135,10 @@ fn load_one(src: &Source) -> CatalogFile {
 }
 
 /// One Library from every console's catalog. PS5's snapshot details describe the result.
-fn merge(mut files: Vec<CatalogFile>) -> CatalogFile {
-    let mut merged = std::mem::take(&mut files[0]);
-    for file in files {
+fn merge(files: Vec<(Platform, CatalogFile)>) -> CatalogFile {
+    let (ps5, others): (Vec<_>, Vec<_>) = files.into_iter().partition(|(platform, _)| *platform == Platform::Ps5);
+    let mut merged = ps5.into_iter().next().map(|(_, file)| file).unwrap_or_default();
+    for (_, file) in others {
         merged.games.extend(file.games);
     }
     merged.games.sort_by(|a, b| b.id.cmp(&a.id));
@@ -202,7 +209,7 @@ fn clean_name(value: &str) -> String {
 /// Import a PS5 forum snapshot.
 #[cfg(test)]
 pub fn import(bytes: &[u8]) -> Result<CatalogFile, String> {
-    import_for(&SOURCES[0], bytes)
+    import_for(source_of(Platform::Ps5), bytes)
 }
 
 /// The PS4 forum also carries apps (YouTube, Media Player), system software and forum
@@ -286,17 +293,18 @@ fn save(src: &Source, file: CatalogFile) -> Result<CatalogFile, String> {
 pub fn sync(progress: &dyn Fn(String)) -> Result<CatalogFile, String> {
     progress("Loading RuTracker snapshots".into());
     let mut files = Vec::new();
-    for (i, src) in SOURCES.iter().enumerate() {
+    for src in &SOURCES {
+        let optional = src.platform != Platform::Ps5;
         let bytes = source_bytes(src)?;
-        if bytes.is_empty() && i > 0 {
-            files.push(CatalogFile::default());
+        if bytes.is_empty() && optional {
+            files.push((src.platform, CatalogFile::default()));
             continue;
         }
         match import_for(src, &bytes).and_then(|file| save(src, file)) {
-            Ok(file) => files.push(file),
-            Err(error) if i > 0 => {
+            Ok(file) => files.push((src.platform, file)),
+            Err(error) if optional => {
                 crate::log!("RuTracker {} catalog import failed: {error}", src.platform.label());
-                files.push(read_cache(src));
+                files.push((src.platform, read_cache(src)));
             }
             Err(error) => return Err(error),
         }
@@ -311,21 +319,21 @@ pub fn sync(progress: &dyn Fn(String)) -> Result<CatalogFile, String> {
 mod tests {
     use super::*;
     fn fixture(topics: Value) -> Vec<u8> {
-        serde_json::to_vec(&serde_json::json!({ "source": SOURCE, "complete": true,
+        serde_json::to_vec(&serde_json::json!({ "source": SOURCE_PS5, "complete": true,
             "translation": { "language": "en" }, "collected_at": "2026-09-30T00:56:18Z",
             "topic_count": topics.as_array().unwrap().len(), "topics": topics })).unwrap()
     }
     #[test]
     fn ps4_snapshot_imports_as_ps4_and_merges() {
-        let ps4 = serde_json::to_vec(&serde_json::json!({ "source": PS4_SOURCE, "complete": true,
+        let ps4 = serde_json::to_vec(&serde_json::json!({ "source": SOURCE_PS4, "complete": true,
             "translation": { "language": "en" }, "collected_at": "2026-10-02T00:00:00Z", "topic_count": 1,
             "topics": [{ "id": "900", "title": "[PS4] Firewatch [CUSA04118] [EUR]", "game_info": { "title_id": "CUSA04118" } }] })).unwrap();
-        let file = import_for(&SOURCES[1], &ps4).unwrap();
+        let file = import_for(source_of(Platform::Ps4), &ps4).unwrap();
         assert_eq!(file.games[0].platform, Platform::Ps4);
         assert_eq!(file.games[0].name, "Firewatch");
         assert!(import(&ps4).is_err(), "a PS4 snapshot is not accepted as the PS5 catalog");
         let ps5 = fixture(serde_json::json!([{ "id": "100", "title": "[PS5] Example [EUR]", "game_info": { "title_id": "PPSA12345" } }]));
-        let merged = merge(vec![import(&ps5).unwrap(), file]);
+        let merged = merge(vec![(Platform::Ps4, file), (Platform::Ps5, import(&ps5).unwrap())]);
         assert_eq!(merged.games.iter().map(|g| (g.id, g.platform)).collect::<Vec<_>>(), vec![(900, Platform::Ps4), (100, Platform::Ps5)]);
     }
 
@@ -402,7 +410,7 @@ mod tests {
     }
     #[test]
     fn bundled_snapshot_is_complete_and_keeps_magnets() {
-        let file = import(BUNDLED).unwrap();
+        let file = import(BUNDLED_PS5).unwrap();
         assert_eq!(file.games.len(), 614);
         assert!(file.games.iter().all(|game| !game.magnet.is_empty()));
         assert!(file.games.iter().all(|game| game.seeders.is_some() && game.leechers.is_some()));

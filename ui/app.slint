@@ -149,6 +149,11 @@ export component AppWindow inherits Window {
     in property <int> zone;
     in property <int> idx;
     in property <string> clock;
+    // How many controllers are connected, shown next to the clock.
+    in property <int> pad-count;
+    // Disk used by installed games and by downloads, shown next to the Downloads icon.
+    in property <string> storage-games;
+    in property <string> storage-downloads;
     in property <string> app-version;
     in property <RunningData> running;
     in property <[ToastData]> toasts;
@@ -797,7 +802,7 @@ export component AppWindow inherits Window {
                     }
                     TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.top, 4); } }
                 }
-                for ic[i] in [Icons.search, Icons.gear, Icons.disk]: Rectangle {
+                for ic[i] in [Icons.search, Icons.gear]: Rectangle {
                     width: (52px * S.k);
                     height: (52px * S.k);
                     y: (26px * S.k);
@@ -806,6 +811,55 @@ export component AppWindow inherits Window {
                     background: f ? #ffffff : ta.has-hover ? #ffffff14 : transparent;
                     Image { source: ic; colorize: f ? #0a0d18 : Theme.text2; width: (26px * S.k); height: (26px * S.k); }
                     ta := TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.top, i + 2); } }
+                }
+                // Downloads: the disk icon with what is used, in the same pill style as the controllers.
+                disk-pill := Rectangle {
+                    height: (52px * S.k);
+                    y: (26px * S.k);
+                    width: disk-row.preferred-width;
+                    border-radius: (26px * S.k);
+                    property <bool> f: root.zone == Zone.top && root.idx == 4 && root.overlay == 0;
+                    background: f ? #ffffff : disk-ta.has-hover ? #ffffff24 : #ffffff14;
+                    disk-row := HorizontalLayout {
+                        padding-left: (16px * S.k);
+                        padding-right: (20px * S.k);
+                        spacing: (10px * S.k);
+                        Image { source: Icons.disk; colorize: disk-pill.f ? #0a0d18 : Theme.text2; width: (26px * S.k); height: (26px * S.k); y: (13px * S.k); }
+                        VerticalLayout {
+                            alignment: center;
+                            Text { text: "Games  " + root.storage-games; font-size: (15px * S.k); color: disk-pill.f ? #0a0d18 : Theme.text2; }
+                            Text { text: "Downloads  " + root.storage-downloads; font-size: (15px * S.k); color: disk-pill.f ? #0a0d18 : Theme.text2; }
+                        }
+                    }
+                    disk-ta := TouchArea { mouse-cursor: pointer; clicked => { root.click(Zone.top, 4); } }
+                }
+                // Connected controllers: the icon and the count in one quiet pill, like the other top-bar
+                // controls. Dimmed while none is connected.
+                Rectangle {
+                    height: (52px * S.k);
+                    y: (26px * S.k);
+                    width: pad-row.preferred-width;
+                    border-radius: (26px * S.k);
+                    background: #ffffff14;
+                    pad-row := HorizontalLayout {
+                        padding-left: (16px * S.k);
+                        padding-right: (18px * S.k);
+                        spacing: (8px * S.k);
+                        Image {
+                            source: Icons.pad;
+                            colorize: root.pad-count > 0 ? Theme.text : Theme.text3;
+                            width: (26px * S.k);
+                            height: (26px * S.k);
+                            y: (13px * S.k);
+                        }
+                        Text {
+                            text: root.pad-count;
+                            font-size: (20px * S.k);
+                            font-weight: 600;
+                            color: root.pad-count > 0 ? Theme.text : Theme.text3;
+                            vertical-alignment: center;
+                        }
+                    }
                 }
                 Text {
                     text: root.clock;

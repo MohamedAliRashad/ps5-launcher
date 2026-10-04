@@ -142,6 +142,13 @@ pub struct ActionDef {
     pub round: bool,
 }
 
+/// The sizes shown beside the Downloads button in the top bar.
+#[derive(Default, PartialEq)]
+pub struct StorageLabel {
+    pub games: String,
+    pub downloads: String,
+}
+
 pub struct App {
     pub ui: slint::Weak<AppWindow>,
     pub cfg: Arc<Mutex<Config>>,
@@ -211,6 +218,15 @@ pub struct App {
     pub enriching: bool,
     pub pad_hints: bool,
     pub clock: String,
+    pub pad_count: usize,
+    /// Size of the installed games, measured in the background (None until the first count).
+    pub games_bytes: Option<u64>,
+    /// The game folders last measured, and whether a measurement is running.
+    pub storage_paths: Vec<std::path::PathBuf>,
+    pub storage_measuring: bool,
+    /// The hint about the Accessibility permission was shown once this session.
+    pub focus_hint_shown: bool,
+    pub storage_label: StorageLabel,
     /// Updates the trailer player's progress and controls while it is open.
     pub trailer_timer: Option<slint::Timer>,
     pub trailer_controls_until: f64,
@@ -369,6 +385,12 @@ pub fn run(ui: AppWindow, monitors: Vec<Monitor>, target_monitor: Option<Monitor
         enriching: false,
         pad_hints: false,
         clock: String::new(),
+        pad_count: 0,
+        games_bytes: None,
+        storage_paths: Vec::new(),
+        storage_measuring: false,
+        focus_hint_shown: false,
+        storage_label: Default::default(),
         trailer_timer: None,
         trailer_controls_until: 0.0,
         genre_res,
@@ -630,6 +652,7 @@ impl App {
             }
         }
         self.locals = locals;
+        self.measure_games();
         for (target, previous_id) in [(&mut self.hub, hub_id), (&mut self.menu_target, menu_id)] {
             if let Some(target) = target {
                 target.local = target.game.and_then(|i| self.games.get(i)).and_then(|g| g.local)
@@ -1198,7 +1221,46 @@ impl App {
         }
     }
 
+    /// Count the installed games' bytes on a worker thread, when the set of game folders changed.
+    fn measure_games(&mut self) {
+        let mut paths: Vec<std::path::PathBuf> = self.locals.iter().map(|l| l.l.path.clone()).collect();
+        paths.sort();
+        paths.dedup();
+        if self.storage_measuring || paths == self.storage_paths {
+            return;
+        }
+        self.storage_measuring = true;
+        self.storage_paths = paths.clone();
+        std::thread::spawn(move || {
+            let total: u64 = paths.iter().map(|p| util::tree_size(p)).sum();
+            post(move |app| {
+                app.games_bytes = Some(total);
+                app.storage_measuring = false;
+                // Games installed while this ran have a new folder set: count again.
+                app.measure_games();
+            });
+        });
+    }
+
+    /// The top bar's disk summary: installed games and downloads.
+    fn push_storage(&mut self) {
+        let downloads: u64 = self.downloads.snapshot().iter()
+            .filter(|j| j.state != crate::downloads::State::Cancelled).map(|j| j.done).sum();
+        let label = StorageLabel {
+            games: self.games_bytes.map_or_else(|| "…".to_string(), util::compact_size),
+            downloads: util::compact_size(downloads),
+        };
+        if label != self.storage_label {
+            let ui = self.ui();
+            ui.set_storage_games(label.games.clone().into());
+            ui.set_storage_downloads(label.downloads.clone().into());
+            self.storage_label = label;
+        }
+    }
+
     pub fn rescan_library(&mut self) {
+        // A rescan means games may have been added, removed or changed: count them again.
+        self.storage_paths.clear();
         let dirs = self.cfg.lock().unwrap().game_dir_paths();
         *self.library.lock().unwrap() = library::scan(&dirs);
         self.refresh_locals();
@@ -1283,6 +1345,12 @@ impl App {
         if clock != self.clock {
             ui.set_clock(clock.clone().into());
             self.clock = clock;
+        }
+        self.push_storage();
+        let pads = crate::gamepad::count();
+        if pads != self.pad_count {
+            ui.set_pad_count(pads as i32);
+            self.pad_count = pads;
         }
         let running = match self.live.first() {
             Some(s) => crate::RunningData { active: true, name: s.name.clone().into(), time: util::fmt_clock(util::now_secs() - s.since).into() },
@@ -2538,16 +2606,22 @@ impl App {
                 std::thread::sleep(Duration::from_millis(250));
                 let el = start.elapsed();
                 let gone = !crate::hostos::pid_exists(pid);
-                // Window detection needs Accessibility permission on macOS; without it, assume the window
-                // is up after a few seconds rather than keeping the splash for the full 90.
-                let shown = el > Duration::from_millis(1200)
-                    && (!crate::sessions::windows_of_pid(pid).is_empty() || (cfg!(target_os = "macos") && el > Duration::from_secs(6)));
-                if gone || shown || el > Duration::from_secs(90) {
-                    // A moment more once the window exists, so the game's first frame is ready.
-                    if shown {
+                let window = if gone { None } else { crate::sessions::game_window(pid) };
+                if crate::sessions::launch_splash_done(el, gone, window) {
+                    // The window is up: bring it to the front, then a moment more so its first frame is ready.
+                    if window == Some(true) {
+                        crate::sessions::focus_new_game(pid);
                         std::thread::sleep(Duration::from_millis(400));
                     }
-                    post(|app| app.hide_launch_splash());
+                    // Without the permission the window can't be seen or raised: say so once.
+                    let blind = window.is_none() && !gone;
+                    post(move |app| {
+                        app.hide_launch_splash();
+                        if blind && cfg!(target_os = "macos") && !std::mem::replace(&mut app.focus_hint_shown, true) {
+                            app.toast("The game may not have the controller yet",
+                                "PS5 Launcher can't bring the game forward without Accessibility permission. Allow it in System Settings → Privacy & Security → Accessibility, or press Resume.", 0);
+                        }
+                    });
                     return;
                 }
                 if !noted && el > Duration::from_secs(8) {

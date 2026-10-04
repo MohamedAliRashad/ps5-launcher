@@ -70,13 +70,6 @@ fn process_with_pid(pid: u32) -> String {
     format!("(first process whose unix id is {pid})")
 }
 
-/// One placeholder per window of the process (callers only count them).
-#[cfg(target_os = "macos")]
-pub fn windows_of_pid(pid: u32) -> Vec<String> {
-    let n: usize = osascript(&format!(r#"tell application "System Events" to count windows of {}"#, process_with_pid(pid))).and_then(|v| v.parse().ok()).unwrap_or(0);
-    (0..n).map(|i| i.to_string()).collect()
-}
-
 #[cfg(target_os = "macos")]
 pub fn activate_pid_window(pid: u32) -> bool {
     osascript(&format!(r#"tell application "System Events" to set frontmost of {} to true"#, process_with_pid(pid))).is_some()
@@ -534,6 +527,53 @@ fn wait_gone(pid: u32, secs: f64) -> bool {
     }
 }
 
+/// Whether the game has a window yet. `None` means this computer cannot tell: macOS asks for
+/// Accessibility permission before it lets the launcher look at another app's windows.
+#[cfg(target_os = "macos")]
+pub fn game_window(pid: u32) -> Option<bool> {
+    let n: usize = osascript(&format!(r#"tell application "System Events" to count windows of {}"#, process_with_pid(pid)))?.parse().ok()?;
+    Some(n > 0)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn game_window(pid: u32) -> Option<bool> {
+    Some(!windows_of_pid(pid).is_empty())
+}
+
+/// When the launch screen ends: the game's window is up, the game is gone, or it took too long.
+/// The window must have existed for a moment first. Where windows cannot be seen, the game is
+/// assumed to be up after a few seconds.
+pub fn launch_splash_done(elapsed: Duration, gone: bool, window: Option<bool>) -> bool {
+    if gone || elapsed > Duration::from_secs(90) {
+        return true;
+    }
+    match window {
+        Some(up) => up && elapsed > Duration::from_millis(1200),
+        None => elapsed > Duration::from_secs(6),
+    }
+}
+
+/// Bring a game that just opened its window to the front. macOS leaves a new window behind the
+/// launcher, so without this the game gets no controller input until the user presses Resume. It
+/// moves the focus only while the launcher still has it. Linux window managers focus new windows
+/// themselves. Needs the same Accessibility permission as Resume.
+pub fn focus_new_game(pid: u32) -> bool {
+    cfg!(target_os = "macos") && bring_forward(active_window_pid() == std::process::id(), || activate_pid_window(pid), 5, Duration::from_millis(200))
+}
+
+fn bring_forward(launcher_active: bool, activate: impl Fn() -> bool, tries: u32, wait: Duration) -> bool {
+    if !launcher_active {
+        return false;
+    }
+    for _ in 0..tries {
+        if activate() {
+            return true;
+        }
+        std::thread::sleep(wait);
+    }
+    false
+}
+
 /// Minimal shell-like splitting with quotes (for "extra emulator arguments").
 pub fn shell_split(s: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -601,7 +641,50 @@ pub fn log_tail(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{emulator_error, emulator_game, game_folder, parse_etime, parse_ps_line};
+    use super::{bring_forward, emulator_error, emulator_game, game_folder, launch_splash_done, parse_etime, parse_ps_line};
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    const S: fn(u64) -> Duration = Duration::from_secs;
+    const MS: fn(u64) -> Duration = Duration::from_millis;
+
+    #[test]
+    fn the_splash_waits_for_the_games_window_when_windows_can_be_seen() {
+        assert!(!launch_splash_done(S(6), false, Some(false)), "6 s is not a reason to give up when we can see there is no window");
+        assert!(!launch_splash_done(S(40), false, Some(false)));
+        assert!(!launch_splash_done(MS(500), false, Some(true)), "a short pause first, so a flicker does not count");
+        assert!(launch_splash_done(S(2), false, Some(true)));
+    }
+
+    #[test]
+    fn the_splash_ends_when_the_game_exits_or_takes_too_long() {
+        assert!(launch_splash_done(MS(10), true, Some(false)));
+        assert!(launch_splash_done(S(91), false, Some(false)));
+    }
+
+    #[test]
+    fn without_a_way_to_see_windows_the_splash_assumes_the_game_is_up_after_a_while() {
+        assert!(!launch_splash_done(S(5), false, None));
+        assert!(launch_splash_done(S(7), false, None));
+    }
+
+    fn forward(launcher_active: bool, works_on_try: u32, tries: u32) -> (bool, u32) {
+        let calls = Cell::new(0);
+        let done = bring_forward(launcher_active, || { calls.set(calls.get() + 1); calls.get() >= works_on_try }, tries, Duration::ZERO);
+        (done, calls.get())
+    }
+
+    #[test]
+    fn the_game_comes_forward_only_while_the_launcher_has_the_focus() {
+        assert_eq!(forward(true, 1, 3), (true, 1));
+        assert_eq!(forward(false, 1, 3), (false, 0), "the user is in another app");
+    }
+
+    #[test]
+    fn a_failed_activation_is_tried_again_a_few_times() {
+        assert_eq!(forward(true, 3, 5), (true, 3));
+        assert_eq!(forward(true, 9, 4), (false, 4));
+    }
 
     #[test]
     fn emulator_error_reads_the_reason_without_the_source_location() {

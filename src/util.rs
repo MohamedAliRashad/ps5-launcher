@@ -213,6 +213,33 @@ pub fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
     era * 146097 + doe - 719468
 }
 
+/// Bytes used by a file or by everything under a folder. Symlinks are counted, not followed;
+/// unreadable entries count as zero.
+pub fn tree_size(path: &Path) -> u64 {
+    let mut total = 0;
+    let mut pending = vec![path.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        let Ok(meta) = std::fs::symlink_metadata(&next) else { continue };
+        if meta.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&next) {
+                pending.extend(entries.flatten().map(|e| e.path()));
+            }
+        } else {
+            total += meta.len();
+        }
+    }
+    total
+}
+
+/// A short size for the top bar: "412 GB", "1.5 TB" (1 GB = 10^9 bytes, as Finder shows it).
+pub fn compact_size(bytes: u64) -> String {
+    let b = bytes as f64;
+    if bytes >= 1_000_000_000_000 { format!("{:.1} TB", b / 1e12) }
+    else if bytes >= 1_000_000_000 { format!("{:.0} GB", b / 1e9) }
+    else if bytes >= 1_000_000 { format!("{:.0} MB", b / 1e6) }
+    else { format!("{} KB", bytes / 1000) }
+}
+
 pub fn fmt_duration(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
     if s < 60 {
@@ -299,5 +326,26 @@ mod tests {
     fn norm_works() {
         assert_eq!(norm("Pokémon: Legends™ Z-A"), "pokemon legends z a");
         assert_eq!(norm("Assassin's Creed"), "assassins creed");
+    }
+
+    #[test]
+    fn tree_size_adds_files_in_folders_and_counts_a_single_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("a/b")).unwrap();
+        std::fs::write(dir.path().join("a/one"), [0u8; 10]).unwrap();
+        std::fs::write(dir.path().join("a/b/two"), [0u8; 25]).unwrap();
+        assert_eq!(tree_size(dir.path()), 35);
+        assert_eq!(tree_size(&dir.path().join("a/b/two")), 25);
+        assert_eq!(tree_size(&dir.path().join("missing")), 0);
+        std::os::unix::fs::symlink(dir.path(), dir.path().join("a/loop")).unwrap();
+        assert_eq!(tree_size(dir.path()), 35 + std::fs::symlink_metadata(dir.path().join("a/loop")).unwrap().len(), "a symlink is counted, not followed");
+    }
+
+    #[test]
+    fn compact_size_picks_a_short_unit() {
+        assert_eq!(compact_size(0), "0 KB");
+        assert_eq!(compact_size(250_000_000), "250 MB");
+        assert_eq!(compact_size(412_400_000_000), "412 GB");
+        assert_eq!(compact_size(1_500_000_000_000), "1.5 TB");
     }
 }

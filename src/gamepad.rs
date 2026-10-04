@@ -114,6 +114,21 @@ fn gamepad_paths() -> Vec<String> {
 /// device list as `gamepad_paths`, so it works even without permission to open the devices.
 #[cfg(target_os = "linux")]
 pub fn connected() -> Vec<String> {
+    let mut names = device_names();
+    let mut seen = std::collections::HashSet::new();
+    names.retain(|n| seen.insert(n.clone()));
+    names
+}
+
+/// How many controllers are connected. Two controllers of the same model count as two.
+#[cfg(target_os = "linux")]
+pub fn count() -> usize {
+    device_names().len()
+}
+
+/// The name of every connected controller, one entry per device.
+#[cfg(target_os = "linux")]
+fn device_names() -> Vec<String> {
     let Ok(text) = std::fs::read_to_string("/proc/bus/input/devices") else { return Vec::new() };
     let mut names: Vec<String> = Vec::new();
     for block in text.split("\n\n") {
@@ -135,7 +150,7 @@ pub fn connected() -> Vec<String> {
             let (w, b) = ((n / 64) as usize, n % 64);
             words.len() > w && words[words.len() - 1 - w] >> b & 1 == 1
         };
-        if (bit(BTN_SOUTH) || bit(BTN_MODE)) && !name.is_empty() && !names.iter().any(|n| n == name) {
+        if (bit(BTN_SOUTH) || bit(BTN_MODE)) && !name.is_empty() {
             names.push(name.to_string());
         }
     }
@@ -150,6 +165,17 @@ static MAC_PADS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new(
 #[cfg(target_os = "macos")]
 pub fn connected() -> Vec<String> {
     MAC_PADS.lock().map(|n| n.clone()).unwrap_or_default()
+}
+
+/// How many controllers macOS reports, kept current by the `run` loop below. Two controllers of
+/// the same model count as two.
+#[cfg(target_os = "macos")]
+static MAC_PAD_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many controllers are connected.
+#[cfg(target_os = "macos")]
+pub fn count() -> usize {
+    MAC_PAD_COUNT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// "DualSense Wireless Controller connected" or "No controller connected".
@@ -371,6 +397,7 @@ fn run(emit: impl Fn(Pad)) {
                 }
                 EventType::AxisChanged(Axis::LeftStickX, v, _) => st.stick[0] = v,
                 EventType::AxisChanged(Axis::LeftStickY, v, _) => st.stick[1] = v,
+                EventType::Connected => crate::log!("controller connected: {}", gilrs.gamepad(id).name()),
                 EventType::Disconnected => {
                     crate::log!("controller disconnected");
                     states.remove(&id);
@@ -380,11 +407,17 @@ fn run(emit: impl Fn(Pad)) {
         }
         // Keep the list of connected pads current for the Settings and launch screens.
         let mut names: Vec<String> = Vec::new();
+        let mut count = 0;
         for (_, pad) in gilrs.gamepads() {
-            if pad.is_connected() && !names.iter().any(|n| n == pad.name()) {
+            if !pad.is_connected() {
+                continue;
+            }
+            count += 1;
+            if !names.iter().any(|n| n == pad.name()) {
                 names.push(pad.name().to_string());
             }
         }
+        MAC_PAD_COUNT.store(count, std::sync::atomic::Ordering::Relaxed);
         if let Ok(mut shared) = MAC_PADS.lock() {
             if *shared != names {
                 *shared = names;
