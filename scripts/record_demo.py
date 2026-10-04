@@ -9,7 +9,7 @@ timed from the script itself, so re-running this after UI changes regenerates ev
 
 Needs: Xvfb, xdotool, ffmpeg (libx264, libwebp, libass), ImageMagick (`convert`) for the poster.
 Outputs (default: dist/demo/):
-    demo-loop.webp            ~15 s loop for the top of the README
+    demo-loop.webp            ~20 s loop for the top of the README
     walkthrough.mp4           full quality captioned walkthrough (1920x1200)
     walkthrough-small.mp4     1600x1000 copy under 10 MB, for uploading to the README on github.com
     walkthrough-poster.jpg    thumbnail for linking the video
@@ -273,7 +273,8 @@ def scene_tour(s: Session, out: Path, has_game: bool):
 
 
 def scene_loop(s: Session, out: Path):
-    """A seamless loop from a fresh start: Home → Game Hub (screenshots) → Library → Home."""
+    """A seamless loop from a fresh start: Home → Game Hub (screenshots) → Library → PS4 games
+    only → a PS4 game's Hub → Home."""
     s.restart()
     s.record(out)
     time.sleep(1.2)
@@ -282,16 +283,21 @@ def scene_loop(s: Session, out: Path):
     s.key("Return", gap=2.0)
     s.key("Down", gap=1.0)        # screenshots
     s.key("Right", gap=0.8)
-    s.key("Right", gap=1.0)
     s.key("Escape", gap=1.0)
     s.key("Up", gap=0.4)          # tile row
     s.key("Up", gap=0.4)          # tabs
     s.key("Right", gap=0.3)
-    s.key("Return", gap=1.6)      # Library
-    s.key("Down", gap=0.7)
-    s.key("Right", gap=0.6)
-    s.key("Right", gap=0.6)
-    s.key("Down", gap=1.2)
+    s.key("Return", gap=1.4)      # Library
+    s.key("Up", gap=0.3)          # genre chips
+    s.key("Up", gap=0.5)          # status and console chips
+    for _ in range(5):
+        s.key("Right", gap=0.25)  # … PS4 games only
+    s.key("Return", gap=1.4)
+    s.key("Down", gap=0.3)
+    s.key("Down", gap=0.6)        # the PS4 games
+    s.key("Right", gap=0.5)
+    s.key("Return", gap=2.4)      # a PS4 game's Hub: Download, shadPS4 result
+    s.key("Escape", gap=0.8)
     s.key("Escape", gap=1.8)      # back Home
     return s.stop()
 

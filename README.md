@@ -5,7 +5,7 @@ and install them, and play them with the [KytyPS5](https://github.com/KytyPS5/Ky
 [shadPS4](https://github.com/shadps4-emu/shadPS4) (PS4) emulators, using a controller, keyboard or
 mouse.
 
-![PS5 Launcher: moving through the Home screen, a Game Hub and the Library](docs/demo/demo-loop.webp)
+![PS5 Launcher: the Home screen, a Game Hub, then the Library filtered to PS4 games and a PS4 game's Hub](docs/demo/demo-loop.webp)
 
 - **Your games on a PS5-style Home screen**, with official backgrounds, logos and trailers that
   play right in the launcher.

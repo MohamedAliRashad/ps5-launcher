@@ -17,7 +17,7 @@ CACHE_SKIP = ("logs", "browser-profile", "rutracker-list-browser")
 NO_UPDATES = {"kyty_auto_update": False, "app_auto_update": False, "shad_auto_update": False}
 
 # A real title (artwork comes from the seeded cache when it has it).
-STAND_IN_ID = "PPSA02929"
+STAND_IN_ID = "PPSA21564"  # ASTRO BOT: in-game on Linux, so Home shows a green result
 
 
 def seed_cache(home: Path) -> None:
@@ -33,7 +33,7 @@ def stand_in_game(games: Path, title_id: str = STAND_IN_ID) -> Path:
     game = games / f"{title_id}-app0"
     (game / "sce_sys").mkdir(parents=True, exist_ok=True)
     (game / "sce_sys/param.json").write_text(json.dumps(
-        {"titleId": title_id, "localizedParameters": {"en-US": {"titleName": "Stand-in game"}}}))
+        {"titleId": title_id, "localizedParameters": {"en-US": {"titleName": "ASTRO BOT"}}}))
     (game / "eboot.bin").write_bytes(b"stand-in for UI scripts; not a program\n")
     return game
 
