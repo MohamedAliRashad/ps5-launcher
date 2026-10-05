@@ -76,6 +76,8 @@ jobs:
           sudo podman run --rm --entrypoint /usr/bin/bash "$img" -c '
             set -e
             test -x /usr/libexec/ps5-launcher-os/start
+            test -x /usr/libexec/ps5-launcher-os/ensure-user
+            systemctl is-enabled ps5-launcher-os-ensure-user.service bazzite-autologin.service
             test -f /etc/xdg/autostart/ps5-launcher-os.desktop
             test -f /etc/bazzite/desktop_autologin
             /usr/share/ps5-launcher-os/release/ps5-launcher --version

@@ -33,6 +33,37 @@ sudo apt install xdotool mpv libarchive13
 
 To uninstall: `./ps5-launcher-linux-x86_64/install.sh --uninstall`
 
+## Or turn a spare PC into a console
+
+**PS5 Launcher OS** makes a PC start straight into the launcher, like a console. It's
+[Bazzite](https://bazzite.gg), a gaming Linux, with the launcher built in. The launcher, its
+emulators and the system all keep themselves up to date.
+
+**You need:**
+- A USB stick (2 GB or more) and an internet connection, cable or Wi-Fi.
+- A PC that can run the games: a 4-core CPU from 2013 or later (Intel Haswell or AMD Excavator
+  and newer), 8 GB RAM (16 GB for PS5 games), a graphics card with Vulkan 1.3 (AMD, NVIDIA or
+  Intel) and a 64 GB disk.
+
+**Installing erases the disk you pick.**
+
+1. Download [ps5-launcher-os-x86_64.iso](https://github.com/MohamedAliRashad/ps5-launcher/releases/latest/download/ps5-launcher-os-x86_64.iso)
+   and write it to the USB stick with [balenaEtcher](https://etcher.balena.io) or
+   [Fedora Media Writer](https://fedoraproject.org/workstation/download).
+2. Start the PC from the USB stick (press F12, F11, F8 or Esc while it starts) and choose
+   **Install PS5 Launcher OS**.
+3. In the installer, connect to Wi-Fi if you have no cable (**Network & Host Name**), choose the
+   disk (**Installation Destination**), create your user (**User Creation**), then **Begin
+   Installation**. It downloads the system (about 7 GB), so it takes a while. The installer says
+   "Fedora": Bazzite is built on Fedora and uses its installer.
+4. Restart and remove the USB stick. If Secure Boot is on, a blue **MOK management** screen
+   appears once: choose **Enroll MOK**, **Continue**, **Yes**, type `universalblue`, then
+   **Reboot**.
+
+The PC now starts straight into PS5 Launcher, and it picks the NVIDIA version of the system by
+itself when it finds an NVIDIA graphics card. To get to the desktop, quit the launcher
+(**Settings → Quit**); it opens again at the next start or from the app menu.
+
 ## Getting started
 
 1. Open **PS5 Launcher** from your app menu, or run this in a terminal:
