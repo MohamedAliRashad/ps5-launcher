@@ -17,6 +17,8 @@ const SHA256: &str = "2adb5760be588eef0db76a0b281467ad2fc8ce6885fe00778af143b51b
 /// src/pkgguard.c, built by build.rs: preloaded into the extractor so a failed or short write
 /// stops it with a message, instead of leaving truncated files behind a "success" report.
 const GUARD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pkgguard.so"));
+/// What the guard prints from inside the extractor once it's loaded.
+const GUARD_ACTIVE: &str = "PKG write guard active";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -95,14 +97,34 @@ impl Scratch {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!("ps5-launcher-pkg-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
         std::fs::create_dir_all(dir.join("user")).map_err(|e| format!("{}: {e}", dir.display()))?;
-        std::fs::write(dir.join("pkgguard.so"), GUARD).map_err(|e| format!("{}: {e}", dir.display()))?;
         Ok(Self(dir))
+    }
+
+    /// The guard library, kept next to the extractor: that folder evidently allows running
+    /// programs, unlike a temporary folder that may be mounted noexec (the loader would then skip
+    /// the guard). This folder is the fallback; the extraction checks the guard actually loaded.
+    fn guard(&self, tool: &Path) -> Result<PathBuf, String> {
+        #[cfg(test)]
+        let bytes: &[u8] = if TEST_BROKEN_GUARD.with(|b| *b.borrow()) { b"not a shared library" } else { GUARD };
+        #[cfg(not(test))]
+        let bytes = GUARD;
+        let place = |dir: &Path| -> std::io::Result<PathBuf> {
+            let path = dir.join("pkgguard.so");
+            if std::fs::read(&path).ok().as_deref() != Some(bytes) {
+                let tmp = dir.join(format!(".pkgguard.so.{}", std::process::id()));
+                std::fs::write(&tmp, bytes)?;
+                std::fs::rename(&tmp, &path)?;
+            }
+            Ok(path)
+        };
+        let beside_tool = std::fs::canonicalize(tool).ok().and_then(|t| t.parent().map(Path::to_path_buf));
+        beside_tool.and_then(|dir| place(&dir).ok()).map_or_else(|| place(&self.0).map_err(|e| format!("{}: {e}", self.0.display())), Ok)
     }
 
     /// The extractor command, confined to writing in this folder and `writable`.
     fn command(&self, tool: &Path, writable: Option<&Path>) -> Result<(Command, crate::sandbox::Confinement), String> {
         let mut cmd = Command::new(tool);
-        cmd.current_dir(&self.0).stdin(Stdio::null()).stderr(Stdio::null()).env("LD_PRELOAD", self.0.join("pkgguard.so"));
+        cmd.current_dir(&self.0).stdin(Stdio::null()).stderr(Stdio::null()).env("LD_PRELOAD", self.guard(tool)?);
         let mut dirs = vec![self.0.as_path()];
         dirs.extend(writable);
         let guard = crate::sandbox::confine(&mut cmd, &dirs)?;
@@ -203,6 +225,9 @@ fn finished(status: std::process::ExitStatus, output: &str) -> Result<(), String
     if let Some(p) = problem(output) {
         return Err(p);
     }
+    if !output.lines().any(|l| l.trim() == GUARD_ACTIVE) {
+        return Err("the PKG extractor ran without its write guard, so its files can't be trusted; nothing was installed".into());
+    }
     if !status.success() {
         return Err(format!("the PKG extractor stopped before finishing ({status})"));
     }
@@ -230,6 +255,8 @@ thread_local! {
     /// A stand-in extractor and add-on folder for the installer's tests (this thread only).
     pub static TEST_TOOL: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
     pub static TEST_ADDONS: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    /// Write an unloadable guard, as when it sits on a noexec mount.
+    pub static TEST_BROKEN_GUARD: std::cell::RefCell<bool> = const { std::cell::RefCell::new(false) };
 }
 
 #[cfg(test)]
@@ -298,7 +325,7 @@ int main(int argc, char **argv) {
             let free = t.path().join(format!("free-{mode}"));
             std::fs::create_dir(&free).unwrap();
             let out = Command::new(&tool).arg(careless_pkg(t.path(), "a.pkg", mode)).arg(&free).output().unwrap();
-            assert!(out.status.success() && finished(out.status, &String::from_utf8_lossy(&out.stdout)).is_ok());
+            assert!(out.status.success() && String::from_utf8_lossy(&out.stdout).contains("THE END"));
             assert_eq!(std::fs::metadata(free.join("CUSA12345/eboot.bin")).unwrap().len(), 512);
             // Through extract(), the guard stops it.
             let dest = t.path().join(format!("guarded-{mode}"));
@@ -306,6 +333,13 @@ int main(int argc, char **argv) {
             let err = extract(&tool, &careless_pkg(t.path(), "a.pkg", mode), &dest, &AtomicBool::new(false), &|_, _| {}).unwrap_err();
             assert!(err.starts_with("Cannot write the extracted files"), "{mode}: {err}");
         }
+        // A guard the loader skips (noexec mount, damaged file): the run is rejected.
+        TEST_BROKEN_GUARD.with(|b| *b.borrow_mut() = true);
+        let dest = t.path().join("unloaded");
+        std::fs::create_dir(&dest).unwrap();
+        let err = extract(&tool, &careless_pkg(t.path(), "a.pkg", "short"), &dest, &AtomicBool::new(false), &|_, _| {}).unwrap_err();
+        assert!(err.contains("without its write guard"), "{err}");
+        TEST_BROKEN_GUARD.with(|b| *b.borrow_mut() = false);
         let dest = t.path().join("guarded-ok");
         std::fs::create_dir(&dest).unwrap();
         extract(&tool, &careless_pkg(t.path(), "a.pkg", "ok"), &dest, &AtomicBool::new(false), &|_, _| {}).unwrap();
@@ -315,12 +349,14 @@ int main(int argc, char **argv) {
     #[test]
     fn only_a_complete_clean_run_counts_as_extracted() {
         let ok = std::process::ExitStatus::from_raw(0);
-        let full = "Extracting pkg to x\n\r      Extracting file 1 of 2\r      Extracting file 2 of 2\nTHE END x\n";
+        let full = "PKG write guard active\nExtracting pkg to x\n\r      Extracting file 1 of 2\r      Extracting file 2 of 2\nTHE END x\n";
         assert!(finished(ok, full).is_ok());
         // Crashed or killed (exit 42, SIGSEGV), stopped early, never started, or reported a problem.
         assert!(finished(std::process::ExitStatus::from_raw(42 << 8), full).unwrap_err().contains("stopped before finishing"));
         assert!(finished(std::process::ExitStatus::from_raw(libc::SIGSEGV), full).is_err());
-        assert!(finished(ok, "\r      Extracting file 1 of 2\nTHE END x").unwrap_err().contains("1 of 2"));
+        assert!(finished(ok, "PKG write guard active\n\r      Extracting file 1 of 2\nTHE END x").unwrap_err().contains("1 of 2"));
+        // Everything else fine, but no sign the guard loaded.
+        assert!(finished(ok, &full.replace("PKG write guard active\n", "")).unwrap_err().contains("without its write guard"));
         assert!(finished(ok, "Extracting file 2 of 2").is_err(), "no closing line");
         assert!(finished(ok, "THE END x").is_err());
         assert!(finished(ok, "Cannot extract PKG file : bad\nTHE END").unwrap_err().contains("Cannot extract"));

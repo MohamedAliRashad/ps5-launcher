@@ -1278,14 +1278,15 @@ mod tests {
     }
 
     /// A stand-in for the PKG extractor, run in the same sandbox: each fixture `.pkg` is a shell
-    /// snippet setting KIND (101 game, 102 update, 103 DLC) and an `extract DEST` function.
+    /// snippet setting KIND (101 game, 102 update, 103 DLC) and an `extract DEST` function. A shell
+    /// script can't load the write guard (that's tested in pkgx), so it prints the guard's line.
     fn fake_pkgs(t: &Path) -> PathBuf {
         use crate::sfo::{build, Value};
         for cat in ["gd", "gp", "ac"] {
             fs::write(t.join(format!("{cat}.sfo")), build(&[("CATEGORY", Value::Text(cat.into())), ("TITLE_ID", Value::Text("CUSA12345".into()))])).unwrap();
         }
         let tool = t.join("fake-extractor");
-        fs::write(&tool, "#!/bin/sh\nset -e\nKIND=0\n. \"$1\"\n[ \"$2\" = --check-type ] && exit $KIND\nextract \"$2\"\nprintf 'Extracting file 1 of 1\\nTHE END %s\\n' \"$1\"\n").unwrap();
+        fs::write(&tool, "#!/bin/sh\nset -e\nKIND=0\n. \"$1\"\n[ \"$2\" = --check-type ] && exit $KIND\necho 'PKG write guard active'\nextract \"$2\"\nprintf 'Extracting file 1 of 1\\nTHE END %s\\n' \"$1\"\n").unwrap();
         fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
         crate::pkgx::TEST_TOOL.with(|c| *c.borrow_mut() = Some(tool.clone()));
         crate::pkgx::TEST_ADDONS.with(|c| *c.borrow_mut() = Some(t.join("addcont")));
@@ -1333,6 +1334,12 @@ mod tests {
         fs::copy(crate::pkgx::tests::careless_pkg(t.path(), "short.pkg", "short"), req.source.join("game.pkg")).unwrap();
         let err = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap_err().to_string();
         assert!(err.contains("Cannot write the extracted files"), "{err}");
+        assert_eq!(fs::read_dir(&req.destination).unwrap().count(), 0, "nothing published, stage removed");
+        // The same short write with a guard that didn't load (as from a noexec mount).
+        crate::pkgx::TEST_BROKEN_GUARD.with(|b| *b.borrow_mut() = true);
+        let err = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap_err().to_string();
+        crate::pkgx::TEST_BROKEN_GUARD.with(|b| *b.borrow_mut() = false);
+        assert!(err.contains("without its write guard"), "{err}");
         assert_eq!(fs::read_dir(&req.destination).unwrap().count(), 0, "nothing published, stage removed");
     }
 

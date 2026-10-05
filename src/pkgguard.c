@@ -49,6 +49,13 @@ static int active(void) {
     return on;
 }
 
+// The launcher only accepts an extraction whose output carries this line, so a guard that failed
+// to load (the dynamic loader just warns and carries on) can't go unnoticed.
+__attribute__((constructor)) static void announce(void) {
+    static const char line[] = "PKG write guard active\n";
+    if (active() && write(STDOUT_FILENO, line, sizeof line - 1) < 0) _exit(86);
+}
+
 static int writing(const char *mode) {
     return mode && (strchr(mode, 'w') || strchr(mode, 'a') || strchr(mode, '+'));
 }

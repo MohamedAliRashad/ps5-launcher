@@ -335,7 +335,10 @@ A `Platform` (PS5 or PS4) travels with each installed game and catalog release
     ([src/pkgguard.c](../src/pkgguard.c), built by `build.rs` with the system C compiler and
     embedded) stops it on any failed open-for-writing, write, flush, truncate or close, and on
     close checks that each file's size on disk covers everything written to it. It applies to
-    the `pkg_extractor` binary only, not the tools its AppImage script runs.
+    the `pkg_extractor` binary only, not the tools its AppImage script runs. The guard is kept
+    next to the extractor (a folder that can run programs; a noexec `TMPDIR` would make the
+    loader skip it silently), and it prints `PKG write guard active` from inside the extractor:
+    an extraction without that line is rejected.
   - **Tests:** a fake extractor (a shell script run in the same sandbox) covers game + update +
     DLC, crashes, and a package writing outside its folder. `PS5_LAUNCHER_PKG_EXTRACTOR` points at
     a real extractor; with it and `PKG_FIXTURE`/`PKG_TITLE_ID`, `cargo test -- --ignored pkg_`
