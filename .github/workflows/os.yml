@@ -80,7 +80,8 @@ jobs:
             test -f /etc/bazzite/desktop_autologin
             /usr/share/ps5-launcher-os/release/ps5-launcher --version
             for tool in xdotool mpv yt-dlp; do command -v "$tool" || { echo "missing $tool"; exit 1; }; done
-            ls /usr/lib64/libmpv.so.2 /usr/lib64/libarchive.so.13
+            # Loaded at run time by name (trailers, archive installs).
+            for lib in libmpv.so.2 libarchive.so.13; do ldconfig -p | grep -q "$lib " || { echo "missing $lib"; exit 1; }; done
             test ! -e /etc/xdg/autostart/org.kde.plasma-welcome.desktop
             grep -q kinoite /usr/share/ublue-os/image-info.json
             test -x /usr/libexec/bazzite-autologin'
