@@ -82,7 +82,10 @@ jobs:
             for tool in xdotool mpv yt-dlp; do command -v "$tool" || { echo "missing $tool"; exit 1; }; done
             # Loaded at run time by name (trailers, archive installs).
             for lib in libmpv.so.2 libarchive.so.13; do ldconfig -p | grep -q "$lib " || { echo "missing $lib"; exit 1; }; done
-            test ! -e /etc/xdg/autostart/org.kde.plasma-welcome.desktop
+            for f in /etc/xdg/autostart/org.kde.plasma-welcome.desktop /etc/xdg/autostart/steam.desktop \
+                     /etc/xdg/autostart/bazzite-announcement.desktop /etc/skel/Desktop/Return.desktop; do
+              test ! -e "$f" || { echo "should be gone: $f"; exit 1; }
+            done
             grep -q kinoite /usr/share/ublue-os/image-info.json
             test -x /usr/libexec/bazzite-autologin'
 
