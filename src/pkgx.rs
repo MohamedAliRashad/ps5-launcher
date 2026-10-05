@@ -14,6 +14,10 @@ const URL: &str = "https://github.com/AzaharPlus/shadPS4Plus/releases/download/P
 const SIZE: u64 = 1_944_244;
 const SHA256: &str = "2adb5760be588eef0db76a0b281467ad2fc8ce6885fe00778af143b51b3d4784";
 
+/// src/pkgguard.c, built by build.rs: preloaded into the extractor so a failed or short write
+/// stops it with a message, instead of leaving truncated files behind a "success" report.
+const GUARD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pkgguard.so"));
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Game,
@@ -91,13 +95,14 @@ impl Scratch {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!("ps5-launcher-pkg-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
         std::fs::create_dir_all(dir.join("user")).map_err(|e| format!("{}: {e}", dir.display()))?;
+        std::fs::write(dir.join("pkgguard.so"), GUARD).map_err(|e| format!("{}: {e}", dir.display()))?;
         Ok(Self(dir))
     }
 
     /// The extractor command, confined to writing in this folder and `writable`.
     fn command(&self, tool: &Path, writable: Option<&Path>) -> Result<(Command, crate::sandbox::Confinement), String> {
         let mut cmd = Command::new(tool);
-        cmd.current_dir(&self.0).stdin(Stdio::null()).stderr(Stdio::null());
+        cmd.current_dir(&self.0).stdin(Stdio::null()).stderr(Stdio::null()).env("LD_PRELOAD", self.0.join("pkgguard.so"));
         let mut dirs = vec![self.0.as_path()];
         dirs.extend(writable);
         let guard = crate::sandbox::confine(&mut cmd, &dirs)?;
@@ -228,9 +233,84 @@ thread_local! {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
+
+    /// A stand-in extractor with the real one's habits: it writes with stdio, ignores every
+    /// result, and always prints its success lines. Named like the real binary so the guard
+    /// applies. Each `.pkg` holds a mode (`ok`, `short`: a 512-byte file-size limit while
+    /// writing 4,096 bytes, `shrink`: the file is cut behind its back) and a param.sfo path.
+    pub fn careless_extractor(dir: &Path) -> PathBuf {
+        let source = dir.join("careless.c");
+        std::fs::write(&source, r#"
+#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+    if (argc < 3) return 0;
+    if (!strcmp(argv[2], "--check-type")) return 101;
+    char mode[16] = {0}, sfo[4096] = {0}, dir[4096], path[4096], buf[4096];
+    FILE *in = fopen(argv[1], "r");
+    if (in) { if (fscanf(in, "%15s %4095s", mode, sfo) != 2) return 3; fclose(in); }
+    snprintf(dir, sizeof dir, "%s/CUSA12345", argv[2]); mkdir(dir, 0755);
+    snprintf(path, sizeof path, "%s/sce_sys", dir); mkdir(path, 0755);
+    snprintf(path, sizeof path, "%s/sce_sys/param.sfo", dir);
+    FILE *s = fopen(sfo, "rb"), *o = fopen(path, "wb");
+    size_t n = fread(buf, 1, sizeof buf, s); fwrite(buf, 1, n, o); fclose(o); fclose(s);
+    signal(SIGXFSZ, SIG_IGN);
+    if (!strcmp(mode, "short")) { struct rlimit r = {512, 512}; setrlimit(RLIMIT_FSIZE, &r); }
+    snprintf(path, sizeof path, "%s/eboot.bin", dir);
+    FILE *f = fopen(path, "wb");
+    memset(buf, 42, sizeof buf);
+    fwrite(buf, 1, sizeof buf, f);
+    if (!strcmp(mode, "shrink")) { fflush(f); if (truncate(path, 512)) return 4; }
+    fclose(f);
+    printf("Extracting file 1 of 1\nTHE END %s\n", argv[1]);
+    return 0;
+}
+"#).unwrap();
+        let tool = dir.join("pkg_extractor");
+        let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+        assert!(Command::new(cc).arg("-o").arg(&tool).arg(&source).status().unwrap().success());
+        tool
+    }
+
+    pub fn careless_pkg(dir: &Path, name: &str, mode: &str) -> PathBuf {
+        use crate::sfo::{build, Value};
+        let sfo = dir.join("game.sfo");
+        std::fs::write(&sfo, build(&[("CATEGORY", Value::Text("gd".into())), ("TITLE_ID", Value::Text("CUSA12345".into()))])).unwrap();
+        let pkg = dir.join(name);
+        std::fs::write(&pkg, format!("{mode} {}", sfo.display())).unwrap();
+        pkg
+    }
+
+    #[test]
+    fn a_failed_or_short_write_stops_the_extraction() {
+        if !crate::sandbox::available() { return; }
+        let t = tempfile::tempdir().unwrap();
+        let tool = careless_extractor(t.path());
+        for mode in ["short", "shrink"] {
+            // Unguarded, it reports success over a truncated file: the reviewed failure.
+            let free = t.path().join(format!("free-{mode}"));
+            std::fs::create_dir(&free).unwrap();
+            let out = Command::new(&tool).arg(careless_pkg(t.path(), "a.pkg", mode)).arg(&free).output().unwrap();
+            assert!(out.status.success() && finished(out.status, &String::from_utf8_lossy(&out.stdout)).is_ok());
+            assert_eq!(std::fs::metadata(free.join("CUSA12345/eboot.bin")).unwrap().len(), 512);
+            // Through extract(), the guard stops it.
+            let dest = t.path().join(format!("guarded-{mode}"));
+            std::fs::create_dir(&dest).unwrap();
+            let err = extract(&tool, &careless_pkg(t.path(), "a.pkg", mode), &dest, &AtomicBool::new(false), &|_, _| {}).unwrap_err();
+            assert!(err.starts_with("Cannot write the extracted files"), "{mode}: {err}");
+        }
+        let dest = t.path().join("guarded-ok");
+        std::fs::create_dir(&dest).unwrap();
+        extract(&tool, &careless_pkg(t.path(), "a.pkg", "ok"), &dest, &AtomicBool::new(false), &|_, _| {}).unwrap();
+        assert_eq!(std::fs::metadata(dest.join("CUSA12345/eboot.bin")).unwrap().len(), 4096);
+    }
 
     #[test]
     fn only_a_complete_clean_run_counts_as_extracted() {

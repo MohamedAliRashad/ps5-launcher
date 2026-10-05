@@ -330,6 +330,12 @@ A `Platform` (PS5 or PS4) travels with each installed game and catalog release
   - **Completion:** the tool exits 0 even on errors and a crash can leave plausible files, so an
     extraction counts only with a clean exit, its closing `THE END` line and the last
     `Extracting file N of N`.
+  - **Writes:** it also ignores the result of every `fwrite`/`fflush`/`fclose`, so a full disk
+    or an I/O error would leave truncated files behind a normal report. A small preloaded guard
+    ([src/pkgguard.c](../src/pkgguard.c), built by `build.rs` with the system C compiler and
+    embedded) stops it on any failed open-for-writing, write, flush, truncate or close, and on
+    close checks that each file's size on disk covers everything written to it. It applies to
+    the `pkg_extractor` binary only, not the tools its AppImage script runs.
   - **Tests:** a fake extractor (a shell script run in the same sandbox) covers game + update +
     DLC, crashes, and a package writing outside its folder. `PS5_LAUNCHER_PKG_EXTRACTOR` points at
     a real extractor; with it and `PKG_FIXTURE`/`PKG_TITLE_ID`, `cargo test -- --ignored pkg_`

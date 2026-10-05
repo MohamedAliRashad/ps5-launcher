@@ -1324,6 +1324,19 @@ mod tests {
     }
 
     #[test]
+    fn pkg_with_a_short_write_is_never_installed() {
+        if !crate::sandbox::available() { return; }
+        let (t, mut req) = fixture();
+        req.expected_ids = vec!["CUSA12345".into()];
+        let tool = crate::pkgx::tests::careless_extractor(t.path());
+        crate::pkgx::TEST_TOOL.with(|c| *c.borrow_mut() = Some(tool));
+        fs::copy(crate::pkgx::tests::careless_pkg(t.path(), "short.pkg", "short"), req.source.join("game.pkg")).unwrap();
+        let err = run(&req, &AtomicBool::new(false), &|_,_,_| {}).unwrap_err().to_string();
+        assert!(err.contains("Cannot write the extracted files"), "{err}");
+        assert_eq!(fs::read_dir(&req.destination).unwrap().count(), 0, "nothing published, stage removed");
+    }
+
+    #[test]
     fn pkg_failure_or_crash_leaves_game_folder_and_addons_untouched() {
         if !crate::sandbox::available() { return; }
         for case in ["dlc crash", "game crash", "escape"] {
