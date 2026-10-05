@@ -441,7 +441,7 @@ impl App {
                     self.kyty_switch_to_managed();
                 } else if self.kyty_update_available() {
                     if let Some(rel) = self.kyty.latest.clone() {
-                        self.kyty_install(rel);
+                        self.kyty_install(rel, true);
                     }
                 } else {
                     self.kyty_check(true);

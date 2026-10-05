@@ -15,8 +15,9 @@ pub struct KytyUi {
     pub version: String,
     /// Commit of the current emulator binary (to compare with the latest release).
     pub commit: String,
-    /// An update found while a game was running; installed when it closes.
-    pub pending: bool,
+    /// An update found while a game was running, and whether you asked for it (`true`) or it
+    /// came from the automatic checks. Installed when the game closes, if still wanted.
+    pub pending: Option<bool>,
     /// Install the latest build even over a self-built one (first start / missing emulator).
     pub force_install: bool,
 }
@@ -126,7 +127,7 @@ impl App {
             if managed && emulator_ok && !self.kyty_update_available() && !self.kyty.commit.is_empty() {
                 self.boot_kyty_done(&format!("KytyPS5 {} · up to date", kyty::pretty(&rel.tag)));
             } else {
-                self.kyty_install(rel);
+                self.kyty_install(rel, true); // first run: games can't start without it
             }
             return;
         }
@@ -134,7 +135,7 @@ impl App {
             let skipped = kyty::load_state().skip == rel.tag;
             if self.kyty_update_available() {
                 if (auto && !skipped) || manual {
-                    self.kyty_install(rel);
+                    self.kyty_install(rel, manual);
                 }
             } else if manual {
                 self.toast("KytyPS5 is up to date", &format!("You have the latest build, {}.", kyty::pretty(&rel.tag)), 1);
@@ -142,7 +143,7 @@ impl App {
         } else if !emulator_ok {
             // Fresh machine: fetch the emulator so games can be played right away.
             if auto || manual {
-                self.kyty_install(rel);
+                self.kyty_install(rel, manual);
             }
         } else if manual {
             if self.kyty_update_available() {
@@ -153,19 +154,20 @@ impl App {
         }
     }
 
-    /// Download and activate `rel` (switching to the managed install if needed).
-    pub fn kyty_install(&mut self, rel: Release) {
+    /// Download and activate `rel` (switching to the managed install if needed). `manual`: you
+    /// asked for it (or the emulator is missing), so it doesn't depend on automatic updates.
+    pub fn kyty_install(&mut self, rel: Release, manual: bool) {
         if self.kyty.busy {
             return;
         }
         if !self.live.is_empty() {
-            self.kyty.pending = true;
+            self.kyty.pending = Some(manual || self.kyty.pending == Some(true));
             self.toast("KytyPS5 update waiting", "It installs when you finish playing.", 0);
             self.boot_kyty_done("KytyPS5 update will install after your game");
             return;
         }
         self.kyty.busy = true;
-        self.kyty.pending = false;
+        self.kyty.pending = None;
         self.kyty.error.clear();
         self.kyty.progress = "Starting download…".into();
         self.kyty_refresh_settings();
@@ -223,12 +225,16 @@ impl App {
         });
     }
 
-    /// Called when all games have closed.
+    /// Called when all games have closed: install a queued update you asked for, or an automatic
+    /// one if automatic updates are still on.
     pub fn kyty_games_closed(&mut self) {
-        if self.kyty.pending {
-            if let Some(rel) = self.kyty.latest.clone() {
-                self.kyty_install(rel);
-            }
+        let Some(manual) = self.kyty.pending.take() else { return };
+        if !manual && !self.cfg.lock().unwrap().kyty_auto_update {
+            crate::log!("queued KytyPS5 update dropped: automatic updates are off");
+            return;
+        }
+        if let Some(rel) = self.kyty.latest.clone() {
+            self.kyty_install(rel, manual);
         }
     }
 
@@ -245,7 +251,7 @@ impl App {
     /// Switch from a self-built/custom emulator to auto-updated official builds.
     pub fn kyty_switch_to_managed(&mut self) {
         match self.kyty.latest.clone() {
-            Some(rel) => self.kyty_install(rel),
+            Some(rel) => self.kyty_install(rel, true),
             None => {
                 // Check first; install right after.
                 self.kyty.checking = true;
@@ -256,7 +262,7 @@ impl App {
                         match res {
                             Ok(rel) => {
                                 app.kyty.latest = Some(rel.clone());
-                                app.kyty_install(rel);
+                                app.kyty_install(rel, true);
                             }
                             Err(e) => app.toast("Couldn't reach GitHub", &e, 2),
                         }

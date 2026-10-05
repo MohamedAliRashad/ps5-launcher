@@ -12,8 +12,9 @@ pub struct ShadUi {
     pub error: String,
     /// A PS4 game (by local game id) to start once shadPS4 is installed.
     pub launch_after: Option<String>,
-    /// An update found while a game was running; installed when it closes.
-    pub pending: Option<Release>,
+    /// An update found while a game was running, and whether you asked for it. Installed when
+    /// the game closes, if still wanted.
+    pub pending: Option<(Release, bool)>,
 }
 
 fn post(f: impl FnOnce(&mut App) + Send + 'static) {
@@ -51,10 +52,12 @@ impl App {
                 Ok(rel) => {
                     shad::mark_checked(&rel.tag);
                     let st = shad::load_state();
-                    if rel.tag != st.installed && (manual || rel.tag != st.skip) {
+                    // Automatic updates may have been switched off while this check ran.
+                    let wanted = manual || app.cfg.lock().unwrap().shad_auto_update;
+                    if wanted && rel.tag != st.installed && (manual || rel.tag != st.skip) {
                         // A background first install that fails (offline) retries quietly later.
                         let quiet = !manual && !shad::installed();
-                        app.shad_install(rel, None, quiet);
+                        app.shad_install(rel, None, quiet, manual);
                     } else if manual {
                         app.toast("shadPS4 is up to date", &format!("You have the latest release, {}.", shad::pretty(&rel.tag)), 1);
                     }
@@ -85,7 +88,7 @@ impl App {
                 match res {
                     Ok(rel) => {
                         let after = app.shad.launch_after.clone();
-                        app.shad_install(rel, after, false);
+                        app.shad_install(rel, after, false, true);
                     }
                     Err(e) => {
                         app.shad.launch_after = None;
@@ -96,12 +99,15 @@ impl App {
         });
     }
 
-    pub fn shad_install(&mut self, rel: Release, launch_after: Option<String>, quiet: bool) {
+    /// `manual`: you asked for it (Settings, or playing a PS4 game), so it doesn't depend on
+    /// automatic updates.
+    pub fn shad_install(&mut self, rel: Release, launch_after: Option<String>, quiet: bool, manual: bool) {
         if self.shad.busy {
             return;
         }
         if !self.live.is_empty() && launch_after.is_none() {
-            self.shad.pending = Some(rel);
+            let asked = manual || self.shad.pending.as_ref().is_some_and(|(_, m)| *m);
+            self.shad.pending = Some((rel, asked));
             return;
         }
         self.shad.busy = true;
@@ -150,11 +156,15 @@ impl App {
         });
     }
 
-    /// Called when all games have closed.
+    /// Called when all games have closed: install a queued update you asked for, or an automatic
+    /// one if automatic updates are still on.
     pub fn shad_games_closed(&mut self) {
-        if let Some(rel) = self.shad.pending.take() {
-            self.shad_install(rel, None, false);
+        let Some((rel, manual)) = self.shad.pending.take() else { return };
+        if !manual && !self.cfg.lock().unwrap().shad_auto_update {
+            crate::log!("queued shadPS4 update dropped: automatic updates are off");
+            return;
         }
+        self.shad_install(rel, None, false, manual);
     }
 
     pub fn shad_rollback(&mut self) {
