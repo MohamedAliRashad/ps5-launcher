@@ -79,7 +79,8 @@ jobs:
             test -f /etc/xdg/autostart/ps5-launcher-os.desktop
             test -f /etc/bazzite/desktop_autologin
             /usr/share/ps5-launcher-os/release/ps5-launcher --version
-            command -v xdotool mpv yt-dlp
+            for tool in xdotool mpv yt-dlp; do command -v "$tool" || { echo "missing $tool"; exit 1; }; done
+            ls /usr/lib64/libmpv.so.2 /usr/lib64/libarchive.so.13
             test ! -e /etc/xdg/autostart/org.kde.plasma-welcome.desktop
             grep -q kinoite /usr/share/ublue-os/image-info.json
             test -x /usr/libexec/bazzite-autologin'
@@ -89,8 +90,9 @@ jobs:
           echo "${{ github.token }}" | sudo podman login ghcr.io -u "${{ github.actor }}" --password-stdin
           img="$IMAGE:${{ matrix.tag }}"
           sudo podman tag "$img" "$img-$(date -u +%Y%m%d)"
-          sudo podman push --retry 3 "$img"
-          sudo podman push --retry 3 "$img-$(date -u +%Y%m%d)"
+          for ref in "$img" "$img-$(date -u +%Y%m%d)"; do
+            for try in 1 2 3; do sudo podman push "$ref" && break; [ "$try" = 3 ] && exit 1; sleep 30; done
+          done
 
   iso:
     needs: image
