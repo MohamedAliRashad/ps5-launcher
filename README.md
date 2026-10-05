@@ -52,10 +52,15 @@ emulators and the system all keep themselves up to date.
    [Fedora Media Writer](https://fedoraproject.org/workstation/download).
 2. Start the PC from the USB stick (press F12, F11, F8 or Esc while it starts) and choose
    **Install PS5 Launcher OS**.
-3. In the installer, connect to Wi-Fi if you have no cable (**Network & Host Name**), choose the
-   disk (**Installation Destination**), create your user (**User Creation**), then **Begin
-   Installation**. It downloads the system (about 7 GB), so it takes a while. The installer says
-   "Fedora": Bazzite is built on Fedora and uses its installer.
+3. In the installer, choose your language, then on the summary screen:
+   - **Network & Host Name:** connect to Wi-Fi if you have no cable.
+   - **Installation Destination:** pick the disk and press **Done**. Leave **Encrypt my data**
+     off, or the PC asks for a passphrase every time it starts.
+   - **Time & Date:** pick your city (the launcher shows the time).
+   - **User Creation:** your name and a password.
+
+   Then **Begin Installation**. It downloads the system (about 7 GB), so it takes a while. The
+   installer says "Fedora": Bazzite is built on Fedora and uses its installer.
 4. Restart and remove the USB stick. If Secure Boot is on, a blue **MOK management** screen
    appears once: choose **Enroll MOK**, **Continue**, **Yes**, type `universalblue`, then
    **Reboot**.
