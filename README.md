@@ -61,9 +61,12 @@ emulators and the system all keep themselves up to date.
 
    Then **Begin Installation**. It downloads the system (about 7 GB), so it takes a while. The
    installer says "Fedora": Bazzite is built on Fedora and uses its installer.
-4. Restart and remove the USB stick. If Secure Boot is on, a blue **MOK management** screen
-   appears once: choose **Enroll MOK**, **Continue**, **Yes**, type `universalblue`, then
-   **Reboot**.
+4. Press **Reboot System**, remove the USB stick and stay at the PC. If Secure Boot is on, a blue
+   **Perform MOK management** screen appears once and waits about 5 minutes. Use the arrow keys
+   and Enter: **Enroll MOK**, **Continue**, then **Yes** (it starts on No), type `universalblue`,
+   Enter, then **Reboot**. Missed it, and now the PC stops with "bad shim signature"? Start
+   from the USB stick again, choose **Troubleshooting → Enroll the Secure Boot key again**, and
+   the blue screen comes back.
 
 The PC now starts straight into PS5 Launcher, and it picks the NVIDIA version of the system by
 itself when it finds an NVIDIA graphics card. To get to the desktop, quit the launcher
