@@ -213,6 +213,19 @@ pub fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
     era * 146097 + doe - 719468
 }
 
+/// Whether the launcher runs as the whole session (started by ps5-launcher-session), where
+/// there is no desktop behind it to return to.
+pub fn standalone_session() -> bool {
+    std::env::var_os("PS5_LAUNCHER_SESSION").is_some_and(|v| v == "1")
+}
+
+/// Turn the PC off or restart it ("poweroff" or "reboot"), through systemd.
+pub fn power(action: &str) {
+    if let Err(e) = std::process::Command::new("systemctl").arg(action).spawn() {
+        crate::log!("could not run systemctl {action}: {e}");
+    }
+}
+
 /// Bytes used by a file or by everything under a folder. Symlinks are counted, not followed;
 /// unreadable entries count as zero.
 pub fn tree_size(path: &Path) -> u64 {

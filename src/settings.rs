@@ -43,6 +43,7 @@ pub enum SId {
     Rawg,
     RawgRemove,
     Refresh,
+    Restart,
     Quit,
 }
 
@@ -296,10 +297,18 @@ impl App {
         }
 
         header(&mut rows, "");
-        let mut r = row(4, "Quit PS5 Launcher");
-        r.value = "Ctrl+Q".into();
-        r.danger = true;
-        rows.push((SId::Quit, r));
+        if util::standalone_session() {
+            // Nothing is behind the launcher in its own session, so leaving it means turning the PC off or on.
+            rows.push((SId::Restart, row(4, "Restart")));
+            let mut r = row(4, "Power off");
+            r.danger = true;
+            rows.push((SId::Quit, r));
+        } else {
+            let mut r = row(4, "Quit PS5 Launcher");
+            r.value = "Ctrl+Q".into();
+            r.danger = true;
+            rows.push((SId::Quit, r));
+        }
 
         // Rows between two headers form one card.
         for i in 0..rows.len() {
@@ -517,6 +526,8 @@ impl App {
                 self.toast("Installed games rescanned", &format!("{n} game{} found.", if n == 1 { "" } else { "s" }), 1);
                 self.refresh_settings();
             }
+            SId::Quit if util::standalone_session() => util::power("poweroff"),
+            SId::Restart => util::power("reboot"),
             SId::Quit => {
                 let _ = slint::quit_event_loop();
             }
