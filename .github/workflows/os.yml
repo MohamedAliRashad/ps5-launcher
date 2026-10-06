@@ -18,10 +18,6 @@ on:
     types: [completed]
   schedule:
     - cron: "30 5 * * *"
-  # TEMPORARY (remove before merging): test builds from the os-iso branch.
-  push:
-    branches: [os-iso]
-    paths: [os/**, .github/workflows/os.yml]
 
 permissions:
   contents: write
@@ -104,7 +100,7 @@ jobs:
     needs: image
     # Only when asked or after a release: the ISO installs the current image, so it doesn't
     # need rebuilding with every image update.
-    if: github.event_name == 'workflow_run' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.iso)
+    if: github.event_name == 'workflow_run' || (github.event_name == 'workflow_dispatch' && inputs.iso)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -116,16 +112,7 @@ jobs:
           size=$(stat -c %s ps5-launcher-os-x86_64.iso)
           echo "ISO: $size bytes"
           test "$size" -lt 2000000000
-      - name: Keep the test ISO (branch builds)
-        if: github.event_name == 'push'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ps5-launcher-os-iso
-          path: ps5-launcher-os-x86_64.iso*
-          retention-days: 7
-          compression-level: 0
       - name: Attach to the latest release
-        if: github.event_name != 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
