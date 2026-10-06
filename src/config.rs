@@ -8,6 +8,8 @@ use std::path::PathBuf;
 #[serde(default)]
 pub struct Config {
     pub emulator: String,
+    /// Your own shadPS4 build; empty = the one the launcher installs and updates.
+    pub shad_emulator: String,
     pub game_dirs: Vec<String>,
     pub download_dir: String,
     pub install_dir: String,
@@ -23,7 +25,8 @@ pub struct Config {
     pub sounds: bool,
     pub return_on_exit: bool,
     pub rawg_key: String,
-    /// Output name (e.g. "DP-2"); empty = primary display.
+    /// Output name (e.g. "DP-2"); empty = primary display; `display::ACTIVE` = the display
+    /// the mouse pointer is on when the launcher starts.
     pub monitor: String,
     /// Keep the launcher-managed KytyPS5 on the latest official build.
     pub kyty_auto_update: bool,
@@ -39,6 +42,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             emulator: String::new(),
+            shad_emulator: String::new(),
             game_dirs: vec!["~/Games/PS5".into()],
             download_dir: "~/Downloads/PS5".into(),
             install_dir: "~/Games/PS5".into(),
@@ -66,6 +70,13 @@ pub const RESOLUTIONS: [(u32, u32); 5] = [(1280, 720), (1600, 900), (1920, 1080)
 pub const PRESENT_MODES: [(&str, &str); 3] =
     [("Mailbox", "Mailbox (low latency)"), ("Fifo", "Fifo (V-Sync)"), ("Immediate", "Immediate (uncapped)")];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShadSource {
+    Managed,
+    OwnFound,
+    OwnMissing,
+}
+
 impl Config {
     pub fn path() -> PathBuf {
         config_dir().join("config.json")
@@ -88,7 +99,7 @@ impl Config {
         cfg
     }
 
-    /// Settings has one "Update automatically" switch for the launcher, KytyPS5 and shadPS4.
+    /// Settings has one "Update automatically" switch for the launcher, shadPS4 and KytyPS5.
     /// Older settings files set them separately (and have no shadPS4 entry, which defaults to
     /// on): if any was turned off, all are off, so the switch shows what actually happens.
     fn one_update_switch(&mut self) {
@@ -109,13 +120,39 @@ impl Config {
     }
 
     pub fn emulator_ok(&self) -> bool {
-        let p = self.emulator_path();
-        std::fs::metadata(&p).map(|m| m.is_file() && is_executable(&m)).unwrap_or(false)
+        runnable(&self.emulator_path())
+    }
+
+    /// Whether the user chose their own shadPS4 instead of the managed one.
+    pub fn shad_custom(&self) -> bool {
+        !self.shad_emulator.trim().is_empty()
+    }
+
+    /// The shadPS4 to launch: the user's own build when set, else the managed one.
+    pub fn shad_path(&self) -> PathBuf {
+        if self.shad_custom() { expand_home(self.shad_emulator.trim()) } else { crate::shad::emulator() }
+    }
+
+    /// Where PS4 games get their shadPS4: the launcher's copy, or one the user set (found or not).
+    pub fn shad_source(&self) -> ShadSource {
+        match (self.shad_custom(), self.shad_ok()) {
+            (false, _) => ShadSource::Managed,
+            (true, true) => ShadSource::OwnFound,
+            (true, false) => ShadSource::OwnMissing,
+        }
+    }
+
+    pub fn shad_ok(&self) -> bool {
+        if self.shad_custom() { runnable(&self.shad_path()) } else { crate::shad::installed() }
     }
 
     pub fn game_dir_paths(&self) -> Vec<PathBuf> {
         self.game_dirs.iter().filter(|d| !d.trim().is_empty()).map(|d| expand_home(d.trim())).collect()
     }
+}
+
+fn runnable(path: &std::path::Path) -> bool {
+    std::fs::metadata(path).map(|m| m.is_file() && is_executable(&m)).unwrap_or(false)
 }
 
 fn is_executable(m: &std::fs::Metadata) -> bool {
@@ -149,6 +186,25 @@ mod tests {
         assert!(!opted_out.seed_after_download);
         let restored: Config = serde_json::from_slice(&serde_json::to_vec(&opted_out).unwrap()).unwrap();
         assert!(!restored.seed_after_download);
+    }
+
+    #[test]
+    fn shad_path_is_managed_until_the_user_sets_one() {
+        let mut c = Config::default();
+        assert!(!c.shad_custom());
+        assert_eq!(c.shad_path(), crate::shad::emulator());
+        c.shad_emulator = "  ".into();
+        assert!(!c.shad_custom(), "blank text is not a path");
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("shadps4");
+        c.shad_emulator = exe.to_string_lossy().into_owned();
+        assert!(c.shad_custom() && !c.shad_ok(), "a missing file is not runnable");
+        std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+        assert!(!c.shad_ok(), "not executable yet");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(c.shad_ok());
+        assert_eq!(c.shad_path(), exe);
     }
 }
 

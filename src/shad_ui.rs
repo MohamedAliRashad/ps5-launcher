@@ -32,8 +32,11 @@ impl App {
     /// With automatic updates on, install shadPS4 when it's missing and update it every few
     /// hours. Waits for the start-up screen and for KytyPS5's own download to finish.
     pub fn shad_tick(&mut self) {
-        let auto = self.cfg.lock().unwrap().shad_auto_update;
-        if !auto || self.boot.active || self.kyty.busy || self.shad.busy {
+        let (auto, custom) = {
+            let c = self.cfg.lock().unwrap();
+            (c.shad_auto_update, c.shad_custom())
+        };
+        if !auto || custom || self.boot.active || self.kyty.busy || self.shad.busy {
             return;
         }
         if !shad::installed() || crate::util::now_secs() - shad::load_state().last_check > shad::CHECK_INTERVAL {
@@ -160,6 +163,10 @@ impl App {
     /// one if automatic updates are still on.
     pub fn shad_games_closed(&mut self) {
         let Some((rel, manual)) = self.shad.pending.take() else { return };
+        if self.cfg.lock().unwrap().shad_custom() {
+            crate::log!("queued shadPS4 update dropped: you use your own shadPS4");
+            return;
+        }
         if !manual && !self.cfg.lock().unwrap().shad_auto_update {
             crate::log!("queued shadPS4 update dropped: automatic updates are off");
             return;

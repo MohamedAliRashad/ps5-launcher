@@ -1,4 +1,4 @@
-//! Offline RuTracker release catalogs (PS5 and PS4 forums), merged into one Library.
+//! Offline RuTracker release catalogs (PS4 and PS5 forums), merged into one Library.
 //! Browser collection is a separate tool.
 
 use crate::platform::Platform;

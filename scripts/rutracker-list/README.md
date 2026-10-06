@@ -1,4 +1,4 @@
-# RuTracker topic collector (PS5 and PS4)
+# RuTracker topic collector (PS4 and PS5)
 
 Every script takes `--platform ps5|ps4` (default `ps5`): PS5 is forum 546, PS4 is forum 973.
 Output, translation and publishing use `<platform>-topics.json`. For PS4:

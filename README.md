@@ -1,6 +1,6 @@
 # PS5 Launcher
 
-A PS5-style home screen for Linux and macOS. Browse PS5 and PS4 games with their official artwork,
+A PS5-style home screen for Linux and macOS. Browse PS4 and PS5 games with their official artwork,
 download and install them, and play them with the [KytyPS5](https://github.com/KytyPS5/KytyPS5) (PS5)
 and [shadPS4](https://github.com/shadps4-emu/shadPS4) (PS4) emulators, using a controller, keyboard or
 mouse.
@@ -182,7 +182,7 @@ releases can't be installed; pick a release that is a folder, an archive or an e
 
 - **A game closes right away:** check its tag, then **Options → View emulator log**.
 - **Resume or Stop doesn't work:** install `xdotool`.
-- **Wrong screen:** change **Settings → Display**. For a window, run `ps5-launcher --windowed`.
+- **Wrong screen:** change **Settings → Display**. Choose **Active display** to start on the display the mouse pointer is on (macOS, and Linux with `xdotool`). For a window, run `ps5-launcher --windowed`.
 - **Too big or too small:** run `PS5_LAUNCHER_SCALE=1.15 ps5-launcher` (bigger number, bigger UI).
 - **A new KytyPS5 broke a game:** **Settings → Roll back to previous KytyPS5**.
 

@@ -2,7 +2,7 @@
 
 use crate::app::*;
 use crate::audio::{self, Sound};
-use crate::config::{PRESENT_MODES, RESOLUTIONS};
+use crate::config::{ShadSource, PRESENT_MODES, RESOLUTIONS};
 use crate::util;
 use crate::SettingData;
 
@@ -35,6 +35,7 @@ pub enum SId {
     // Advanced
     Advanced,
     Emulator,
+    ShadEmulator,
     Resolution,
     Present,
     Amd,
@@ -123,6 +124,37 @@ impl App {
         }
         rows.push((SId::AppUpdate, r));
 
+        // shadPS4
+        let shad_state = crate::shad::load_state();
+        let shad_installed = crate::shad::installed();
+        let mut r = row(4, "shadPS4");
+        r.hint = if cfg.shad_custom() {
+            "Runs PS4 games · using your own build · no automatic updates"
+        } else if shad_installed {
+            "Runs PS4 games"
+        } else if cfg.shad_auto_update {
+            "Runs PS4 games · installs by itself in the background"
+        } else {
+            "Runs PS4 games · installs when you first play one"
+        }
+        .into();
+        let (value, kind) = if self.shad.busy {
+            (self.shad.progress.clone(), 0)
+        } else if cfg.shad_custom() {
+            ("Own build".to_string(), if cfg.shad_ok() { 1 } else { 2 })
+        } else if !shad_installed {
+            ("Install".to_string(), 3)
+        } else if shad_state.latest == shad_state.installed {
+            (format!("{} · Up to date", crate::shad::pretty(&shad_state.installed)), 1)
+        } else {
+            (crate::shad::pretty(&shad_state.installed), 0)
+        };
+        (r.value, r.value_kind) = (value.into(), kind);
+        if !self.shad.error.is_empty() {
+            (r.hint, r.hint_kind) = (self.shad.error.clone().into(), 2);
+        }
+        rows.push((SId::ShadUpdate, r));
+
         // KytyPS5
         let ok = cfg.emulator_ok();
         let managed = self.kyty_managed();
@@ -152,57 +184,34 @@ impl App {
         }
         rows.push((SId::KytyUpdate, r));
 
-        // shadPS4
-        let shad_state = crate::shad::load_state();
-        let shad_installed = crate::shad::installed();
-        let mut r = row(4, "shadPS4");
-        r.hint = if shad_installed {
-            "Runs PS4 games"
-        } else if cfg.shad_auto_update {
-            "Runs PS4 games · installs by itself in the background"
-        } else {
-            "Runs PS4 games · installs when you first play one"
-        }
-        .into();
-        let (value, kind) = if self.shad.busy {
-            (self.shad.progress.clone(), 0)
-        } else if !shad_installed {
-            ("Install".to_string(), 3)
-        } else if shad_state.latest == shad_state.installed {
-            (format!("{} · Up to date", crate::shad::pretty(&shad_state.installed)), 1)
-        } else {
-            (crate::shad::pretty(&shad_state.installed), 0)
-        };
-        (r.value, r.value_kind) = (value.into(), kind);
-        if !self.shad.error.is_empty() {
-            (r.hint, r.hint_kind) = (self.shad.error.clone().into(), 2);
-        }
-        rows.push((SId::ShadUpdate, r));
-
         let mut r = row(2, "Update automatically");
         r.on = cfg.app_auto_update && cfg.kyty_auto_update && cfg.shad_auto_update;
         r.hint = "Checks every few hours · updates wait until you close your game".into();
         rows.push((SId::AutoUpdate, r));
         // Rollbacks only when there is something to go back to.
         let mut rollback_hint = "For when an update breaks a game";
+        if !cfg.shad_custom() && !shad_state.previous.is_empty() && crate::shad::root().join("versions").join(&shad_state.previous).is_dir() {
+            let mut r = row(4, "Go back to the previous shadPS4");
+            r.value = crate::shad::pretty(&shad_state.previous).into();
+            r.hint = std::mem::take(&mut rollback_hint).into();
+            rows.push((SId::ShadRollback, r));
+        }
         if managed && !kyty_state.previous.is_empty() && crate::kyty::root().join("versions").join(&kyty_state.previous).is_dir() {
             let mut r = row(4, "Go back to the previous KytyPS5");
             r.value = crate::kyty::pretty(&kyty_state.previous).into();
-            r.hint = std::mem::take(&mut rollback_hint).into();
-            rows.push((SId::KytyRollback, r));
-        }
-        if !shad_state.previous.is_empty() && crate::shad::root().join("versions").join(&shad_state.previous).is_dir() {
-            let mut r = row(4, "Go back to the previous shadPS4");
-            r.value = crate::shad::pretty(&shad_state.previous).into();
             r.hint = rollback_hint.into();
-            rows.push((SId::ShadRollback, r));
+            rows.push((SId::KytyRollback, r));
         }
 
         header(&mut rows, "LAUNCHER");
         let mut r = row(3, "Display");
-        r.value = match self.monitors.iter().find(|m| m.name == cfg.monitor) {
-            Some(m) => format!("{} · {}×{}", m.name, m.w, m.h),
-            None => "Primary display".into(),
+        r.value = if cfg.monitor == crate::display::ACTIVE {
+            "Active display".into()
+        } else {
+            match self.monitors.iter().find(|m| m.name == cfg.monitor) {
+                Some(m) => format!("{} · {}×{}", m.name, m.w, m.h),
+                None => "Primary display".into(),
+            }
         }
         .into();
         rows.push((SId::Display, r));
@@ -222,28 +231,10 @@ impl App {
         header(&mut rows, "ADVANCED");
         let advanced = self.settings_advanced;
         let mut r = row(4, if advanced { "Hide advanced settings" } else { "Show advanced settings" });
-        r.hint = "KytyPS5 location and video options, artwork key, game catalog".into();
+        r.hint = "PS4 and PS5 emulator locations, video options, artwork key, game catalog".into();
         rows.push((SId::Advanced, r));
         if advanced {
-            let mut r = row(1, "KytyPS5 location");
-            r.value = util::display_path(&cfg.emulator).into();
-            (r.hint, r.hint_kind) = if ok { ("Found".into(), 1) } else { ("Nothing runnable at this path".into(), 2) };
-            rows.push((SId::Emulator, r));
-            let mut r = row(3, "Resolution (PS5 games)");
-            r.value = format!("{} × {}", cfg.width, cfg.height).into();
-            rows.push((SId::Resolution, r));
-            let mut r = row(3, "Present mode (PS5 games)");
-            r.value = PRESENT_MODES.iter().find(|(k, _)| *k == cfg.present_mode).map(|(_, l)| *l).unwrap_or(cfg.present_mode.as_str()).into();
-            r.hint = "Try V-Sync if the picture tears".into();
-            rows.push((SId::Present, r));
-            let mut r = row(2, "AMD CPU patches (PS5 games)");
-            r.on = cfg.amd_cpu;
-            r.hint = "Only for AMD processors".into();
-            rows.push((SId::Amd, r));
-            let mut r = row(1, "Extra KytyPS5 arguments");
-            r.value = cfg.extra_args.clone().into();
-            r.hint = "For example --vblank-frequency 60 --tessellation".into();
-            rows.push((SId::Extra, r));
+            header(&mut rows, "LAUNCHER");
 
             let mut r = row(1, "RAWG API key");
             r.secret = true;
@@ -271,6 +262,37 @@ impl App {
             };
             r.hint = "Seeder counts are from that date, not live".into();
             rows.push((SId::Refresh, r));
+
+            header(&mut rows, "PS4 GAMES · SHADPS4");
+            let mut r = row(1, "shadPS4 location");
+            r.value = util::display_path(&cfg.shad_emulator).into();
+            (r.hint, r.hint_kind) = match cfg.shad_source() {
+                ShadSource::Managed => ("Empty = the one the launcher installs and updates".into(), 0),
+                ShadSource::OwnFound => ("Found · no automatic updates".into(), 1),
+                ShadSource::OwnMissing => ("Nothing runnable at this path".into(), 2),
+            };
+            rows.push((SId::ShadEmulator, r));
+
+            header(&mut rows, "PS5 GAMES · KYTYPS5");
+            let mut r = row(1, "KytyPS5 location");
+            r.value = util::display_path(&cfg.emulator).into();
+            (r.hint, r.hint_kind) = if ok { ("Found".into(), 1) } else { ("Nothing runnable at this path".into(), 2) };
+            rows.push((SId::Emulator, r));
+            let mut r = row(3, "Resolution");
+            r.value = format!("{} × {}", cfg.width, cfg.height).into();
+            rows.push((SId::Resolution, r));
+            let mut r = row(3, "Present mode");
+            r.value = PRESENT_MODES.iter().find(|(k, _)| *k == cfg.present_mode).map(|(_, l)| *l).unwrap_or(cfg.present_mode.as_str()).into();
+            r.hint = "Try V-Sync if the picture tears".into();
+            rows.push((SId::Present, r));
+            let mut r = row(2, "AMD CPU patches");
+            r.on = cfg.amd_cpu;
+            r.hint = "Only for AMD processors".into();
+            rows.push((SId::Amd, r));
+            let mut r = row(1, "Extra KytyPS5 arguments");
+            r.value = cfg.extra_args.clone().into();
+            r.hint = "For example --vblank-frequency 60 --tessellation".into();
+            rows.push((SId::Extra, r));
         }
 
         header(&mut rows, "");
@@ -360,7 +382,7 @@ impl App {
                 self.save_cfg(|c| c.present_mode = next);
             }
             SId::Display => {
-                let names: Vec<String> = std::iter::once(String::new()).chain(self.monitors.iter().map(|m| m.name.clone())).collect();
+                let names: Vec<String> = [String::new(), crate::display::ACTIVE.to_string()].into_iter().chain(self.monitors.iter().map(|m| m.name.clone())).collect();
                 let cur = self.cfg.lock().unwrap().monitor.clone();
                 let pos = names.iter().position(|n| *n == cur).unwrap_or(0) as i32;
                 let next = names[(pos + dir).rem_euclid(names.len() as i32) as usize].clone();
@@ -402,10 +424,11 @@ impl App {
     pub fn settings_activate(&mut self, i: usize) {
         let Some(id) = self.settings_ids.get(i).copied() else { return };
         match id {
-            SId::Emulator | SId::Dirs | SId::Extra | SId::Rawg | SId::DownloadDir | SId::InstallDir => {
+            SId::Emulator | SId::ShadEmulator | SId::Dirs | SId::Extra | SId::Rawg | SId::DownloadDir | SId::InstallDir => {
                 let cfg = self.cfg.lock().unwrap().clone();
                 let text = match id {
                     SId::Emulator => cfg.emulator,
+                    SId::ShadEmulator => cfg.shad_emulator,
                     SId::Dirs => cfg.game_dirs.join("; "),
                     SId::Extra => cfg.extra_args,
                     SId::DownloadDir => cfg.download_dir,
@@ -470,6 +493,10 @@ impl App {
             }
             SId::ShadUpdate => {
                 audio::play(Sound::Select);
+                if self.cfg.lock().unwrap().shad_custom() {
+                    self.toast("Using your own shadPS4", "Clear Settings → Advanced → shadPS4 location to use the launcher's copy.", 0);
+                    return;
+                }
                 // Installs when shadPS4 isn't there yet, otherwise updates it if there's a newer release.
                 self.shad_check(true);
             }
@@ -515,6 +542,16 @@ impl App {
                 self.kyty_refresh_version();
                 let ok = self.cfg.lock().unwrap().emulator_ok();
                 if ok { self.toast("Emulator path saved", "Games will start with this KytyPS5.", 1) } else { self.toast("Emulator not found", "There's no runnable kyty_emulator at that path.", 2) }
+            }
+            SId::ShadEmulator => {
+                self.save_cfg(|c| c.shad_emulator = t);
+                let source = self.cfg.lock().unwrap().shad_source();
+                match source {
+                    ShadSource::Managed => self.toast("shadPS4 location cleared", "PS4 games use the shadPS4 the launcher installs.", 1),
+                    ShadSource::OwnFound => self.toast("shadPS4 path saved", "PS4 games will start with this shadPS4. It is not updated automatically.", 1),
+                    ShadSource::OwnMissing => self.toast("shadPS4 not found", "There's no runnable shadPS4 at that path.", 2),
+                }
+                self.refresh_settings();
             }
             SId::Dirs => {
                 let dirs: Vec<String> = t.split([';', '\n']).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
@@ -572,7 +609,11 @@ impl App {
     /// Switch to another display. The UI scale is fixed per window at startup, so the
     /// launcher restarts itself on the new display (about a second).
     pub fn move_to_monitor(&mut self, name: &str) {
-        let label = if name.is_empty() { "the primary display".to_string() } else { name.to_string() };
+        let label = match name {
+            "" => "the primary display".to_string(),
+            crate::display::ACTIVE => "the active display".to_string(),
+            _ => name.to_string(),
+        };
         if !self.live.is_empty() {
             self.toast(&format!("Moves to {label} next time"), "The launcher can't restart while a game is running.", 0);
             return;
