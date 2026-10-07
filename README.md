@@ -54,7 +54,7 @@ chmod +x ps5-launcher-linux-x86_64.AppImage && ./ps5-launcher-linux-x86_64.AppIm
 
 Most systems need FUSE 2 for AppImages (`sudo apt install libfuse2`). Without it, start it with
 `APPIMAGE_EXTRACT_AND_RUN=1 ./ps5-launcher-linux-x86_64.AppImage`. The AppImage updates itself by
-replacing its own file, so keep it in a folder you can write to. It needs the helpers below.
+replacing its own file, so keep it in a folder you can write to. It needs the helpers (see **Helpers**).
 
 **One command, for your user only:**
 
@@ -86,7 +86,7 @@ MoltenVK for Vulkan), so on Apple Silicon it runs through Rosetta 2.
 
 2. Download `ps5-launcher-macos-universal.zip` from the Releases page and unzip it.
 3. Move **PS5 Launcher** to Applications.
-4. Open it once as described below.
+4. Open it once. If macOS blocks it, see **"Not Opened: Apple could not verify…"**.
 5. Continue with [Getting started](#getting-started). The launcher downloads KytyPS5 for you.
 
 **"Not Opened: Apple could not verify…"** The app isn't notarized (that needs a paid Apple
@@ -225,6 +225,14 @@ results to the community lists (needs a free GitHub account).
 - **Display:** choose a display, or **Active display** to start on the one the mouse pointer is
   on (macOS, and Linux with `xdotool`). For a window instead of fullscreen, run
   `ps5-launcher --windowed`.
+- **Game output resolution** (PS5 games, under **Show advanced settings**): the screen resolution
+  the game is told it runs on, and the size it renders at.
+  - **Game default:** what a PS5 reports for that game (4K or 1080p). The most accurate.
+  - **1080p (Full HD):** the fastest. Games that pick 4K by default run much faster.
+  - **4K (Ultra HD):** the sharpest and the slowest.
+
+  The **Resolution** setting is the window size only. The game's picture is scaled to
+  fit the window.
 - **Your own emulator builds:** under **Settings → Show advanced settings**, set **KytyPS5 location**
   or **shadPS4 location**. The launcher then runs your build and does not install or update that
   emulator. Clear the field to go back to the one the launcher manages.

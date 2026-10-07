@@ -2,7 +2,7 @@
 
 use crate::app::*;
 use crate::audio::{self, Sound};
-use crate::config::{ShadSource, PRESENT_MODES, RESOLUTIONS};
+use crate::config::{ShadSource, PRESENT_MODES, RESOLUTIONS, VIDEO_OUT_MODES};
 use crate::util;
 use crate::SettingData;
 
@@ -30,6 +30,7 @@ pub enum SId {
     ShadRollback,
     // Launcher
     Display,
+    VideoOut,
     Sounds,
     Share,
     // Advanced
@@ -281,7 +282,12 @@ impl App {
             rows.push((SId::Emulator, r));
             let mut r = row(3, "Resolution");
             r.value = format!("{} × {}", cfg.width, cfg.height).into();
+            r.hint = "The size of the window. What the game is told is Game output resolution".into();
             rows.push((SId::Resolution, r));
+            let mut r = row(3, "Game output resolution");
+            r.value = VIDEO_OUT_MODES.iter().find(|(k, _)| *k == cfg.video_out).map(|(_, l)| *l).unwrap_or(VIDEO_OUT_MODES[0].1).into();
+            r.hint = "The screen resolution the game is told it runs on. The game renders at this size.".into();
+            rows.push((SId::VideoOut, r));
             let mut r = row(3, "Present mode");
             r.value = PRESENT_MODES.iter().find(|(k, _)| *k == cfg.present_mode).map(|(_, l)| *l).unwrap_or(cfg.present_mode.as_str()).into();
             r.hint = "Try V-Sync if the picture tears".into();
@@ -390,6 +396,12 @@ impl App {
                 let next = PRESENT_MODES[(pos + dir).rem_euclid(PRESENT_MODES.len() as i32) as usize].0.to_string();
                 self.save_cfg(|c| c.present_mode = next);
             }
+            SId::VideoOut => {
+                let cur = self.cfg.lock().unwrap().video_out.clone();
+                let pos = VIDEO_OUT_MODES.iter().position(|(k, _)| *k == cur).unwrap_or(0) as i32;
+                let next = VIDEO_OUT_MODES[(pos + dir).rem_euclid(VIDEO_OUT_MODES.len() as i32) as usize].0.to_string();
+                self.save_cfg(|c| c.video_out = next);
+            }
             SId::Display => {
                 let names: Vec<String> = [String::new(), crate::display::ACTIVE.to_string()].into_iter().chain(self.monitors.iter().map(|m| m.name.clone())).collect();
                 let cur = self.cfg.lock().unwrap().monitor.clone();
@@ -454,7 +466,7 @@ impl App {
                 let on = self.settings_rows[i].on;
                 self.settings_change(i, if on { -1 } else { 1 });
             }
-            SId::Resolution | SId::Present | SId::Display => self.settings_change(i, 1),
+            SId::Resolution | SId::Present | SId::VideoOut | SId::Display => self.settings_change(i, 1),
             SId::RawgRemove => {
                 self.save_cfg(|c| c.rawg_key.clear());
                 self.rawg_status.clear();
