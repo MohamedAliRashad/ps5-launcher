@@ -1,0 +1,25 @@
+{
+  "refreshed_at": "2026-10-17T07:12:09.077Z",
+  "files": {
+    "ps5-topics.json": {
+      "sha256": "e2c2d6d3e1a109182c09dc0642f372a1da23644ec8669ca7886ef8e44dd3b778",
+      "bytes": 3002578,
+      "topics": 739
+    },
+    "ps4-topics.json": {
+      "sha256": "ee706ca8d3a32705a183996a5ec3ebfa2e13d840b1c0fe82efc05d766503b253",
+      "bytes": 10519347,
+      "topics": 3419
+    },
+    "linux-topics.json": {
+      "sha256": "3c9e5f0a594227d7ece56406547e3c73b402c07529fbd2e482c67916f570ef87",
+      "bytes": 11737201,
+      "topics": 2672
+    },
+    "wine-topics.json": {
+      "sha256": "97b68eede0fbef9ea9f7a08eb2770c3007530805d196c32c6eece72d551dd566",
+      "bytes": 5867883,
+      "topics": 1304
+    }
+  }
+}
